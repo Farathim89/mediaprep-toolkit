@@ -1,0 +1,9 @@
+# user media & working files - never commit these
+intro/
+credits/
+videos/
+output/
+temp/
+toolkit_settings.json
+__pycache__/
+*.pyc
