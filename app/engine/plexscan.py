@@ -46,6 +46,7 @@ DEFAULTS = {
     "credits_mode": "both",  # credits by "audio", "visual" (credits pictures) or "both"
     "intro": True,           # find intros
     "credits": True,         # find credits
+    "refine": True,          # frame-exact edges (engine.refine) - before snapping
 }
 
 # visual detector tuning (gray 0-255 at 160 px width)
@@ -270,22 +271,24 @@ def _combine_credits(audio, visual, dur):
     return None, None
 
 
-def _snap_range(path, rng, track, stop_event=None, kind=None, dur=None):
+def _snap_range(path, rng, track, stop_event=None, kind=None, dur=None, skip=(False, False)):
     """Snap (s, e) to silence / black edges within +-1 s; returns (s, e, note).
     kind='silence' for credits found in the pictures (dark credits are
     'black' themselves, so a black edge there is not the boundary). An end at
-    the file end stays there."""
+    the file end stays there. skip=(start, end): edges already frame-exact
+    (engine.refine) are left alone."""
     from .snap import find_snap
     s, e = rng
     bits = []
     if stop_event is not None and stop_event.is_set():
         return s, e, ""
-    ns, why = find_snap(path, s, kind=kind, edge="start", radius=1.0,
-                        audio_track=track or 0)
-    if ns is not None and abs(ns - s) <= 1.0 and ns < e:
-        bits.append(f"start {s:.2f}->{ns:.2f} ({why})")
-        s = ns
-    if dur and e >= dur - 0.05:
+    if not skip[0]:
+        ns, why = find_snap(path, s, kind=kind, edge="start", radius=1.0,
+                            audio_track=track or 0)
+        if ns is not None and abs(ns - s) <= 1.0 and ns < e:
+            bits.append(f"start {s:.2f}->{ns:.2f} ({why})")
+            s = ns
+    if skip[1] or (dur and e >= dur - 0.05):
         return s, e, "; ".join(bits)
     ne, why = find_snap(path, e, kind=kind, edge="end", radius=1.0,
                         audio_track=track or 0)
@@ -442,14 +445,52 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
             r["credits"], r["credits_src"] = rng, src
             if not rng:
                 r["notes"].append("no credits found")
+    # ---------------- frame-exact edges: each episode vs another ----------------
+    refined = {f: {"intro": (False, False), "credits": (False, False)} for f in good}
+    if o.get("refine", True) and multi and not stopped():
+        from .refine import refine_ranges
+        tracks = {}
+
+        def track_for(p):
+            if not lang:
+                return None
+            if p not in tracks:
+                tracks[p] = audio_track_for_lang(p, lang)
+            return tracks[p]
+        for j, key in enumerate(("intro", "credits")):
+            rngs = {f: out[f][key] for f in good if out[f][key]}
+            if len(rngs) < 2 or stopped():
+                continue
+            prog(0.95 + 0.02 * j, f"Refining {key} boundaries")
+            done = {}
+            new = refine_ranges(rngs, log=log, label=f"{key} ", track_for=track_for,
+                                done_out=done)
+            for f, rng in new.items():
+                old = out[f][key]
+                out[f][key] = rng
+                refined[f][key] = done.get(f, (False, False))
+                for c in out[f]["cands"][key]:      # the chosen candidate follows
+                    if (c["start"], c["end"]) == tuple(old):
+                        c["start"], c["end"] = rng
+                        break
+        if stopped():
+            return out
+
+    for i, f in enumerate(good):
+        if stopped():
+            return out
+        name = os.path.basename(f)
+        r = out[f]
+        dur = durs[f]
+        skip = refined[f]
         if o["snap"] and (r["intro"] or r["credits"]):
-            prog(0.6 + 0.35 * (i + 0.8) / n, f"Snapping boundaries in {name}")
+            prog(0.97 + 0.03 * i / n, f"Snapping boundaries in {name}")
             track = audio_track_for_lang(f, lang) if lang else 0
             for key in ("intro", "credits"):
-                if r[key] and not stopped():
+                if r[key] and not stopped() and not all(skip[key]):
                     vis = "visual" in (r[key + "_src"] or "") and key == "credits"
                     s, e, how = _snap_range(f, r[key], track, stop_event,
-                                            "silence" if vis else None, dur)
+                                            "silence" if vis else None, dur, skip[key])
                     if how:
                         log(f"   [snap] {name} {key}: {how}")
                     r[key] = (s, e)

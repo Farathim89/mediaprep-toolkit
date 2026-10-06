@@ -11,7 +11,7 @@ from ..engine.loudness import (change_gain, measure_loudness, normalize_loudness
                                peak_normalize, probe_volume)
 from ..engine.probe import video_kind
 from ..i18n import N_, tr
-from ..ui.widgets import (KeyedCombobox, add_tooltip, auto_wrap, build_log_tab,
+from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, auto_wrap, build_log_tab,
                           enable_file_drop, trim_text_lines)
 from .audio_common import (DEFAULT_TP, GAIN_RANGE, GAIN_WARN, LUFS_RANGE, PEAK_RANGE,
                            TP_RANGE, TRACK_SCOPES, _TrackPicker,
@@ -20,6 +20,7 @@ from .audio_common import (DEFAULT_TP, GAIN_RANGE, GAIN_WARN, LUFS_RANGE, PEAK_R
                            media_types)
 from .audio_gain_batch import BatchGainMixin
 from .. import applog, jobs
+from ..ui import icons
 
 
 # audio-only output: the extension follows the chosen codec
@@ -111,7 +112,7 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         self.file_var = tk.StringVar()
         sent = ttk.Entry(single, textvariable=self.file_var)
         sent.grid(row=0, column=1, sticky="we", padx=4, pady=4)
-        ttk.Button(single, text=tr("Browse..."), command=self.browse).grid(row=0, column=2, padx=4)
+        icons.decorate(ttk.Button(single, text=tr("Browse..."), command=self.browse), "folder").grid(row=0, column=2, padx=4)
 
         ttk.Label(single, text=tr("Audio track:")).grid(row=1, column=0, sticky="e", padx=4, pady=(0, 4))
         trow = ttk.Frame(single)
@@ -132,14 +133,14 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
 
         anrow = ttk.Frame(single)
         anrow.grid(row=2, column=0, columnspan=3, sticky="we", padx=4, pady=(0, 6))
-        self.an_btn = ttk.Button(anrow, text=tr("Analyze loudness"), command=self.analyze)
+        self.an_btn = icons.decorate(ttk.Button(anrow, text=tr("Analyze loudness"), command=self.analyze), "audio")
         self.an_btn.pack(side="left")
         self.analysis_var = tk.StringVar(value=self._an_hint())
         self.file_var.trace_add("write", lambda *a: self._file_changed())
         auto_wrap(ttk.Label(anrow, textvariable=self.analysis_var, style="Hint.TLabel",
                             justify="left")).pack(side="left", fill="x", expand=True, padx=(10, 0))
 
-        mode = ttk.LabelFrame(single, text=" " + tr("Adjustment") + " ", padding=(8, 6))
+        mode = ttk.LabelFrame(single, text=tr("Adjustment"))
         mode.grid(row=3, column=0, columnspan=3, sticky="we", padx=4, pady=4)
         _m = saved.get("ag_single_mode")
         self.mode_var = tk.StringVar(value=_m if _m in ("gain", "norm", "peak") else "norm")
@@ -183,12 +184,10 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         ttk.Label(outrow, text=tr("Extra name tag (optional):")).pack(side="left")
         self.suffix_var = tk.StringVar(value=saved.get("ag_single_tag", ""))
         ttk.Entry(outrow, textvariable=self.suffix_var, width=12).pack(side="left", padx=(4, 0))
-        auto_wrap(ttk.Label(outrow, text=tr("(the target is auto-added to the name; saved next "
-                                            "to the input)"),
-                            style="Hint.TLabel", justify="left")).pack(
-            side="left", fill="x", expand=True, padx=(8, 0))
+        info_icon(outrow, tr("(the target is auto-added to the name; saved next "
+                             "to the input)")).pack(side="left", padx=(4, 0))
 
-        self.go_btn = ttk.Button(single, text=tr("Apply to this file"), command=self.start_apply)
+        self.go_btn = icons.decorate(ttk.Button(single, style="Accent.TButton", text=tr("Apply to this file"), command=self.start_apply), "check")
         self.go_btn.grid(row=5, column=0, columnspan=3, sticky="we", padx=4, pady=(6, 4))
         add_tooltip(self.go_btn, tr("Write a new file with the volume adjusted / normalized"))
         enable_file_drop(sent, self._drop_load)
@@ -208,7 +207,7 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         ttk.Label(prog, textvariable=self.pct_var, width=12).grid(row=0, column=1, sticky="w", padx=(6, 0))
         # single Stop in the right corner beside the progress bar, like the other
         # tools - drives whichever job (single or batch) is running
-        self.stop_btn = ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled")
+        self.stop_btn = icons.decorate(ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled"), "stop")
         self.stop_btn.grid(row=0, column=2, padx=(6, 0))
         add_tooltip(self.stop_btn, tr("Stop now - the file being processed is abandoned "
                                       "(its incomplete output is removed)"))

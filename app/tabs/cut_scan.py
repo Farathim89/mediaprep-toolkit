@@ -19,6 +19,7 @@ from .cut_common import (_SEGS, _ask_choice, _best_ok, _detect_notes, _mmss, _sr
                          mode_combobox)
 from .templates_detect import _EPLEN, _SENS, eplen_values
 from .. import jobs as jobreg
+from ..ui import icons
 
 class ScanMixin:
     """Detection results -> Multi cut list; Multi cut Auto-detect and the
@@ -379,7 +380,7 @@ class ScanMixin:
             dlg.destroy()
         br = ttk.Frame(body)
         br.grid(row=8, column=0, columnspan=4, sticky="e", pady=(12, 0))
-        ttk.Button(br, text=tr("Scan"), command=ok).pack(side="left")
+        icons.decorate(ttk.Button(br, style="Accent.TButton", text=tr("Scan"), command=ok), "detect").pack(side="left")
         ttk.Button(br, text=tr("Cancel"), command=dlg.destroy).pack(side="left", padx=(6, 0))
         dlg.bind("<Return>", lambda e: ok())
         dlg.bind("<Escape>", lambda e: dlg.destroy())

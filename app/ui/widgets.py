@@ -14,26 +14,45 @@ class TimeEntry(ttk.Frame):
     All boxes empty = no time given (used for 'to end of file')."""
 
     def __init__(self, master, on_focus=None):
-        super().__init__(master)
+        # one field box (border, accent on focus) with the four border-less
+        # boxes and their ':' separators inside
+        super().__init__(master, style="TimeBox.TFrame", padding=themes.pad(4, 2))
         self._on_focus = on_focus          # called with self when a box is focused
         self.h, self.m = tk.StringVar(), tk.StringVar()
         self.s, self.ms = tk.StringVar(), tk.StringVar()
         self.vars = (self.h, self.m, self.s, self.ms)
         self._entries = []
         for i, (var, w) in enumerate(((self.h, 3), (self.m, 3), (self.s, 3), (self.ms, 4))):
-            e = ttk.Entry(self, textvariable=var, width=w, justify="center")
+            e = ttk.Entry(self, textvariable=var, width=w, justify="center", style="Bare.TEntry")
             e.grid(row=0, column=i * 2)
             self._entries.append(e)
             if i < 3:
-                ttk.Label(self, text=":").grid(row=0, column=i * 2 + 1)
-            e.bind("<FocusIn>", lambda ev: self._focused())
+                ttk.Label(self, text=":", style="Bare.TLabel").grid(row=0, column=i * 2 + 1)
+            e.bind("<FocusIn>", lambda ev: self._focused(), add="+")
+            e.bind("<FocusOut>", lambda ev: self.after_idle(self._focus_left), add="+")
+        self.bind("<Enter>", lambda ev: self._state("hover", True), add="+")
+        self.bind("<Leave>", lambda ev: self._state("hover", False), add="+")
         # auto-jump to the next box once its digits are typed (2 for H/M/S)
         for i in range(3):
             self._entries[i].bind(
                 "<KeyRelease>",
                 lambda ev, i=i: self._advance(ev, i))
 
+    def _state(self, flag, on):
+        try:
+            self.state([flag] if on else ["!" + flag])
+        except tk.TclError:
+            pass
+
+    def _focus_left(self):
+        try:
+            if self.focus_get() not in self._entries:
+                self._state("focus", False)
+        except (tk.TclError, KeyError):
+            self._state("focus", False)
+
     def _focused(self):
+        self._state("focus", True)
         if callable(self._on_focus):
             self._on_focus(self)
 
@@ -218,9 +237,9 @@ RECOMMENDED_SECTIONS = [
 
 
 class SectionList(ttk.Frame):
-    """Scrollable list of titled boxes (LabelFrames), reflows on resize."""
+    """Scrollable list of titled cards (LabelFrames), reflows on resize."""
     def __init__(self, master, sections, height=430):
-        super().__init__(master, padding=(10, 8))
+        super().__init__(master, padding=themes.pad(8, 12, 4, 8))
         canvas = tk.Canvas(self, height=height, width=660,
                            highlightthickness=0, borderwidth=0)
         scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -234,8 +253,8 @@ class SectionList(ttk.Frame):
         for title, body in sections:
             # tr(): the module-level sections are N_()-marked English; the
             # helpdocs ones arrive translated (tr of a translation = itself)
-            box = ttk.LabelFrame(inner, text=f" {tr(title)} ", padding=(10, 6))
-            box.pack(fill="x", expand=True, padx=4, pady=5)
+            box = ttk.LabelFrame(inner, text=tr(title))
+            box.pack(fill="x", expand=True, padx=themes.px(4), pady=themes.pad(6, 8))
             lbl = ttk.Label(box, text=tr(body), wraplength=580, justify="left")
             lbl.pack(anchor="w", fill="x")
             self._labels.append(lbl)
@@ -244,10 +263,26 @@ class SectionList(ttk.Frame):
             canvas.configure(scrollregion=canvas.bbox("all"))
         inner.bind("<Configure>", on_inner)
 
-        def on_canvas(e):
-            canvas.itemconfigure(inner_id, width=e.width)
+        # re-wrapping every card costs a full relayout - do it once the
+        # resize settles, and only when the width really changed
+        state = {"w": None, "job": None}
+
+        def rewrap():
+            state["job"] = None
+            w = state["w"]
+            canvas.itemconfigure(inner_id, width=w)
             for lbl in self._labels:
-                lbl.configure(wraplength=max(300, e.width - 60))
+                lbl.configure(wraplength=max(300, w - themes.px(48)))
+
+        def on_canvas(e):
+            if e.width == state["w"]:
+                return
+            first = state["w"] is None
+            state["w"] = e.width
+            if first:
+                rewrap()
+            elif state["job"] is None:
+                state["job"] = canvas.after(80, rewrap)
         canvas.bind("<Configure>", on_canvas)
 
         # NOTE: no unbind_all here - that would kill the wheel binding of every
@@ -327,10 +362,13 @@ class Tooltip:
         except Exception:
             pass
         pal = themes.current()
-        tk.Label(self.tip, text=self.text, justify="left",
+        edge = tk.Frame(self.tip, background=pal["stroke"], borderwidth=0)
+        edge.pack()
+        tk.Label(edge, text=self.text, justify="left",
                  background=pal["tooltip_bg"], foreground=pal["tooltip_fg"],
-                 relief="solid", borderwidth=1, highlightthickness=0,
-                 font=("Segoe UI", 9), padx=7, pady=4, wraplength=320).pack()
+                 borderwidth=0, highlightthickness=0, font="TkTooltipFont",
+                 padx=themes.px(8), pady=themes.px(5),
+                 wraplength=themes.px(360)).pack(padx=1, pady=1)
 
     def _hide(self, _e=None):
         self._cancel()
@@ -346,6 +384,31 @@ def add_tooltip(widget, text):
     """Attach a hover tooltip to widget and return the widget (for chaining)."""
     Tooltip(widget, text)
     return widget
+
+
+def info_icon(parent, text):
+    """A small ⓘ (Segoe Fluent Icons 'Info', muted; accent on hover / focus)
+    that shows `text` - an explanation that doesn't need to be on screen all
+    the time - in the themed tooltip: on hover (after 300 ms, stays while
+    hovered), on keyboard focus (Tab) and on click. The caller places it."""
+    from .icons import glyph
+    g = glyph("info")
+    lbl = ttk.Label(parent, text=g or "ⓘ", style="Info.TLabel", takefocus=1,
+                    cursor="hand2", font="MPIconSmall" if g else "TkDefaultFont")
+    tip = Tooltip(lbl, text, delay=300)
+
+    def state(on):
+        try:
+            lbl.state(["active"] if on else ["!active"])
+        except tk.TclError:
+            pass
+    lbl.bind("<Enter>", lambda e: state(True), add="+")
+    lbl.bind("<Leave>", lambda e: state(False), add="+")
+    lbl.bind("<ButtonRelease-1>", lambda e: (lbl.focus_set(), tip._show()), add="+")
+    lbl.bind("<FocusIn>", lambda e: tip._show(), add="+")
+    lbl.bind("<FocusOut>", lambda e: tip._hide(), add="+")
+    lbl.bind("<Escape>", lambda e: tip._hide(), add="+")
+    return lbl
 
 
 # ======================= translated drop-downs =======================
@@ -466,18 +529,21 @@ class KeyedCombobox(ttk.Combobox):
         return self._disp.get()
 
 
-def auto_wrap(label, margin=4, minimum=80):
-    """Let a ttk/tk Label wrap at its current width (follows resizes), so a
-    long translated hint wraps instead of pushing the layout wider. The label
-    must be stretched by its manager (pack fill="x" / grid sticky="ew")."""
-    def _on(e):
-        w = max(minimum, e.width - margin)
-        try:
-            if int(float(str(label.cget("wraplength")) or 0)) != w:
-                label.configure(wraplength=w)
-        except (tk.TclError, ValueError):
-            pass
-    label.bind("<Configure>", _on, add="+")
+def auto_wrap(label, margin=4, minimum=80, width=None):
+    """Give a ttk/tk Label a FIXED wrap width so a long (translated) hint
+    wraps instead of widening the page. Pages have a fixed layout (they
+    scroll instead of reflowing when the window is small), so there is
+    nothing to follow on <Configure>. width = px at 100 % scaling (default:
+    the label's own wraplength if it has one, else 560)."""
+    try:
+        cur = int(float(str(label.cget("wraplength")) or 0))
+    except (tk.TclError, ValueError):
+        cur = 0
+    w = themes.px(width) if width else (themes.px(cur) if cur > 0 else themes.px(560))
+    try:
+        label.configure(wraplength=max(minimum, w - margin))
+    except tk.TclError:
+        pass
     return label
 
 
@@ -541,102 +607,21 @@ def _wheel_should_pass(widget, own_canvas):
 
 
 class ScrollFrame(ttk.Frame):
-    """A vertically scrollable container. Add child widgets to `.interior`.
+    """A tab's container: `.interior` for the content, `.bottom` for a strip
+    pinned below it (progress bars).
 
-    The interior always fills the visible area (so expanding layouts still
-    stretch), and when the content is taller than the window a scrollbar
-    appears and the mouse wheel scrolls it. Wheel events over Text boxes,
-    lists etc. are left alone so they keep scrolling their own content."""
+    Pages have a FIXED natural size: they don't reflow with the window. The
+    window's page area (ui/pageview.PageView) scrolls the whole page - both
+    directions, scrollbars only when the window is smaller than the page -
+    so this frame no longer scrolls by itself; it just passes its content's
+    natural size up. (The name and attributes are kept for the tabs.)"""
 
     def __init__(self, master, canvas_width=None, **kw):
         super().__init__(master, **kw)
-        # non-scrolling strip pinned to the bottom (for progress bars etc.);
-        # packed first so it always stays visible below the scrolled content
         self.bottom = ttk.Frame(self)
         self.bottom.pack(side="bottom", fill="x")
-        self._canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0,
-                                 yscrollincrement=30)
-        if canvas_width:
-            self._canvas.configure(width=canvas_width)
-        self._vsb = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=self._vsb.set)
-        self._canvas.pack(side="left", fill="both", expand=True)
-        self._vsb_shown = False
-
-        self.interior = ttk.Frame(self._canvas)
-        self._win = self._canvas.create_window((0, 0), window=self.interior, anchor="nw")
-
-        self.interior.bind("<Configure>", self._fit, add="+")
-        self._canvas.bind("<Configure>", self._fit, add="+")
-        # one app-wide wheel binding per frame; the handler checks that the
-        # pointer is inside THIS frame, so multiple ScrollFrames coexist
-        self._canvas.bind_all("<MouseWheel>", self._wheel, add="+")
-        # sizes settle late (size requests propagate at idle time, and themes
-        # restyle widgets after the tabs are built), so re-measure afterwards
-        # and keep a light watchdog running - otherwise the frame can get
-        # stuck clipped, with no scrollbar until the window is resized
-        self.after_idle(self._fit)
-        self.bind("<<ThemeChanged>>", lambda e: self.after_idle(self._fit), add="+")
-        self._last_measure = None
-        self.after(120, self._watch)
-
-    def _watch(self):
-        """Re-measure whenever the content's requested size or the canvas size
-        changed without an event we could catch (late idle-time layout, theme
-        restyles, DPI/font changes). Cheap: two winfo calls per tick."""
-        try:
-            if not self.winfo_exists():
-                return
-            cur = (self._canvas.winfo_width(), self._canvas.winfo_height(),
-                   self.interior.winfo_reqheight())
-            if cur != self._last_measure:
-                self._last_measure = cur
-                self._fit()
-        except Exception:
-            return
-        self.after(400, self._watch)
-
-    def _fit(self, _e=None):
-        cw = max(self._canvas.winfo_width(), 1)
-        ch = max(self._canvas.winfo_height(), 1)
-        rh = self.interior.winfo_reqheight()
-        if rh >= ch:
-            # content overflows: give the interior its NATURAL height (0), so
-            # the canvas keeps following the interior's size requests - forcing
-            # a height here would freeze it and clip late-arriving growth
-            self._canvas.itemconfigure(self._win, width=cw, height=0)
-        else:
-            # content fits: stretch the interior to fill the visible area
-            self._canvas.itemconfigure(self._win, width=cw, height=ch)
-        self._canvas.configure(scrollregion=(0, 0, cw, max(ch, rh)))
-        need = rh > ch
-        if need and not self._vsb_shown:
-            self._vsb.pack(side="right", fill="y", before=self._canvas)
-            self._vsb_shown = True
-        elif not need and self._vsb_shown:
-            self._vsb.pack_forget()
-            self._vsb_shown = False
-            self._canvas.yview_moveto(0)
-
-    def _wheel(self, e):
-        # NOTE: on Windows the wheel event goes to the FOCUSED widget, so
-        # e.widget is useless here - find the widget under the pointer instead.
-        try:
-            if not self._canvas.winfo_exists():
-                return
-            w = self.winfo_containing(e.x_root, e.y_root)
-            if w is None:
-                return
-            # only react when the pointer is inside this frame
-            if w is not self and not str(w).startswith(str(self) + "."):
-                return
-        except Exception:
-            return
-        if _wheel_should_pass(w, self._canvas):
-            return
-        if self.interior.winfo_reqheight() <= self._canvas.winfo_height():
-            return   # nothing to scroll
-        self._canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
+        self.interior = ttk.Frame(self)
+        self.interior.pack(side="top", fill="both", expand=True)
 
 
 # ======================= drag-and-drop (optional) =======================
@@ -717,13 +702,14 @@ def build_log_tab(notebook, text=None):
     box plus a 'Clear log' button. Returns the (read-only) Text widget so the
     caller can keep appending to it. Used by every tool tab so the log lives in
     its own sub-tab and the main view gets the whole window."""
-    frame = ttk.Frame(notebook, padding=6)
+    frame = ttk.Frame(notebook, padding=themes.pad(0, 10, 0, 6))
     notebook.add(frame, text=text if text is not None else f"  {tr('Log')}  ")
     frame.columnconfigure(0, weight=1)
     frame.rowconfigure(0, weight=1)
     # small requested height so this page doesn't force a hug-content notebook
     # tall; it still expands to fill via the row weight above
-    box = tk.Text(frame, state="disabled", font=("Consolas", 9), wrap="none", height=8)
+    box = tk.Text(frame, state="disabled", font="MPMono", wrap="none", height=8,
+                  padx=themes.px(8), pady=themes.px(6))
     box.grid(row=0, column=0, sticky="nsew")
     sb = ttk.Scrollbar(frame, orient="vertical", command=box.yview)
     box.configure(yscrollcommand=sb.set)
@@ -733,8 +719,9 @@ def build_log_tab(notebook, text=None):
         box.configure(state="normal")
         box.delete("1.0", "end")
         box.configure(state="disabled")
-    ttk.Button(frame, text=tr("Clear log"), command=_clear).grid(
-        row=1, column=0, sticky="w", pady=(4, 0))
+    from .icons import decorate
+    decorate(ttk.Button(frame, text=tr("Clear log"), command=_clear), "trash").grid(
+        row=1, column=0, sticky="w", pady=themes.pad(8, 0))
     return box
 
 
@@ -762,7 +749,7 @@ def _open_help_window(parent, wkey, title, sections, index=False):
         except tk.TclError:
             pass
     top = parent.winfo_toplevel()
-    bg, fg, tbg, tfg, acc = _theme_colors(top)
+    bg, fg, _tbg, tfg, _acc = _theme_colors(top)
     win = tk.Toplevel(top)
     win.title(title)
     win.configure(bg=bg)
@@ -780,42 +767,46 @@ def _open_help_window(parent, wkey, title, sections, index=False):
         win.geometry(f"{w}x{h}")
     win.minsize(int(320 * dpi), int(220 * dpi))
 
-    outer = ttk.Frame(win, padding=8)
+    outer = ttk.Frame(win, padding=themes.pad(16, 12, 16, 12))
     outer.pack(fill="both", expand=True)
+    ttk.Label(outer, text=title, style="Subtitle.TLabel").pack(anchor="w",
+                                                             pady=themes.pad(0, 10))
     bar = ttk.Frame(outer)
-    bar.pack(side="bottom", fill="x", pady=(6, 0))
+    bar.pack(side="bottom", fill="x", pady=themes.pad(12, 0))
     ttk.Button(bar, text=tr("Close"), command=win.destroy).pack(side="right")
 
     body = ttk.Frame(outer)
     body.pack(fill="both", expand=True)
-    text = tk.Text(body, wrap="word", bg=tbg, fg=tfg, relief="flat",
-                   font=("Segoe UI", 10), padx=12, pady=10, borderwidth=0,
-                   highlightthickness=1, highlightbackground=acc,
-                   selectbackground=acc, insertbackground=tfg, cursor="arrow",
-                   selectforeground=themes.current()["select_fg"])
+    p0 = themes.current()
+    text = tk.Text(body, wrap="word", bg=p0["card"], fg=tfg, relief="flat",
+                   font="TkDefaultFont", padx=themes.px(16), pady=themes.px(12),
+                   borderwidth=0, highlightthickness=1, highlightbackground=p0["stroke"],
+                   highlightcolor=p0["stroke"], selectbackground=p0["select_bg"],
+                   insertbackground=tfg, cursor="arrow", spacing2=themes.px(2),
+                   selectforeground=p0["select_fg"])
     sb = ttk.Scrollbar(body, orient="vertical", command=text.yview)
     text.configure(yscrollcommand=sb.set)
     if index:
         lb = tk.Listbox(body, exportselection=False, activestyle="none",
-                        bg=tbg, fg=tfg, selectbackground=themes.current()["select_bg"],
-                        selectforeground=themes.current()["select_fg"], relief="flat",
-                        highlightthickness=1, highlightbackground=acc,
-                        font=("Segoe UI", 10), width=30)
-        lb.pack(side="left", fill="y", padx=(0, 8))
+                        bg=bg, fg=tfg, selectbackground=p0["select_bg"],
+                        selectforeground=p0["select_fg"], relief="flat", borderwidth=0,
+                        highlightthickness=0, font="TkDefaultFont", width=28)
+        lb.pack(side="left", fill="y", padx=themes.pad(0, 12))
     sb.pack(side="right", fill="y")
     text.pack(side="left", fill="both", expand=True)
 
-    text.tag_configure("h", font=("Segoe UI", 12, "bold"), foreground=acc,
-                       spacing1=10, spacing3=4)
+    text.tag_configure("h", font="MPSubtitle", foreground=fg,
+                       spacing1=themes.px(14), spacing3=themes.px(6))
 
     def _repaint(p):
         # the walk in themes.apply recolours Text/Listbox; these are the
-        # help window's own accent bits
-        text.tag_configure("h", foreground=p["accent"])
-        text.configure(highlightbackground=p["accent"], selectbackground=p["select_bg"],
+        # help window's own bits
+        text.tag_configure("h", foreground=p["fg"])
+        text.configure(bg=p["card"], highlightbackground=p["stroke"],
+                       highlightcolor=p["stroke"], selectbackground=p["select_bg"],
                        selectforeground=p["select_fg"])
         if index:
-            lb.configure(highlightbackground=p["accent"])
+            lb.configure(bg=p["bg"])
     themes.on_palette(win, _repaint)
     text.tag_configure("p", spacing1=1, spacing3=1, lmargin1=2, lmargin2=2)
     marks = []
@@ -871,7 +862,77 @@ def help_button(parent, key, text="?"):
     """A small '?' ttk.Button that opens the help for helpdocs.HELP[key].
     The caller places it (pack/grid) like any other widget."""
     from .. import helpdocs
-    btn = ttk.Button(parent, text=text, width=max(2, len(text) + 1),
-                     command=lambda: show_help(parent, key))
+    from . import icons
+    if text == "?" and icons.available():
+        btn = ttk.Button(parent, text="", style="Subtle.TButton",
+                         command=lambda: show_help(parent, key))
+        icons.decorate(btn, "help")
+    else:
+        btn = ttk.Button(parent, text=text, width=max(2, len(text) + 1),
+                         command=lambda: show_help(parent, key))
     add_tooltip(btn, tr("Help: {title}", title=helpdocs.get(key)[0]))
     return btn
+
+
+# ======================= Fluent info bar =======================
+class InfoBar(tk.Frame):
+    """A Windows 11 style InfoBar: tinted strip with a coloured accent edge,
+    a severity icon, the message (wraps), an optional link and a close ×.
+    kind = "error" / "warn" / "info"."""
+    _ICONS = {"error": "error", "warn": "warning", "info": "info"}
+
+    def __init__(self, master, text, kind="info", link_text=None, on_link=None,
+                 closable=True, on_close=None):
+        super().__init__(master, borderwidth=0, highlightthickness=1)
+        from .icons import glyph
+        self.kind = kind
+        self._on_close = on_close
+        self.edge = tk.Frame(self, width=themes.px(4), borderwidth=0)
+        self.edge.pack(side="left", fill="y")
+        ic = glyph(self._ICONS.get(kind, "info"))
+        self.icon = tk.Label(self, text=ic or "\u26a0", font="MPIcon" if ic else "MPSemibold",
+                             borderwidth=0, padx=themes.px(10))
+        self.icon.pack(side="left", anchor="n", pady=themes.px(9))
+        if closable:
+            cg = glyph("close")
+            self.close_lbl = tk.Label(self, text=cg or "\u2715", cursor="hand2",
+                                      font="MPIconSmall" if cg else "TkDefaultFont",
+                                      borderwidth=0, padx=themes.px(12))
+            self.close_lbl.pack(side="right", anchor="n", pady=themes.px(10))
+            self.close_lbl.bind("<Button-1>", lambda e: self.close())
+        else:
+            self.close_lbl = None
+        self.link = None
+        if link_text:
+            self.link = tk.Label(self, text=link_text, cursor="hand2", borderwidth=0,
+                                 font="MPSemibold", padx=themes.px(6))
+            self.link.pack(side="right", anchor="n", pady=themes.px(8))
+            if on_link is not None:
+                self.link.bind("<Button-1>", lambda e: on_link())
+        self.msg = tk.Label(self, text=text, justify="left", anchor="w", borderwidth=0,
+                            font="TkDefaultFont")
+        self.msg.pack(side="left", fill="x", expand=True, pady=themes.px(8))
+        auto_wrap(self.msg, margin=8, width=820)
+        themes.on_palette(self, self._repaint)
+
+    def _repaint(self, p):
+        k = self.kind
+        bg, fg = p[f"banner_{k}_bg"], p[f"banner_{k}_fg"]
+        acc = p[f"banner_{k}_accent"]
+        self.configure(bg=bg, highlightbackground=themes.mix(bg, p["fg"], 0.12),
+                       highlightcolor=themes.mix(bg, p["fg"], 0.12))
+        self.edge.configure(bg=acc)
+        self.icon.configure(bg=bg, fg=acc)
+        self.msg.configure(bg=bg, fg=fg)
+        if self.link is not None:
+            self.link.configure(bg=bg, fg=fg, font="MPSemibold")
+        if self.close_lbl is not None:
+            self.close_lbl.configure(bg=bg, fg=fg)
+
+    def close(self):
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+        if callable(self._on_close):
+            self._on_close()

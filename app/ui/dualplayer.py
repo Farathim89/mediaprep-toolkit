@@ -13,6 +13,7 @@ from .player import VideoPlayer
 from .widgets import add_tooltip, enable_file_drop, enable_file_drop_deep, help_button
 from .. import applog
 from ..i18n import tr
+from . import icons
 
 _VIDEO_TYPES = [(tr("Video files"), "*.mp4 *.mkv *.mov *.avi *.webm"), (tr("All files"), "*.*")]
 
@@ -34,24 +35,29 @@ class DualPlayerTab(ttk.Frame):
         ctr = ttk.Frame(self)
         ctr.grid(row=1, column=0, columnspan=2, pady=(8, 0))
 
-        def tb(sym, cmd, tip):
-            b = ttk.Button(ctr, text=f"{sym} {both}", command=cmd)
+        def tb(sym, cmd, tip, icon):
+            if icons.available():
+                b = icons.decorate(ttk.Button(ctr, text=both, command=cmd), icon)
+            else:
+                b = ttk.Button(ctr, text=f"{sym} {both}", command=cmd)
             b.pack(side="left", padx=2)
             add_tooltip(b, tip)
             return b
 
         both = tr("both")
-        tb("|<", lambda: self._both("to_start"), tr("Both to the first frame"))
-        tb("<<", lambda: self._both_step(-10), tr("Both back 10 frames"))
-        tb("<", lambda: self._both_step(-1), tr("Both back 1 frame"))
+        tb("|<", lambda: self._both("to_start"), tr("Both to the first frame"), "to_start")
+        tb("<<", lambda: self._both_step(-10), tr("Both back 10 frames"), "back10")
+        tb("<", lambda: self._both_step(-1), tr("Both back 1 frame"), "step_back")
         # wide enough for both labels, so Play <-> Pause doesn't shift the row
         bw = max(10, len(tr("Play both")) + 1, len(tr("Pause both")) + 1)
-        self.both_btn = ttk.Button(ctr, text=tr("Play both"), width=bw, command=self._play_both)
+        self.both_btn = icons.decorate(
+            ttk.Button(ctr, text=tr("Play both"), width=bw, style="Accent.TButton",
+                       command=self._play_both), "play")
         self.both_btn.pack(side="left", padx=4)
         add_tooltip(self.both_btn, tr("Play / pause both videos at once"))
-        tb(">", lambda: self._both_step(1), tr("Both forward 1 frame"))
-        tb(">>", lambda: self._both_step(10), tr("Both forward 10 frames"))
-        tb(">|", lambda: self._both("to_end"), tr("Both to the last frame"))
+        tb(">", lambda: self._both_step(1), tr("Both forward 1 frame"), "step_fwd")
+        tb(">>", lambda: self._both_step(10), tr("Both forward 10 frames"), "fwd10")
+        tb(">|", lambda: self._both("to_end"), tr("Both to the last frame"), "to_end")
         lk = ttk.Checkbutton(ctr, text=tr("Link"), variable=self.link_var)
         lk.pack(side="left", padx=(12, 0))
         add_tooltip(lk, tr("Linked: a seek, step or Go in one player moves the other one to "
@@ -98,8 +104,8 @@ class DualPlayerTab(ttk.Frame):
             else:
                 messagebox.showerror(tr("Error"), tr("Type or browse to a valid video first."))
 
-        ttk.Button(top, text=tr("Browse..."), command=browse).pack(side="left", padx=4)
-        ttk.Button(top, text=tr("Load"), command=load).pack(side="left")
+        icons.decorate(ttk.Button(top, text=tr("Browse..."), command=browse), "folder").pack(side="left", padx=4)
+        icons.decorate(ttk.Button(top, text=tr("Load"), command=load), "load").pack(side="left")
         if tag == "B":                       # '?' at the tab's top-right corner
             help_button(top, "dual").pack(side="left", padx=(6, 0))
         enable_file_drop_deep(player, drop)                       # drop anywhere in the player
@@ -169,4 +175,5 @@ class DualPlayerTab(ttk.Frame):
         text = tr("Pause both") if playing else tr("Play both")
         if self.both_btn.cget("text") != text:
             self.both_btn.configure(text=text)
+            icons.set_icon(self.both_btn, "pause" if playing else "play")
         self._label_after = self.after(300, self._sync_both_label)

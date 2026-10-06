@@ -26,6 +26,7 @@ from .. import applog
 from .. import jobs
 from ..i18n import tr, ntr
 from ..ui.widgets import add_tooltip, bind_status_colors, enable_file_drop, help_button
+from ..ui import icons
 
 _MEDIA_TYPES = [(tr("Video / audio"),
                  "*.mp4 *.mkv *.mov *.avi *.webm *.mp3 *.m4a *.aac *.flac *.wav"),
@@ -162,7 +163,7 @@ class CompareTab(ttk.Frame):
 
         bar = ttk.Frame(f)
         bar.grid(row=2, column=0, columnspan=3, sticky="we", pady=(4, 4))
-        self.cmp_btn = ttk.Button(bar, text=tr("Compare"), command=self.compare)
+        self.cmp_btn = icons.decorate(ttk.Button(bar, style="Accent.TButton", text=tr("Compare"), command=self.compare), "compare")
         self.cmp_btn.pack(side="left")
         add_tooltip(self.cmp_btn, tr("Probe both files and list the differences"))
         self.summary_var = tk.StringVar(value=tr("Pick both files and click Compare."))
@@ -172,7 +173,7 @@ class CompareTab(ttk.Frame):
         tvf.grid(row=3, column=0, columnspan=3, sticky="nsew")
         tvf.rowconfigure(0, weight=1)
         tvf.columnconfigure(0, weight=1)
-        self.tree = ttk.Treeview(tvf, columns=("orig", "new", "ok"), show="tree headings", height=14)
+        self.tree = ttk.Treeview(tvf, columns=("orig", "new", "ok"), show="tree headings", height=9)
         self.tree.heading("#0", text=tr("Property"))
         self.tree.heading("orig", text=tr("Original"))
         self.tree.heading("new", text=tr("New"))
@@ -194,8 +195,8 @@ class CompareTab(ttk.Frame):
         ttk.Label(f, text=label).grid(row=r, column=0, sticky="e", padx=4, pady=3)
         ent = ttk.Entry(f, textvariable=var)
         ent.grid(row=r, column=1, sticky="we", padx=4, pady=3)
-        ttk.Button(f, text=tr("Browse..."),
-                   command=lambda: self._browse(var)).grid(row=r, column=2, padx=4)
+        icons.decorate(ttk.Button(f, text=tr("Browse..."),
+                   command=lambda: self._browse(var)), "folder").grid(row=r, column=2, padx=4)
         return ent
 
     def _browse(self, var):
@@ -452,7 +453,7 @@ class _QualityPane(ttk.Frame):
                            "Empty = to the end.\n"
                            "For a CUT file, keep the whole compared stretch inside ONE kept\n"
                            "segment - past a cut the timelines no longer line up."))
-        cpy = ttk.Button(orow, text=tr("Use files from Tracks"), command=self._copy_from_tracks)
+        cpy = icons.decorate(ttk.Button(orow, text=tr("Use files from Tracks"), command=self._copy_from_tracks), "copy")
         cpy.pack(side="left")
         add_tooltip(cpy, tr("Copy the two files picked on the Tracks sub-tab"))
 
@@ -489,23 +490,24 @@ class _QualityPane(ttk.Frame):
 
         rrow = ttk.Frame(self)
         rrow.grid(row=4, column=0, columnspan=3, sticky="we", pady=(8, 0))
-        self.run_btn = ttk.Button(rrow, text=tr("Compare quality"), command=self.start)
+        self.run_btn = icons.decorate(ttk.Button(rrow, style="Accent.TButton", text=tr("Compare quality"), command=self.start), "run")
         self.run_btn.pack(side="left")
         add_tooltip(self.run_btn, tr("Measure how close the new file looks to the original "
                                      "(SSIM/PSNR, optional VMAF)"))
-        self.queue_btn = ttk.Button(rrow, text=tr("Add to queue"), command=self.queue_run)
+        self.queue_btn = icons.decorate(ttk.Button(rrow, text=tr("Add to queue"), command=self.queue_run), "queue")
         self.queue_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.queue_btn, tr("Queue this comparison (files + settings as they are "
                                        "now) to run after the jobs already running / queued - "
                                        "handy for a slow Full scan. See Queue... in the status "
                                        "bar."))
-        self.stop_btn = ttk.Button(rrow, text=tr("Stop"), command=self.stop, state="disabled")
+        self.stop_btn = icons.decorate(ttk.Button(rrow, text=tr("Stop"), command=self.stop, state="disabled"), "stop")
         self.stop_btn.pack(side="left", padx=(6, 0))
         self.bar = ttk.Progressbar(rrow, mode="determinate", maximum=100)
         self.bar.pack(side="left", fill="x", expand=True, padx=(10, 0))
 
         self.rowconfigure(5, weight=1)
-        self.out = tk.Text(self, height=14, font=("Consolas", 9), wrap="word", state="disabled")
+        self.out = tk.Text(self, height=10, font="MPMono", wrap="word", state="disabled",
+                           padx=8, pady=6)
         self.out.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
         sb = ttk.Scrollbar(self, orient="vertical", command=self.out.yview)
         self.out.configure(yscrollcommand=sb.set)
@@ -526,7 +528,7 @@ class _QualityPane(ttk.Frame):
         ttk.Label(self, text=label).grid(row=r, column=0, sticky="e", padx=4, pady=3)
         ent = ttk.Entry(self, textvariable=var)
         ent.grid(row=r, column=1, sticky="we", padx=4, pady=3)
-        ttk.Button(self, text=tr("Browse..."), command=lambda: self._browse(var)).grid(
+        icons.decorate(ttk.Button(self, text=tr("Browse..."), command=lambda: self._browse(var)), "folder").grid(
             row=r, column=2, padx=4)
         return ent
 

@@ -10,11 +10,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from ..engine.probe import quick_check, full_check, probe_duration
-from ..ui.widgets import (add_tooltip, enable_file_drop, enable_paths_drop,
+from ..ui.widgets import (info_icon, add_tooltip, enable_file_drop, enable_paths_drop,
                           bind_status_colors, trim_text_lines, help_button)
 from .. import applog
 from .. import jobs
 from ..i18n import tr, ntr
+from ..ui import icons
 
 _MEDIA_TYPES = [(tr("Video files"),
                  "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.ts *.mpg *.mpeg *.wmv *.flv"),
@@ -99,8 +100,8 @@ class CheckTab(ttk.Frame):
         self.file_var = tk.StringVar()
         sent = ttk.Entry(srow, textvariable=self.file_var)
         sent.grid(row=0, column=1, sticky="we")
-        ttk.Button(srow, text=tr("Browse..."), command=self._browse_file).grid(row=0, column=2, padx=4)
-        self.file_btn = ttk.Button(srow, text=tr("Check file"), command=self.check_file)
+        icons.decorate(ttk.Button(srow, text=tr("Browse..."), command=self._browse_file), "folder").grid(row=0, column=2, padx=4)
+        self.file_btn = icons.decorate(ttk.Button(srow, text=tr("Check file"), command=self.check_file), "check")
         self.file_btn.grid(row=0, column=3)
 
         frow = ttk.Frame(files_tab)
@@ -110,15 +111,15 @@ class CheckTab(ttk.Frame):
         self.dir_var = tk.StringVar()
         dent = ttk.Entry(frow, textvariable=self.dir_var)
         dent.grid(row=0, column=1, sticky="we")
-        ttk.Button(frow, text=tr("Browse..."), command=self._browse_dir).grid(row=0, column=2, padx=4)
-        ttk.Button(frow, text=tr("Refresh list"), command=self.refresh_list).grid(row=0, column=3)
+        icons.decorate(ttk.Button(frow, text=tr("Browse..."), command=self._browse_dir), "folder").grid(row=0, column=2, padx=4)
+        icons.decorate(ttk.Button(frow, text=tr("Refresh list"), command=self.refresh_list), "refresh").grid(row=0, column=3)
 
         tvf = ttk.Frame(files_tab)
         tvf.grid(row=3, column=0, sticky="nsew")
         tvf.rowconfigure(0, weight=1)
         tvf.columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(tvf, columns=("sel", "file", "result", "detail"),
-                                 show="headings", height=12, selectmode="extended")
+                                 show="headings", height=8, selectmode="extended")
         self.tree.heading("sel", text="✓", command=self._toggle_all)
         self.tree.heading("file", text=tr("File"))
         self.tree.heading("result", text=tr("Result"))
@@ -140,18 +141,18 @@ class CheckTab(ttk.Frame):
 
         rrow = ttk.Frame(files_tab)
         rrow.grid(row=4, column=0, sticky="we", pady=(6, 2))
-        self.folder_btn = ttk.Button(rrow, text=tr("Check ticked files"), command=self.check_folder)
+        self.folder_btn = icons.decorate(ttk.Button(rrow, style="Accent.TButton", text=tr("Check ticked files"), command=self.check_folder), "check")
         self.folder_btn.pack(side="left", fill="x", expand=True)
         add_tooltip(self.folder_btn, tr("Run the chosen check on every ticked file in the list"))
-        self.queue_btn = ttk.Button(rrow, text=tr("Add to queue"), command=self.queue_folder)
+        self.queue_btn = icons.decorate(ttk.Button(rrow, text=tr("Add to queue"), command=self.queue_folder), "queue")
         self.queue_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.queue_btn, tr("Queue a check of the ticked files (with the chosen "
                                        "depth) to run after the jobs already running / queued "
                                        "- see Queue... in the status bar"))
-        self.stop_btn = ttk.Button(rrow, text=tr("Stop"), command=self.stop, state="disabled")
+        self.stop_btn = icons.decorate(ttk.Button(rrow, text=tr("Stop"), command=self.stop, state="disabled"), "stop")
         self.stop_btn.pack(side="left", padx=(6, 0))
-        ttk.Label(rrow, text="  " + tr("select rows · Del = remove · Ctrl+A = all"),
-                  style="Hint.TLabel").pack(side="left")
+        info_icon(rrow, tr("select rows · Del = remove · Ctrl+A = all")).pack(
+            side="left", padx=(4, 0))
 
         self.status_var = tk.StringVar(value="")
         ttk.Label(files_tab, textvariable=self.status_var, style="Hint.TLabel").grid(row=5, column=0, sticky="w")
@@ -164,12 +165,12 @@ class CheckTab(ttk.Frame):
         ttk.Label(prog, textvariable=self.pct_var, width=12).grid(row=0, column=1, sticky="w", padx=(6, 0))
         log_tab.columnconfigure(0, weight=1)
         log_tab.rowconfigure(0, weight=1)
-        self.logbox = tk.Text(log_tab, state="disabled", font=("Consolas", 9), wrap="none")
+        self.logbox = tk.Text(log_tab, state="disabled", font="MPMono", wrap="none", padx=8, pady=6)
         self.logbox.grid(row=0, column=0, sticky="nsew")
         lsb = ttk.Scrollbar(log_tab, orient="vertical", command=self.logbox.yview)
         self.logbox.configure(yscrollcommand=lsb.set)
         lsb.grid(row=0, column=1, sticky="ns")
-        ttk.Button(log_tab, text=tr("Clear log"), command=self._clear_log).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        icons.decorate(ttk.Button(log_tab, text=tr("Clear log"), command=self._clear_log), "trash").grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         enable_file_drop(sent, self._drop_file)
         enable_file_drop(dent, self._drop_dir)

@@ -1,5 +1,7 @@
-"""main() - builds the window, the tabs, theme handling, the window icon,
-the status bar (job registry / queue / help) and the update banner.
+"""main() - builds the window: the left navigation sidebar (ui/sidebar.py),
+the page header + pages (the tabs), theme handling, the window icon, the
+status bar (job registry / queue badge / version) and the info bars (update
+available, missing ffmpeg / packages).
 The Queue / Settings dialogs live in ui/dialogs.py."""
 import importlib.util
 import os
@@ -24,9 +26,12 @@ from .ui.cleanup import CleanupDialog
 from .ui.dialogs import QueueDialog, SettingsDialog, _fmt_elapsed
 from .ui import themes
 from .ui.dualplayer import DualPlayerTab
+from .ui.icons import decorate
+from .ui.pageview import PageView
+from .ui.sidebar import Sidebar
 from .ui.tkthread import _call_tk, _drain_tk_calls
-from .ui.widgets import (InfoTab, KeyedCombobox, RecommendedTab, ScrollFrame, add_tooltip,
-                         auto_wrap, make_root, show_help_index)
+from .ui.widgets import (InfoBar, InfoTab, RecommendedTab, ScrollFrame, add_tooltip,
+                         make_root, show_help_index)
 from . import applog, i18n, jobs, migrate, notify, updater
 from .i18n import N_, tr
 
@@ -38,7 +43,7 @@ from .i18n import N_, tr
 #  MIN_SIZE is the smallest it can be dragged to (width, height); the tabs
 #  scroll when the window is smaller than their content.
 # ==========================================================================
-WINDOW_SIZE = "1180x710"
+WINDOW_SIZE = "1280x760"
 MIN_SIZE = (900, 600)
 
 # optional Python packages: (import name, what breaks without it)
@@ -111,6 +116,7 @@ def _set_window_icon(root):
     try:
         if os.path.exists(ico):
             root.iconbitmap(ico)
+            root.iconbitmap(default=ico)    # dialogs + help windows too
             return
     except Exception:
         pass
@@ -122,15 +128,20 @@ def _set_window_icon(root):
         pass
 
 
-def _banner_label(parent, text, kind, **kw):
-    """A tk.Label coloured as a banner of `kind` (error / warn / info) that
-    follows theme changes."""
-    opts = dict(anchor="w", padx=8, pady=3)
-    opts.update(kw)
-    lbl = tk.Label(parent, text=text, **opts)
-    themes.on_palette(lbl, lambda p: lbl.configure(bg=p[f"banner_{kind}_bg"],
-                                                   fg=p[f"banner_{kind}_fg"]))
-    return lbl
+# page key -> (sidebar icon, title, one-line description shown under the title)
+_PAGES = (
+    ("templates", "templates", N_("Templates"),
+     N_("Mark the intro and credits of an episode and cut them into reusable templates.")),
+    ("cut", "cut", N_("Cut / Edit"),
+     N_("Find and remove intros and credits in whole seasons, or cut files by hand.")),
+    ("audio", "audio", N_("Audio"),
+     N_("Export theme songs and even out the loudness of your episodes.")),
+    ("inspect", "inspect", N_("Inspect"),
+     N_("Play two videos side by side, compare tracks and quality, check files for errors.")),
+    ("log", "log", N_("Log"), N_("Everything the app did in this session.")),
+    ("info", "info", N_("Info"),
+     N_("Encoding notes, recommended settings and the help of every page.")),
+)
 
 
 def _center_window(root, size):
@@ -216,7 +227,70 @@ def main():
     def _track_geometry(e):
         if e.widget is root and root.state() == "normal" and root.winfo_width() > 200:
             normal_geo["g"] = root.geometry()
+        if e.widget is root and "page_view" in _late:
+            _late["page_view"].window_resized((e.width, e.height))
+    _late = {}                # widgets made further down that the binding uses
     root.bind("<Configure>", _track_geometry, add="+")
+
+    # themes + fonts first: everything below is built with them
+    theme_var = themes.init(root, saved.get("theme", themes.DEFAULT_THEME))
+    px = themes.px
+
+    # Tk-thread dispatcher for the job registry / notifications / updater
+    jobs.set_dispatcher(_call_tk)
+    root.after(50, _drain_tk_calls, root)
+    notify.install(root, _call_tk)
+
+    # ---- status bar (bottom): running job + progress, queue badge, version ----
+    status = ttk.Frame(root, style="Chrome.TFrame", padding=themes.pad(14, 3, 8, 3))
+    status.pack(side="bottom", fill="x")
+    status_line = tk.Frame(root, height=1, borderwidth=0)
+    status_line.pack(side="bottom", fill="x")
+    themes.on_palette(status_line, lambda p: status_line.configure(bg=p["stroke"]))
+    status_var = tk.StringVar(value=tr("Idle"))
+    ttk.Label(status, text=f"v{APP_VERSION}", style="Chrome.Hint.TLabel").pack(
+        side="right", padx=themes.pad(10, 6))
+    queue_btn = ttk.Button(status, text=tr("Queue..."), style="Chrome.Subtle.TButton",
+                           command=lambda: QueueDialog.open_(root, _stop_all_jobs))
+    decorate(queue_btn, "queue")
+    queue_btn.pack(side="right")
+    add_tooltip(queue_btn, tr("Jobs waiting to run one after another - remove, reorder, "
+                              "pause/resume, Stop all"))
+    badge = tk.Label(status, text="", font="MPSemiboldSmall", borderwidth=0,
+                     padx=px(6), pady=0)
+    themes.on_palette(badge, lambda p: badge.configure(bg=p["accent"], fg=p["accent_fg"]))
+    status_prog = ttk.Progressbar(status, style="Chrome.Horizontal.TProgressbar",
+                                  mode="indeterminate", length=px(110))
+    ttk.Label(status, textvariable=status_var, style="Chrome.TLabel", anchor="w").pack(
+        side="left", fill="x", expand=True)
+    _status_ui = {"busy": False, "n": 0}
+
+    # ---- shell: sidebar | content (info bars, page header, pages) ----
+    shell = ttk.Frame(root)
+    shell.pack(fill="both", expand=True)
+    content = ttk.Frame(shell)
+    banners = ttk.Frame(content)
+    banners.pack(fill="x")
+    # page header: title + its one-line description on the same line
+    header = ttk.Frame(content, padding=themes.pad(20, 8, 20, 2))
+    header.pack(fill="x")
+    title_var = tk.StringVar()
+    desc_var = tk.StringVar()
+    ttk.Label(header, textvariable=title_var, style="Title.TLabel").pack(side="left")
+    ttk.Label(header, textvariable=desc_var, style="Hint.TLabel").pack(
+        side="left", anchor="s", padx=themes.pad(14, 0), pady=themes.pad(0, 4))
+    # fixed-size pages in a 2-D scroll view (ui/pageview.py): the design
+    # size (the page area of the default window) is set once the sidebar
+    # exists; a window resize only moves the viewport
+    page_view = PageView(content, inset=(px(12), px(4)))
+    page_view.pack(fill="both", expand=True)
+    _late["page_view"] = page_view
+    page_host = page_view.canvas
+
+    def _banner(text, kind, **kw):
+        bar = InfoBar(banners, text, kind, **kw)
+        bar.pack(fill="x", padx=themes.pad(20, 16), pady=themes.pad(10, 0))
+        return bar
 
     # warn up front if ffmpeg/ffprobe are missing (most actions need them)
     # and which optional packages aren't installed (checked once)
@@ -226,95 +300,44 @@ def main():
         tools = " and ".join(missing)
         applog.record(f"[startup] {tools} not found on PATH - install ffmpeg (ffmpeg.org) "
                       "so cutting and detection work.")
-        msg = tr("{tools} not found on PATH - install ffmpeg (ffmpeg.org) so cutting and "
-                 "detection work.", tools=" / ".join(missing))
-        auto_wrap(_banner_label(root, "  \u26a0  " + msg, "error", justify="left"),
-                  margin=20).pack(fill="x")
+        _banner(tr("{tools} not found on PATH - install ffmpeg (ffmpeg.org) so cutting and "
+                   "detection work.", tools=" / ".join(missing)), "error")
     if missing_pkgs:
         names = ", ".join(n for n, _w in missing_pkgs)
         whats = ", ".join(dict.fromkeys(w for _n, w in missing_pkgs))
         applog.record(f"[startup] Optional packages missing: {names} ({whats} won't work) - "
                       "run Install Requirements.bat.")
         whats = ", ".join(dict.fromkeys(tr(w) for _n, w in missing_pkgs))
-        msg = tr("Optional packages missing: {names} ({features} won't work) - run "
-                 "Install Requirements.bat.", names=names, features=whats)
-        auto_wrap(_banner_label(root, "  \u26a0  " + msg, "warn", justify="left"),
-                  margin=20).pack(fill="x")
+        _banner(tr("Optional packages missing: {names} ({features} won't work) - run "
+                   "Install Requirements.bat.", names=names, features=whats), "warn")
 
-    # themes: one shared variable for the top-bar picker and the Settings
-    # dialog; writing it re-themes the whole app live (themes.set_theme)
-    theme_var = themes.init(root, saved.get("theme", themes.DEFAULT_THEME))
-
-    # top bar with theme selector
-    top = ttk.Frame(root, padding=(10, 6, 10, 0))
-    top.pack(fill="x")
-    ttk.Label(top, text=tr("Theme:")).pack(side="left")
-    theme_box = KeyedCombobox(top, textvariable=theme_var, values=themes.THEME_NAMES,
-                              state="readonly", width=20)
-    theme_box.pack(side="left", padx=6)
-    add_tooltip(theme_box, tr("Colour theme - applies to every window right away. "
-                              "'Follow Windows' switches Light / Dark with Windows."))
-    cleanup_btn = ttk.Button(top, text=tr("Clean up folders..."),
-                             command=lambda: CleanupDialog(root, is_busy=_any_busy))
-    cleanup_btn.pack(side="right")
-    add_tooltip(cleanup_btn, tr("Empty the template/videos/output/temp folders - contents are "
-                                "moved to Data\\temp\\trash, not deleted, so they can be "
-                                "recovered"))
-    settings_btn = ttk.Button(top, text=tr("Settings..."),
-                              command=lambda: SettingsDialog.open_(root, persist, show_update,
-                                                                   restart=_restart))
-    settings_btn.pack(side="right", padx=(0, 6))
-    add_tooltip(settings_btn, tr("Language, theme, notifications, update check and log "
-                                 "retention"))
-
-    # Tk-thread dispatcher for the job registry / notifications / updater
-    jobs.set_dispatcher(_call_tk)
-    root.after(50, _drain_tk_calls, root)
-    notify.install(root, _call_tk)
-
-    # ---- status bar (bottom): running job, queue, help, version ----
-    status = ttk.Frame(root, padding=(10, 2, 10, 3))
-    status.pack(side="bottom", fill="x")
-    ttk.Separator(root, orient="horizontal").pack(side="bottom", fill="x")
-    status_var = tk.StringVar(value=tr("Idle"))
-    ttk.Label(status, textvariable=status_var, anchor="w").pack(side="left", fill="x",
-                                                                expand=True)
-    ttk.Label(status, text=f"v{APP_VERSION}", style="Hint.TLabel").pack(side="right")
-    help_btn = ttk.Button(status, text=tr("Help"),
-                          command=lambda: show_help_index(root))
-    help_btn.pack(side="right", padx=(0, 8))
-    add_tooltip(help_btn, tr("Help for every tab"))
-    queue_btn = ttk.Button(status, text=tr("Queue..."),
-                           command=lambda: QueueDialog.open_(root, _stop_all_jobs))
-    queue_btn.pack(side="right", padx=(0, 6))
-    add_tooltip(queue_btn, tr("Jobs waiting to run one after another - remove, reorder, "
-                              "pause/resume, Stop all"))
-
-    # main tabs grouped by workflow: Templates, Cut / Edit, Audio
+    # main pages grouped by workflow: Templates, Cut / Edit, Audio
     # (Theme Audio, Audio Gain), Inspect (Dual Player, Compare, Check), Log,
     # Info (Info / Settings, Recommended). The tab objects and their attribute
-    # names are the same as before the grouping - only their parent changed.
-    nb = ttk.Notebook(root)
+    # names are the same as before - only their parent changed: a page is
+    # shown by the sidebar (packed into page_host), a group's sub-tabs are a
+    # notebook drawn as a flat tab bar with an accent underline.
     _main_pages = {}          # settings key -> main page widget
     _sub_books = {}           # settings key -> nested notebook
+    _holders = []
 
     def scrolled(factory, title, book=None):
         """Build a tab inside a ScrollFrame so it scrolls when the window is
         smaller than the tab's content. The factory gets (parent, bottom):
         `bottom` is a non-scrolling strip pinned to the window bottom (used
         for progress bars that must stay visible). book = the notebook to add
-        it to (default: the main one). Returns the tab instance."""
-        book = book or nb
-        holder = ScrollFrame(book)
+        it to (default: a main page of its own). Returns the tab instance."""
+        holder = ScrollFrame(book or page_host)
         tab = factory(holder.interior, holder.bottom)
         tab.pack(fill="both", expand=True)
-        book.add(holder, text=_tab_text(title))
+        if book is not None:
+            book.add(holder, text=_tab_text(title))
+        _holders.append(holder)
         return tab
 
     def group(key, title):
-        """A main tab holding a nested notebook (the group's sub-tabs)."""
-        sub = ttk.Notebook(nb)
-        nb.add(sub, text=_tab_text(title))
+        """A main page holding a nested notebook (the group's sub-tabs)."""
+        sub = ttk.Notebook(page_host)
         _main_pages[key] = sub
         _sub_books[key] = sub
         return sub
@@ -324,7 +347,7 @@ def main():
         return f"  {tr(title)}  "
 
     def _last_page(key):
-        _main_pages[key] = nb.tabs()[-1]
+        _main_pages[key] = _holders[-1]
 
     template_tab = scrolled(lambda m, b: TemplateTab(m, saved=saved, bottom=b),
                             N_("Templates"))
@@ -350,10 +373,78 @@ def main():
     info_nb = group("info", N_("Info"))
     info_nb.add(InfoTab(info_nb), text=_tab_text(N_("Info / Settings")))   # scrolls itself
     info_nb.add(RecommendedTab(info_nb), text=_tab_text(N_("Recommended")))
-    nb.pack(fill="both", expand=True)
+
+    # ---- sidebar navigation ----
+    _cur = {"page": None}
+    _page_info = {key: (icon, title, desc) for key, icon, title, desc in _PAGES}
+
+    def show_page(key):
+        """Show main page `key` (hide the others, so their widgets don't
+        re-layout on every resize and the players' tab-wide shortcuts only
+        act on the visible page)."""
+        page = _main_pages.get(key)
+        if page is None:
+            return
+        page_view.show(page)
+        _cur["page"] = key
+        _icon, title, desc = _page_info[key]
+        title_var.set(tr(title))
+        desc_var.set(tr(desc))
+        sidebar.select(key)
+
+    def _toggle_sidebar(collapsed):
+        _sb_state["pref"] = collapsed
+
+    sidebar = Sidebar(shell, on_select=show_page, on_toggle=_toggle_sidebar,
+                      title=APP_NAME)
+    for key, icon, title, _desc in _PAGES:
+        sidebar.add_page(key, icon, tr(title))
+    sidebar.add_action("theme", "sun", tr("Light theme"), themes.toggle_dark)
+    sidebar.add_action("cleanup", "broom", tr("Clean up folders..."),
+                       lambda: CleanupDialog(root, is_busy=_any_busy),
+                       tip=tr("Empty the template/videos/output/temp folders - contents are "
+                              "moved to Data\\temp\\trash, not deleted, so they can be "
+                              "recovered"))
+    sidebar.add_action("settings", "settings", tr("Settings..."),
+                       lambda: SettingsDialog.open_(root, persist, show_update,
+                                                    restart=_restart),
+                       tip=tr("Language, theme, notifications, update check and log "
+                              "retention"))
+    sidebar.add_action("help", "help", tr("Help"), lambda: show_help_index(root),
+                       tip=tr("Help for every tab"))
+    sidebar.pack(side="left", fill="y")
+    content.pack(side="left", fill="both", expand=True)
+
+    def _theme_item(_name=None, pal=None):
+        dark = (pal or themes.current()).get("dark")
+        sidebar.set_item("theme", icon="sun" if dark else "moon",
+                         label=tr("Light theme") if dark else tr("Dark theme"))
+    _theme_item()
+    themes.subscribe(_theme_item)
+
+    # collapsed state: the user's choice (☰), remembered
+    _sb_state = {"pref": bool(saved.get("ui_sidebar_collapsed", False))}
+    sidebar.set_collapsed(_sb_state["pref"], notify=False)
+    # every page is laid out at least at the page area of the default window
+    # (expanded sidebar, header, status bar) - and larger if its content
+    # needs it; smaller windows scroll
+    def _design():
+        """The page area the default window (WINDOW_SIZE, expanded sidebar)
+        would have, derived from the current window and view sizes."""
+        dw, dh = (int(v) * themes.scale() for v in WINDOW_SIZE.lower().split("x"))
+        side = sidebar.winfo_width() - sidebar.expanded_width()
+        vw = page_view.winfo_width() + int(dw) - root.winfo_width() + side
+        vh = page_view.winfo_height() + int(dh) - root.winfo_height()
+        # (minus one scrollbar width, so a tall page scrolls only vertically)
+        return (max(vw - 2 * px(12) - px(12), px(600)), max(vh - 2 * px(4), px(380)))
+    page_view.design_fn = _design
+
+    # Ctrl+1..6 jump to the pages
+    for n, (key, *_rest) in enumerate(_PAGES, 1):
+        root.bind(f"<Control-Key-{n}>", lambda e, k=key: (show_page(k), "break")[1])
 
     def _restore_tabs():
-        """Re-select last session's main tab and each group's sub-tab."""
+        """Re-select last session's main page and each group's sub-tab."""
         subs = saved.get("ui_sub_tabs")
         if isinstance(subs, dict):
             for key, book in _sub_books.items():
@@ -363,24 +454,19 @@ def main():
                         book.select(i)
                 except (TypeError, ValueError, tk.TclError):
                     pass
-        page = _main_pages.get(saved.get("ui_main_tab"))
-        if page is not None:
-            try:
-                nb.select(page)
-            except tk.TclError:
-                pass
+        key = saved.get("ui_main_tab")
+        show_page(key if key in _main_pages else "templates")
 
     def _tabs_snapshot():
         d = {}
         try:
-            cur = nb.select()
-            for key, page in _main_pages.items():
-                if str(page) == cur:
-                    d["ui_main_tab"] = key
+            if _cur["page"]:
+                d["ui_main_tab"] = _cur["page"]
             d["ui_sub_tabs"] = {key: book.index("current")
                                 for key, book in _sub_books.items()}
         except tk.TclError:
             pass
+        d["ui_sidebar_collapsed"] = bool(_sb_state["pref"])
         return d
 
     _restore_tabs()
@@ -479,7 +565,22 @@ def main():
                 txt += "  (" + (tr("{n} more queued, PAUSED", n=nq) if jobs.is_paused()
                                 else tr("{n} more queued", n=nq)) + ")"
             status_var.set(txt)
-            queue_btn.configure(text=tr("Queue ({n})...", n=nq) if nq else tr("Queue..."))
+            busy = bool(names)
+            if busy != _status_ui["busy"]:
+                _status_ui["busy"] = busy
+                if busy:
+                    status_prog.pack(side="right", padx=themes.pad(10, 10), after=queue_btn)
+                    status_prog.start(18)
+                else:
+                    status_prog.stop()
+                    status_prog.pack_forget()
+            if nq != _status_ui["n"]:
+                _status_ui["n"] = nq
+                if nq:
+                    badge.configure(text=str(nq))
+                    badge.pack(side="right", padx=themes.pad(0, 2), before=queue_btn)
+                else:
+                    badge.pack_forget()
             jobs.pump()      # start the next queued job once legacy tabs are idle
         except Exception:
             pass
@@ -497,29 +598,18 @@ def main():
     jobs.subscribe(_on_job_event)
     root.after(500, _update_status)
 
-    # ---- update banner (shown only when a newer release exists) ----
-    _banner = {"w": None}
+    # ---- update info bar (shown only when a newer release exists) ----
+    _banner_w = {"w": None}
 
     def show_update(ver, url):
-        if _banner["w"] is not None:
+        if _banner_w["w"] is not None:
             try:
-                _banner["w"].destroy()
+                _banner_w["w"].destroy()
             except tk.TclError:
                 pass
-        bar = tk.Frame(root)
-        _banner_label(bar, "  \u2b06  " + tr("Version {new} is available (you have {old}).",
-                                              new=ver, old=APP_VERSION),
-                      "info").pack(side="left")
-        link = _banner_label(bar, tr("Open download page"), "info", cursor="hand2",
-                             font=("Segoe UI", 9, "underline"), padx=0, pady=0)
-        link.pack(side="left", padx=6)
-        link.bind("<Button-1>", lambda e: _open_url(url))
-        close = _banner_label(bar, "\u2715", "info", cursor="hand2", pady=0)
-        close.pack(side="right")
-        themes.on_palette(bar, lambda p: bar.configure(bg=p["banner_info_bg"]))
-        close.bind("<Button-1>", lambda e: bar.destroy())
-        bar.pack(fill="x", before=top)
-        _banner["w"] = bar
+        _banner_w["w"] = _banner(
+            tr("Version {new} is available (you have {old}).", new=ver, old=APP_VERSION),
+            "info", link_text=tr("Open download page"), on_link=lambda: _open_url(url))
 
     def persist():
         d = prefs_snapshot()                # app-wide prefs (notify / update / logs)
@@ -587,5 +677,13 @@ def main():
         on_close()
         return True
 
+    # handles for scripted UI checks (tools / tests drive the window with them)
+    root._mp_app = dict(show_page=show_page, sidebar=sidebar, pages=_main_pages,
+                        sub_books=_sub_books, persist=persist, restart=_restart,
+                        show_update=show_update, stop_all=_stop_all_jobs, is_busy=_any_busy,
+                        page_view=page_view,
+                        tabs=dict(templates=template_tab, cut=remover_tab, theme=theme_tab,
+                                  gain=gain_tab, dual=dual_tab, compare=compare_tab,
+                                  check=check_tab))
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()

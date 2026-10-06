@@ -11,11 +11,12 @@ from ..engine.formatting import fmt_time, format_seconds
 from ..engine.probe import probe_duration
 from ..i18n import ntr, tr
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (TimeEntry, add_tooltip, auto_wrap, bind_status_colors,
+from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, bind_status_colors,
                           enable_file_drop_deep, enable_paths_drop, help_button)
 from .common import _VIDEO_TYPES
 from .cut_common import _SEGS, _TO_END, _ZERO_FROM, _resolve_rng, tr_key
 from .. import jobs as jobreg
+from ..ui import icons
 
 
 class MultiCutMixin:
@@ -38,15 +39,14 @@ class MultiCutMixin:
     def _build_multi_tab(self, multi, saved):
         btns = ttk.Frame(multi)
         btns.pack(fill="x", padx=6, pady=(6, 0))
-        ttk.Button(btns, text=tr("Add files..."), command=self._multi_add).pack(side="left")
-        ttk.Button(btns, text=tr("Remove selected"), command=self._multi_remove).pack(
+        icons.decorate(ttk.Button(btns, text=tr("Add files..."), command=self._multi_add), "add").pack(side="left")
+        icons.decorate(ttk.Button(btns, text=tr("Remove selected"), command=self._multi_remove), "remove").pack(
             side="left", padx=6)
-        ttk.Button(btns, text=tr("Clear all"), command=self._multi_clear).pack(side="left")
-        info = ttk.Label(btns, text="ⓘ", style="Hint.TLabel", cursor="question_arrow")
-        info.pack(side="left", padx=(8, 0))
-        add_tooltip(info, tr("Cut the intro/credits (and pre/after) out of several files, each "
+        icons.decorate(ttk.Button(btns, text=tr("Clear all"), command=self._multi_clear), "trash").pack(side="left")
+        info_icon(btns, tr("Cut the intro/credits (and pre/after) out of several files, each "
                              "with its own times. Add files, click one to set its sections - or "
-                             "set them once and 'Apply to all'. Then Cut all."))
+                             "set them once and 'Apply to all'. Then Cut all.")).pack(
+            side="left", padx=(8, 0))
         self._multi_keep_pos_var = tk.BooleanVar(value=bool(saved.get("multi_keep_pos", True)))
         help_button(btns, "cut_multi").pack(side="right", padx=(8, 0))
         kpcb = ttk.Checkbutton(btns, text=tr("Keep player time when switching files"),
@@ -60,7 +60,8 @@ class MultiCutMixin:
         # detection that fills the list: template matching or the Plex-style scan
         drow = ttk.Frame(multi)
         drow.pack(fill="x", padx=6, pady=(4, 0))
-        self.multi_detect_mb = ttk.Menubutton(drow, text=tr("Auto-detect"))
+        self.multi_detect_mb = icons.decorate(
+            ttk.Menubutton(drow, text=tr("Auto-detect") + "  ▾"), "detect")
         dmenu = tk.Menu(self.multi_detect_mb, tearoff=False)
         dmenu.add_command(label=tr("Detect selected"), command=lambda: self._multi_detect(True))
         dmenu.add_command(label=tr("Detect all"), command=lambda: self._multi_detect(False))
@@ -71,8 +72,8 @@ class MultiCutMixin:
             "Auto-detect) in the selected files or all files of this list and fill their "
             "times; ⚠ = not found or only weak. Asks before overwriting times a file "
             "already has."))
-        self.multi_plex_btn = ttk.Button(drow, text=tr("Plex-style scan (no templates)"),
-                                         command=self._multi_plex_scan)
+        self.multi_plex_btn = icons.decorate(ttk.Button(drow, text=tr("Plex-style scan (no templates)"),
+                                         command=self._multi_plex_scan), "detect")
         self.multi_plex_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.multi_plex_btn, tr(
             "Find the intro and credits WITHOUT templates, like Plex: the opening that "
@@ -84,7 +85,7 @@ class MultiCutMixin:
         tvf = ttk.Frame(multi)
         tvf.pack(fill="x", padx=6, pady=(4, 0))
         cols = ("file",) + tuple(k for k, _ in self.MULTI_SEGS) + ("notes",)
-        self.multi_tree = ttk.Treeview(tvf, columns=cols, show="headings", height=6)
+        self.multi_tree = ttk.Treeview(tvf, columns=cols, show="headings", height=4)
         self.multi_tree.heading("file", text=tr("File"))
         self.multi_tree.column("file", width=300, anchor="w", stretch=True)
         for k, txt in self.MULTI_SEGS:
@@ -129,8 +130,8 @@ class MultiCutMixin:
         top.bind("<Down>", self._multi_nav_key(1), add="+")
         add_tooltip(self.multi_tree, tr("Up / Down arrow keys jump to the previous / next file."))
 
-        seg = ttk.LabelFrame(mright, text=" {} ".format(
-            tr("Cut sections for the selected file (from / to)")), padding=(8, 4))
+        seg = ttk.LabelFrame(mright, text=tr(
+            "Cut sections for the selected file (from / to)"))
         seg.pack(fill="x")
         self._multi_entries = {}
         # From and To on their own lines, so the rows fit beside the player even
@@ -177,7 +178,7 @@ class MultiCutMixin:
                                         seg=name))
                     add_tooltip(gb, tr("Jump the player to the {seg} END time typed in the box",
                                        seg=name))
-            pvb = ttk.Button(seg, text="▶", width=3, command=lambda k=key: self._multi_preview(k))
+            pvb = icons.decorate(ttk.Button(seg, text="", width=3, command=lambda k=key: self._multi_preview(k)), "play")
             pvb.grid(row=r, column=6, padx=(2, 0), pady=pad0)
             add_tooltip(pvb, tr("Play only the {seg} section (From to To) in the player",
                                 seg=name))
@@ -188,12 +189,12 @@ class MultiCutMixin:
 
         arow = ttk.Frame(mright)
         arow.pack(fill="x", pady=(6, 0))
-        asb = ttk.Button(arow, text=tr("Apply to selected"), command=self._multi_apply_selected)
+        asb = icons.decorate(ttk.Button(arow, text=tr("Apply to selected"), command=self._multi_apply_selected), "check")
         asb.pack(side="left")
         add_tooltip(asb, tr("Copy the section times in the boxes to the file(s) you've "
                             "highlighted in the list. Ctrl-click or Shift-click to select "
                             "several."))
-        ab = ttk.Button(arow, text=tr("Apply to ALL files"), command=self._multi_apply_all)
+        ab = icons.decorate(ttk.Button(arow, text=tr("Apply to ALL files"), command=self._multi_apply_all), "check")
         ab.pack(side="left", padx=(6, 0))
         add_tooltip(ab, tr("Copy the section times currently in the boxes to EVERY file in the "
                            "list at once - handy when the intro/credits sit at the same spot in "
@@ -201,7 +202,7 @@ class MultiCutMixin:
 
         # subtitle-language picker for the Multi cut list (shares the same
         # keep-list as Cut / Edit → Auto-detect, but scans THESE files)
-        subf = ttk.LabelFrame(mright, text=f" {tr('Subtitles')} ", padding=(8, 4))
+        subf = ttk.LabelFrame(mright, text=tr("Subtitles"))
         subf.pack(fill="x", pady=(6, 0))
         msfcb = ttk.Checkbutton(subf, text=tr("Keep only chosen subtitle languages"),
                                 variable=self.subs_filter_var, command=self._upd_subs_label)
@@ -211,33 +212,34 @@ class MultiCutMixin:
                               "→ Auto-detect."))
         msubrow = ttk.Frame(subf)
         msubrow.pack(fill="x", pady=1)
-        ttk.Button(msubrow, text=tr("Choose languages..."), command=self._multi_choose_subs).pack(side="left", padx=(0, 6))
+        icons.decorate(ttk.Button(msubrow, text=tr("Choose languages..."), command=self._multi_choose_subs), "filter").pack(side="left", padx=(0, 6))
         self.multi_subs_lbl = tk.StringVar()
         ttk.Label(msubrow, textvariable=self.multi_subs_lbl, style="Hint.TLabel").pack(side="left")
 
         crow = ttk.Frame(mright)
         crow.pack(fill="x", pady=(8, 0))
-        self.multi_cut_btn = ttk.Button(crow, text=tr("Cut all files"),
-                                        command=self._multi_cut_all)
+        self.multi_cut_btn = icons.decorate(ttk.Button(crow, style="Accent.TButton", text=tr("Cut all files"),
+                                        command=self._multi_cut_all), "cut")
         self.multi_cut_btn.pack(side="left", fill="x", expand=True)
-        self.multi_queue_btn = ttk.Button(crow, text=tr("Add to queue"),
-                                          command=self._enqueue_multi)
+        self.multi_queue_btn = icons.decorate(ttk.Button(crow, text=tr("Add to queue"),
+                                          command=self._enqueue_multi), "queue")
         self.multi_queue_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.multi_queue_btn, tr(
             "Queue cutting THIS list with its current times and "
             "the current encoding settings - it starts when nothing else is running. "
             "See Queue... in the status bar."))
-        auto_wrap(ttk.Label(mright, text=tr(
+        encrow = ttk.Frame(mright)
+        encrow.pack(fill="x", pady=(6, 6))
+        info_icon(encrow, tr(
             "Each file has its filled sections removed and the rest kept, using the "
             "Encoding settings from Cut / Edit → Auto-detect and the subtitle choice above. "
             "Files with no sections set are skipped. Empty Pre-intro/Intro From = start "
             "of file; empty Credits/After-credits To = end of file ('?' = incomplete, "
             "skipped)."),
-            style="Hint.TLabel", wraplength=420, justify="left")).pack(
-                anchor="w", fill="x", pady=(2, 2))
-        auto_wrap(ttk.Label(mright, textvariable=self.enc_summary, style="Hint.TLabel",
-                            wraplength=420, justify="left")).pack(anchor="w", fill="x",
-                                                                  pady=(0, 6))
+        ).pack(side="left", anchor="n")
+        auto_wrap(ttk.Label(encrow, textvariable=self.enc_summary, style="Hint.TLabel",
+                            wraplength=420, justify="left")).pack(side="left", fill="x",
+                                                                  expand=True)
         self._upd_subs_label()      # fill in the new label now that it exists
         self._multi_restore(saved.get("multi_files"))
 

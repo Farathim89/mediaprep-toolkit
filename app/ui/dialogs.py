@@ -10,6 +10,7 @@ from . import themes
 from .tkthread import _call_tk
 from .widgets import KeyedCombobox, add_tooltip
 from .. import i18n, jobs, notify, updater
+from . import icons
 
 
 def _fmt_elapsed(sec):
@@ -61,13 +62,13 @@ class QueueDialog(tk.Toplevel):
         ttk.Button(side, text="▲ " + tr("Up"), command=lambda: self._move(-1)).pack(fill="x")
         ttk.Button(side, text="▼ " + tr("Down"),
                    command=lambda: self._move(1)).pack(fill="x", pady=2)
-        ttk.Button(side, text=tr("Remove"), command=self._remove).pack(fill="x")
-        ttk.Button(side, text=tr("Clear"), command=jobs.clear).pack(fill="x", pady=2)
+        icons.decorate(ttk.Button(side, text=tr("Remove"), command=self._remove), "remove").pack(fill="x")
+        icons.decorate(ttk.Button(side, text=tr("Clear"), command=jobs.clear), "trash").pack(fill="x", pady=2)
         bar = ttk.Frame(f)
         bar.pack(fill="x", pady=(8, 0))
-        self.pause_btn = ttk.Button(bar, text=tr("Pause queue"), command=self._toggle_pause)
+        self.pause_btn = icons.decorate(ttk.Button(bar, text=tr("Pause queue"), command=self._toggle_pause), "pause")
         self.pause_btn.pack(side="left")
-        stop = ttk.Button(bar, text=tr("Stop all"), command=self._stop)
+        stop = icons.decorate(ttk.Button(bar, text=tr("Stop all"), command=self._stop), "stop")
         stop.pack(side="left", padx=6)
         add_tooltip(stop, tr("Stop every running job and pause the queue"))
         ttk.Button(bar, text=tr("Close"), command=self.destroy).pack(side="right")
@@ -110,6 +111,7 @@ class QueueDialog(tk.Toplevel):
             self.run_lbl.configure(text=txt)
             self.pause_btn.configure(
                 text=tr("Resume queue") if jobs.is_paused() else tr("Pause queue"))
+            icons.set_icon(self.pause_btn, "play" if jobs.is_paused() else "pause")
             if list_too:
                 sel = self.lb.curselection()
                 self.lb.delete(0, "end")
@@ -176,7 +178,7 @@ class SettingsDialog(tk.Toplevel):
         f = ttk.Frame(self, padding=12)
         f.pack(fill="both", expand=True)
 
-        th = ttk.LabelFrame(f, text=f" {tr('Appearance')} ", padding=8)
+        th = ttk.LabelFrame(f, text=tr("Appearance"))
         th.pack(fill="x")
         th.columnconfigure(1, weight=1)
         ttk.Label(th, text=tr("Language:")).grid(row=0, column=0, sticky="w")
@@ -199,7 +201,7 @@ class SettingsDialog(tk.Toplevel):
                              "'Follow Windows' switches Light / Dark with the Windows "
                              "app mode."))
 
-        n = ttk.LabelFrame(f, text=f" {tr('Notifications when a job finishes')} ", padding=8)
+        n = ttk.LabelFrame(f, text=tr("Notifications when a job finishes"))
         n.pack(fill="x", pady=(10, 0))
         self.v_on = tk.BooleanVar(value=PREFS["notify_on"])
         self.v_toast = tk.BooleanVar(value=PREFS["notify_toast"])
@@ -220,21 +222,21 @@ class SettingsDialog(tk.Toplevel):
         ttk.Spinbox(n, from_=0, to=600, increment=1, width=6,
                     textvariable=self.v_min).grid(row=3, column=1, padx=4, pady=(4, 0))
         ttk.Label(n, text=tr("minutes")).grid(row=3, column=2, sticky="w", pady=(4, 0))
-        ttk.Button(n, text=tr("Test notification"), command=notify.test_notification).grid(
+        icons.decorate(ttk.Button(n, text=tr("Test notification"), command=notify.test_notification), "info").grid(
             row=4, column=0, sticky="w", padx=(18, 0), pady=(6, 0))
 
-        u = ttk.LabelFrame(f, text=f" {tr('Updates')} ", padding=8)
+        u = ttk.LabelFrame(f, text=tr("Updates"))
         u.pack(fill="x", pady=(10, 0))
         self.v_upd = tk.BooleanVar(value=PREFS["update_check"])
         ttk.Checkbutton(u, text=tr("Check for a new version at startup (once a day)"),
                         variable=self.v_upd).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Button(u, text=tr("Check now"), command=self._check_now).grid(
+        icons.decorate(ttk.Button(u, text=tr("Check now"), command=self._check_now), "refresh").grid(
             row=1, column=0, sticky="w", pady=(6, 0))
         self.upd_lbl = ttk.Label(u, text=tr("Installed: v{version}", version=APP_VERSION),
                                  style="Hint.TLabel", wraplength=wrap - 120)
         self.upd_lbl.grid(row=1, column=1, sticky="w", padx=8, pady=(6, 0))
 
-        lg = ttk.LabelFrame(f, text=f" {tr('Logs')} ", padding=8)
+        lg = ttk.LabelFrame(f, text=tr("Logs"))
         lg.pack(fill="x", pady=(10, 0))
         self.v_days = tk.StringVar(value=str(PREFS["log_keep_days"]))
         ttk.Label(lg, text=tr("Move session logs older than")).grid(row=0, column=0,
@@ -249,7 +251,7 @@ class SettingsDialog(tk.Toplevel):
         bar = ttk.Frame(f)
         bar.pack(fill="x", pady=(12, 0))
         ttk.Button(bar, text=tr("Cancel"), command=self.destroy).pack(side="right")
-        ttk.Button(bar, text=tr("OK"), command=self._ok).pack(side="right", padx=6)
+        ttk.Button(bar, style="Accent.TButton", text=tr("OK"), command=self._ok).pack(side="right", padx=6)
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Destroy>", self._gone, add="+")
         themes.recolor(self)

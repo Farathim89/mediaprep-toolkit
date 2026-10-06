@@ -1,6 +1,9 @@
-"""Snap a cut point to the nearest natural boundary - a silence edge (ffmpeg
-silencedetect on the audio) or a black-frame boundary (blackdetect on the
-video) - within a small window around it. UI-free so any tab can use it:
+"""Snap a cut point to the nearest natural boundary - a hard picture cut (scene
+change), a black-frame boundary (blackdetect) or a silence edge
+(silencedetect) - within a small window around it. A picture cut wins when
+one is in range: segments (intros, credits) start and end on a cut, while
+the audio often has a short silent gap AFTER the cut that would put a
+silence-based boundary a few hundred ms late. UI-free so any tab can use it:
 
     new_t, reason = find_snap(path, 90.0, edge="start")
     # -> (90.112, "end of silence")  or  (None, "nothing to snap to within ±1 s")
@@ -24,6 +27,8 @@ _WINDOW_EDGE = 0.02  # edges touching the analysed window's border aren't real
 _NUM = r"(-?\d+(?:\.\d+)?)"
 _RE_SIL_START = re.compile(r"silence_start:\s*" + _NUM)
 _RE_SIL_END = re.compile(r"silence_end:\s*" + _NUM)
+_RE_PTS = re.compile(r"pts_time:\s*" + _NUM)
+SCENE_TH = 0.22      # ffmpeg scene score for a hard cut (bright-to-bright cuts score ~0.28)
 _RE_BLACK = re.compile(r"black_start:\s*" + _NUM + r"\s+black_end:\s*" + _NUM)
 
 
@@ -70,11 +75,25 @@ def _black_edges(path, a, length, timeout):
     return out
 
 
+def _cut_edges(path, a, length, timeout):
+    """Times of hard picture cuts (first frame of the new shot) inside
+    [a, a+length]."""
+    cmd = ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{a:.3f}", "-t", f"{length:.3f}",
+           "-i", path, "-map", "0:v:0?", "-an", "-sn", "-dn",
+           "-vf", f"scale=160:-2,select='gt(scene,{SCENE_TH})',showinfo",
+           "-f", "null", "-"]
+    err = _run(cmd, timeout)
+    if err is None:
+        return None
+    return [a + float(m.group(1)) for m in _RE_PTS.finditer(err)]
+
+
 def find_snap(path, t, kind=None, radius=1.0, audio_track=0, edge="start",
               timeout=60):
     """Nearest silence edge / black boundary to `t` within ±radius seconds.
 
-    kind: 'silence', 'black' or None/'both' (which detectors to run).
+    kind: 'silence', 'black', 'cut' or None/'both' (None/'both' = all three;
+    a picture cut in range always wins).
     edge: 'start' (segment start: prefer where silence/black ends), 'end'
     (segment end: prefer where it starts) or None (nearest of any).
     Returns (new_t, reason) - e.g. (90.112, 'end of silence + black') - or
@@ -88,8 +107,16 @@ def find_snap(path, t, kind=None, radius=1.0, audio_track=0, edge="start",
     length = (t + radius) - a
     use_sil = kind in (None, "both", "silence")
     use_black = kind in (None, "both", "black")
+    use_cut = kind in (None, "both", "cut")
 
     edges, ran = [], False
+    lo, hi = a, a + length
+    cuts = []
+    if use_cut:
+        c = _cut_edges(path, a, length, timeout)
+        if c is not None:
+            ran = True
+            cuts = c
     if use_sil:
         e = _silence_edges(path, a, length, audio_track, timeout)
         if e is not None:
@@ -105,14 +132,25 @@ def find_snap(path, t, kind=None, radius=1.0, audio_track=0, edge="start",
 
     # an edge on the window's own border is just where the analysis started/
     # stopped mid-silence, not a real boundary (except the true file start)
-    lo, hi = a, a + length
     edges = [(x, side, src) for x, side, src in edges
              if (x > lo + _WINDOW_EDGE or a == 0.0) and x < hi - _WINDOW_EDGE
              and abs(x - t) <= radius + 1e-6]
+    cuts = [x for x in cuts if lo + _WINDOW_EDGE < x < hi - _WINDOW_EDGE
+            and abs(x - t) <= radius + 1e-6]
+    want = {"start": "end", "end": "start"}.get(edge)
+    # picture boundaries first: hard cuts + black edges of the wanted side
+    pic = [(x, "cut") for x in cuts]
+    pic += [(x, "black") for x, sd, src in edges if src == "black" and (not want or sd == want)]
+    if pic:
+        x, src = min(pic, key=lambda e: abs(e[0] - t))
+        if src == "cut":
+            reason = "picture cut"
+        else:
+            reason = f"{want} of black" if want else "black edge"
+        return round(max(0.0, x), 3), reason
     if not edges:
         return None, f"nothing to snap to within ±{radius:g} s"
 
-    want = {"start": "end", "end": "start"}.get(edge)
     pool = [e for e in edges if e[1] == want] if want else edges
     fallback = False
     if not pool:

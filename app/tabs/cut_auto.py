@@ -9,10 +9,12 @@ from ..config import (AFTERCREDITS_DIR, AUDIO_LANG_CHOICES, BIT_DEPTHS, CODECS,
                       OUTPUT_DIR, PREINTRO_DIR, VALID_PRESETS, VIDEO_DIR)
 from ..engine.cut import run_batch
 from ..i18n import N_, ntr, tr
-from ..ui.widgets import KeyedCombobox, add_tooltip, auto_wrap, enable_file_drop, help_button
+from ..ui.widgets import (KeyedCombobox, add_tooltip, enable_file_drop, help_button,
+                          info_icon)
 from .common import _list_media, _same_dir
 from .cut_common import _ask_choice, _detect_notes, _is_plex, mode_combobox, tr_key
 from .. import jobs as jobreg
+from ..ui import icons
 
 
 class AutoCutMixin:
@@ -31,12 +33,10 @@ class AutoCutMixin:
         ahead = ttk.Frame(auto)
         ahead.pack(fill="x", padx=6, pady=(6, 0))
         help_button(ahead, "cut_auto").pack(side="right")
-        auto_wrap(ttk.Label(ahead, text=tr("Match your templates in every video of the Videos "
-                                           "folder and cut them out - or review the detections "
-                                           "first."),
-                            style="Hint.TLabel", justify="left")).pack(side="left", fill="x",
-                                                                     expand=True)
-        folders = ttk.LabelFrame(auto, text=f" {tr('Folders')} ", padding=(8, 4))
+        info_icon(ahead, tr("Match your templates in every video of the Videos "
+                            "folder and cut them out - or review the detections "
+                            "first.")).pack(side="right")
+        folders = ttk.LabelFrame(auto, text=tr("Folders"))
         folders.pack(fill="x", padx=6, pady=(4, 0))
         folders.columnconfigure(1, weight=1)      # left group entry stretches
         folders.columnconfigure(4, weight=1)      # right group entry stretches
@@ -59,11 +59,11 @@ class AutoCutMixin:
             fe = ttk.Entry(folders, textvariable=var)
             fe.grid(row=r, column=col + 1, sticky="we", padx=4, pady=2)
             enable_file_drop(fe, lambda p, v=var: self._drop_folder(v, p))
-            ttk.Button(folders, text="...", width=3,
-                       command=lambda v=var: self._pick_dir(v)).grid(row=r, column=col + 2, padx=2)
+            icons.decorate(ttk.Button(folders, text="...", width=3,
+                       command=lambda v=var: self._pick_dir(v)), "folder").grid(row=r, column=col + 2, padx=2)
 
-        enc = ttk.LabelFrame(auto, text=f" {tr('Encoding')} ", padding=(8, 4))
-        enc.pack(fill="x", padx=6, pady=(8, 0))
+        enc = ttk.LabelFrame(auto, text=tr("Encoding"))
+        enc.pack(fill="x", padx=6, pady=(14, 0))
         enc.columnconfigure(1, weight=1)
         # LEFT column = codec / bit depth; RIGHT column = quality / preset
         eleft = ttk.Frame(enc)
@@ -152,8 +152,8 @@ class AutoCutMixin:
         self.codec_var.trace_add("write", _upd_preset_hint)
         _upd_preset_hint()
 
-        det = ttk.LabelFrame(auto, text=f" {tr('Detection & mode')} ", padding=(8, 4))
-        det.pack(fill="x", padx=6, pady=(8, 0))
+        det = ttk.LabelFrame(auto, text=tr("Detection & mode"))
+        det.pack(fill="x", padx=6, pady=(14, 0))
         det.columnconfigure(1, weight=1)
         # LEFT column = detection settings; RIGHT column = the run options
         left = ttk.Frame(det)
@@ -306,21 +306,21 @@ class AutoCutMixin:
                              "often English or a forced track - keep it if unsure."))
         subrow = ttk.Frame(right)
         subrow.grid(row=7, column=0, sticky="w", pady=1)
-        ttk.Button(subrow, text=tr("Choose languages..."), command=self._choose_subs).pack(side="left", padx=(0, 6))
+        icons.decorate(ttk.Button(subrow, text=tr("Choose languages..."), command=self._choose_subs), "filter").pack(side="left", padx=(0, 6))
         self.subs_lbl = tk.StringVar()
         ttk.Label(subrow, textvariable=self.subs_lbl, style="Hint.TLabel").pack(side="left")
         self._upd_subs_label()
 
         runrow = ttk.Frame(auto)
         runrow.pack(fill="x", padx=6, pady=(10, 6))
-        self.start_btn = ttk.Button(runrow, text=tr("Start batch (auto-detect)"),
-                                    command=self.start)
+        self.start_btn = icons.decorate(ttk.Button(runrow, style="Accent.TButton", text=tr("Start batch (auto-detect)"),
+                                    command=self.start), "run")
         self.start_btn.pack(side="left", fill="x", expand=True)
         add_tooltip(self.start_btn, tr("Auto-detect intro, credits, and (if you have templates) "
                                        "pre-intro and after-credits in every video, then cut "
                                        "them out"))
-        self.review_btn = ttk.Button(runrow, text=tr("Review first (detect only)"),
-                                     command=self.review_first)
+        self.review_btn = icons.decorate(ttk.Button(runrow, text=tr("Review first (detect only)"),
+                                     command=self.review_first), "detect")
         self.review_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.review_btn, tr(
             "Detect only - nothing is cut. Every video in the Videos "
@@ -328,7 +328,7 @@ class AutoCutMixin:
             "list with its detected times; files where a segment wasn't found or only "
             "matched weakly get a ⚠ and a note. Fix those rows there (player, Set, "
             "Snap, ▾ candidates), then 'Cut all files'."))
-        self.queue_btn = ttk.Button(runrow, text=tr("Add to queue"), command=self._enqueue_batch)
+        self.queue_btn = icons.decorate(ttk.Button(runrow, text=tr("Add to queue"), command=self._enqueue_batch), "queue")
         self.queue_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.queue_btn, tr(
             "Queue this batch with the CURRENT folders and settings - "

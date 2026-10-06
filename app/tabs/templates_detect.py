@@ -7,13 +7,14 @@ from tkinter import filedialog, messagebox, ttk
 from ..config import AUDIO_LANG_CHOICES, VIDEO_DIR
 from ..engine.formatting import fmt_time
 from ..engine.recurring import detect_recurring, representative_member
-from ..ui.widgets import (KeyedCombobox, add_tooltip, auto_wrap, bind_status_colors,
+from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, bind_status_colors,
                           enable_file_drop, help_button)
 from .audition import _AuditionWindow
 from .common import _KIND_NAMES, _list_media, _template_stem
 from .cut_common import mode_combobox
 from .. import jobs as jobreg
 from ..i18n import tr, N_
+from ..ui import icons
 
 # tr() for a variable key whose literals are marked with N_() / tr() elsewhere
 # (a plain tr(var) works the same, but the extractor flags it)
@@ -55,11 +56,11 @@ class TemplateDetectMixin:
         dent = ttk.Entry(fr, textvariable=self.detect_dir)
         dent.grid(row=0, column=1, sticky="we")
         dent.bind("<Return>", lambda e: self.start_detect())
-        ttk.Button(fr, text=tr("Browse..."), command=self._browse_detect).grid(row=0, column=2, padx=4)
+        icons.decorate(ttk.Button(fr, text=tr("Browse..."), command=self._browse_detect), "folder").grid(row=0, column=2, padx=4)
         help_button(fr, "template_detect").grid(row=0, column=3, padx=(8, 0), sticky="e")
         enable_file_drop(dent, self._drop_detect)
 
-        opt = ttk.LabelFrame(detect, text=" " + tr("What to detect") + " ", padding=(8, 4))
+        opt = ttk.LabelFrame(detect, text=tr("What to detect"))
         opt.grid(row=1, column=0, sticky="we", pady=(4, 0))
         self.det_intro = tk.BooleanVar(value=bool(saved.get("det_intro", True)))
         self.det_credits = tk.BooleanVar(value=bool(saved.get("det_credits", True)))
@@ -114,8 +115,8 @@ class TemplateDetectMixin:
                            "you already cut are recognized quickly and skipped by the slow "
                            "clustering). Set a number to fingerprint only that many episodes, "
                            "picked evenly across the season, when you need a faster scan."))
-        ttk.Label(opt, text=tr("0 = all (recommended)"),
-                  style="Hint.TLabel").grid(row=1, column=6, columnspan=2, sticky="w", pady=(4, 0))
+        info_icon(opt, tr("0 = all (recommended)")).grid(row=1, column=6, sticky="w",
+                                                         pady=(4, 0))
         ttk.Label(opt, text=tr("Sensitivity:")).grid(row=2, column=0, sticky="e", padx=(0, 4), pady=(4, 0))
         self.det_sens = tk.StringVar(value=str(saved.get("det_sens", "Medium")))
         sens_cb = KeyedCombobox(opt, textvariable=self.det_sens, state="readonly", width=18,
@@ -124,8 +125,8 @@ class TemplateDetectMixin:
         add_tooltip(sens_cb, tr("How closely the audio must match across episodes to count as "
                                 "the same segment. Strict = fewer false hits; loose = finds more, "
                                 "may grab too much."))
-        ttk.Label(opt, text=tr("lower if an intro isn't found; higher if it grabs too much"),
-                  style="Hint.TLabel").grid(row=2, column=3, columnspan=5, sticky="w", pady=(4, 0))
+        info_icon(opt, tr("lower if an intro isn't found; higher if it grabs too much")).grid(
+            row=2, column=3, sticky="w", pady=(4, 0))
         ttk.Label(opt, text=tr("Episode length:")).grid(row=3, column=0, sticky="e", padx=(0, 4), pady=(4, 0))
         self.det_eplen = tk.StringVar(value=str(saved.get("det_eplen", "Standard (20-40 min)")))
         cb = KeyedCombobox(opt, textvariable=self.det_eplen, state="readonly", width=22,
@@ -136,8 +137,8 @@ class TemplateDetectMixin:
         cb.bind("<<ComboboxSelected>>", self._apply_eplen_preset)
         add_tooltip(cb, tr("Picking a preset fills the search window and min lengths for that "
                            "episode length (you can still edit them afterwards)"))
-        ttk.Label(opt, text=tr("presets the search window & min length for you"),
-                  style="Hint.TLabel").grid(row=3, column=3, columnspan=5, sticky="w", pady=(4, 0))
+        info_icon(opt, tr("presets the search window & min length for you")).grid(
+            row=3, column=3, sticky="w", pady=(4, 0))
         ttk.Label(opt, text=tr("Detect on audio:")).grid(row=4, column=0, sticky="e", padx=(0, 4), pady=(4, 0))
         _dl_labels = list(AUDIO_LANG_CHOICES)
         _saved_dl = saved.get("det_lang")
@@ -166,14 +167,21 @@ class TemplateDetectMixin:
 
         rr = ttk.Frame(detect)
         rr.grid(row=2, column=0, sticky="we", pady=(8, 2))
-        self.detect_btn = ttk.Button(rr, text=tr("Detect intro / credits"), command=self.start_detect)
+        self.detect_btn = icons.decorate(ttk.Button(rr, style="Accent.TButton", text=tr("Detect intro / credits"), command=self.start_detect), "detect")
         self.detect_btn.pack(side="left", fill="x", expand=True)
         add_tooltip(self.detect_btn, tr("Fingerprint the episodes and find the intro/credits "
                                         "that recur across them - even if the show uses more "
                                         "than one opening"))
-        self.detect_stop_btn = ttk.Button(rr, text=tr("Stop"), command=self.stop_detect,
-                                           state="disabled", width=-8)
+        self.detect_stop_btn = icons.decorate(ttk.Button(rr, text=tr("Stop"), command=self.stop_detect,
+                                           state="disabled", width=-8), "stop")
         self.detect_stop_btn.pack(side="left", padx=(6, 0))
+        info_icon(rr, tr("Needs a folder of episodes from the same show (>=2). "
+                         "It finds the segment that repeats across them; a show "
+                         "with several openings shows one row per opening. "
+                         "Pre-intro is searched before each episode's detected "
+                         "intro, after-credits after its detected credits. "
+                         "Double-click a row to audition it in a few episodes; "
+                         "Fill times loads it for review.")).pack(side="left", padx=(6, 0))
         add_tooltip(self.detect_stop_btn, tr("Stop detecting (or auto-cutting). Results of a "
                                              "stopped detect are partial - review them, but "
                                              "Auto-cut stays off until a full run."))
@@ -194,7 +202,7 @@ class TemplateDetectMixin:
         tvf.rowconfigure(0, weight=1)
         tvf.columnconfigure(0, weight=1)
         cols = ("kind", "eps", "start", "end", "len", "example")
-        self.detect_tree = ttk.Treeview(tvf, columns=cols, show="headings", height=8)
+        self.detect_tree = ttk.Treeview(tvf, columns=cols, show="headings", height=5)
         for c, txt, w in [("kind", N_("Kind"), 90), ("eps", N_("Eps"), 45),
                           ("start", N_("Start"), 90), ("end", N_("End"), 90),
                           ("len", N_("Length"), 70), ("example", N_("Example episode"), 260)]:
@@ -212,32 +220,22 @@ class TemplateDetectMixin:
 
         ar = ttk.Frame(detect)
         ar.grid(row=6, column=0, sticky="we", pady=(6, 2))
-        b1 = ttk.Button(ar, text=tr("Fill times from selected (review)"),
-                        command=self._fill_from_selected)
+        b1 = icons.decorate(ttk.Button(ar, text=tr("Fill times from selected (review)"),
+                        command=self._fill_from_selected), "edit")
         b1.pack(side="left")
         add_tooltip(b1, tr("Load the example episode into the player and fill the intro/credits "
                            "From/To on the Cut template tab so you can review and nudge, then cut"))
-        b3 = ttk.Button(ar, text=tr("Audition"), command=self._audition_selected)
+        b3 = icons.decorate(ttk.Button(ar, text=tr("Audition"), command=self._audition_selected), "headphones")
         b3.pack(side="left", padx=(6, 0))
         add_tooltip(b3, tr("Listen to the selected row: plays its detected range in up to 3 of "
                            "its episodes one after another, in a small player window "
                            "(double-click a row does the same)"))
-        b2 = ttk.Button(ar, text=tr("Auto-cut all templates"), command=self._autocut_all)
+        b2 = icons.decorate(ttk.Button(ar, text=tr("Auto-cut all templates"), command=self._autocut_all), "cut")
         b2.pack(side="left", padx=(6, 0))
         add_tooltip(b2, tr("Cut a template clip for every detected intro/credits variant "
                            "straight into its input folder (one per row) - no manual step"))
         self.autocut_btn = b2
 
-        hint = ttk.Label(detect, text=tr("Needs a folder of episodes from the same show (>=2). "
-                                         "It finds the segment that repeats across them; a show "
-                                         "with several openings shows one row per opening. "
-                                         "Pre-intro is searched before each episode's detected "
-                                         "intro, after-credits after its detected credits. "
-                                         "Double-click a row to audition it in a few episodes; "
-                                         "Fill times loads it for review."),
-                         style="Hint.TLabel", wraplength=640, justify="left")
-        hint.grid(row=7, column=0, sticky="ew", pady=(4, 0))
-        auto_wrap(hint)
 
     def _apply_eplen_preset(self, event=None):
         """Fill the search window + min length from an episode-length preset.

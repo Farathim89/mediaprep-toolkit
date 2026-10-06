@@ -272,7 +272,7 @@ PREF_DEFAULTS = {
     "update_check": True,         # look for a newer release at startup
     "update_last_check": 0.0,     # epoch seconds of the last check
     "log_keep_days": 30,          # session logs older than this go to the trash
-    "language": "",               # UI language code ("" = Windows language), see i18n.py
+    "language": "en",             # UI language code ("auto" = Windows language), see i18n.py
 }
 PREFS = dict(PREF_DEFAULTS)
 

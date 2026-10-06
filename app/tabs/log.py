@@ -7,7 +7,8 @@ from tkinter import ttk, filedialog, messagebox
 from .. import applog
 from ..i18n import tr
 from ..config import LOGS_DIR
-from ..ui.widgets import trim_text_lines, help_button
+from ..ui.widgets import help_button, info_icon, trim_text_lines
+from ..ui import icons
 
 
 class LogTab(ttk.Frame):
@@ -19,16 +20,15 @@ class LogTab(ttk.Frame):
 
         bar = ttk.Frame(self)
         bar.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 4))
-        ttk.Button(bar, text=tr("Save log..."), command=self.save).pack(side="left")
-        ttk.Button(bar, text=tr("Clear"), command=self.clear).pack(side="left", padx=6)
-        ttk.Button(bar, text=tr("Open logs folder"), command=self.open_folder).pack(side="left")
+        icons.decorate(ttk.Button(bar, text=tr("Save log..."), command=self.save), "save").pack(side="left")
+        icons.decorate(ttk.Button(bar, text=tr("Clear"), command=self.clear), "trash").pack(side="left", padx=6)
+        icons.decorate(ttk.Button(bar, text=tr("Open logs folder"), command=self.open_folder), "folder").pack(side="left")
         help_button(bar, "log").pack(side="right")
-        ttk.Label(bar, text="  " + tr("(all activity is also auto-saved to the logs folder; "
-                                      "the view keeps the last {n:,} lines)",
-                                      n=applog.MAX_LINES),
-                  style="Hint.TLabel").pack(side="left", padx=(8, 0))
+        info_icon(bar, tr("(all activity is also auto-saved to the logs folder; "
+                          "the view keeps the last {n:,} lines)",
+                          n=applog.MAX_LINES)).pack(side="left", padx=(8, 0))
 
-        self.text = tk.Text(self, state="disabled", font=("Consolas", 9), wrap="none")
+        self.text = tk.Text(self, state="disabled", font="MPMono", wrap="none", padx=8, pady=6)
         self.text.grid(row=1, column=0, sticky="nsew")
         sb = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
         sb.grid(row=1, column=1, sticky="ns")

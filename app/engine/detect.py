@@ -265,8 +265,8 @@ def _load_template_folder(folder, label, log, stop_event, librosa, visual=False)
                 log(f"   [WARN] could not convert template {name}")
                 continue
             log(f"   [WARN] template {name} has no audio - matching its pictures only")
-            data.append({'name': name, 'y': None, 'y_match': None, 'sr': None,
-                         'lead': 0.0, 'duration': len(vh) / vh.fps, 'vh': vh})
+            data.append({'name': name, 'path': file, 'y': None, 'y_match': None,
+                         'sr': None, 'lead': 0.0, 'duration': len(vh) / vh.fps, 'vh': vh})
             continue
         # A silent/quiet lead-in has no fingerprint, so the matcher would
         # lock onto the first audible note and the cut would start late.
@@ -282,7 +282,7 @@ def _load_template_folder(folder, label, log, stop_event, librosa, visual=False)
                 y_match = y[cut:]
         except Exception:
             pass
-        data.append({'name': name, 'y': y, 'y_match': y_match, 'sr': sr,
+        data.append({'name': name, 'path': file, 'y': y, 'y_match': y_match, 'sr': sr,
                      'lead': lead, 'duration': len(y) / sr, 'vh': vh})
     return data
 
@@ -312,6 +312,12 @@ def _episode_tracks(video, cfg, stop_event, librosa):
     matches whichever language track it was cut from - an English template
     scores low against a Japanese default track) or only the cfg['match_lang']
     track if the file has it. Returns (tracks, sr)."""
+    tracks, sr, _idx = _episode_tracks_idx(video, cfg, stop_event, librosa)
+    return tracks, sr
+
+
+def _episode_tracks_idx(video, cfg, stop_event, librosa):
+    """_episode_tracks plus the audio stream index (0:a:N) of each track."""
     n_audio = max(1, len(probe_audio_streams(video)))
     match_lang = cfg.get("match_lang")
     if match_lang:
@@ -321,7 +327,7 @@ def _episode_tracks(video, cfg, stop_event, librosa):
         track_indices = list(range(n_audio))
     os.makedirs(TEMP_DIR, exist_ok=True)
     temp_audio = os.path.join(TEMP_DIR, f"ep_{os.getpid()}_{threading.get_ident()}_audio.wav")
-    tracks, sr = [], None
+    tracks, sr, used = [], None, []
     try:
         for ai in track_indices:
             if _is_stopped(stop_event):
@@ -330,13 +336,14 @@ def _episode_tracks(video, cfg, stop_event, librosa):
                 continue
             y, sr = librosa.load(temp_audio, sr=None)
             tracks.append(y)
+            used.append(ai)
     finally:
         try:
             if os.path.exists(temp_audio):
                 os.remove(temp_audio)
         except OSError:
             pass
-    return tracks, sr
+    return tracks, sr, used
 
 
 def _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log, np, librosa, fftconvolve):
@@ -448,6 +455,45 @@ def _merge_sources(a_cands, v_cands, mode, conf):
     return out
 
 
+def _tpl_video_end(tpl):
+    """End time of a template clip's last frame (its video duration), cached
+    in the template dict; falls back to the audio length."""
+    if "_vend" not in tpl:
+        from .probe import probe_video_duration as _pvd
+        v = None
+        try:
+            v = _pvd(tpl["path"])
+        except Exception:
+            v = None
+        tpl["_vend"] = float(v) if v else float(tpl.get("duration") or 0.0)
+    return tpl["_vend"]
+
+
+def _refine_cand(video, c, tracks, rcache, log, lname):
+    """Snap a candidate's start / end to the exact frames (engine.refine),
+    each edge on its own, against the template clip: its start = the
+    template's first frame; its end = the template's end (exact) - or, when
+    trim_to_match cut the end short, the matching spot inside the template."""
+    from .refine import refine_range
+    tpl = c["_tpl"]
+    tend = _tpl_video_end(tpl)
+    if tend <= 0:
+        return
+    rel_end = c["end"] - c["start"]
+    trimmed = rel_end < tend - 1.0 and not c.get("anchored")
+    ref_rng = (0.0, rel_end if trimmed else tend)
+    s, e, done = refine_range(video, (c["start"], c["end"]), tpl["path"], ref_rng,
+                              ref_exact=(True, not trimmed), log=log, label=f"{lname} ",
+                              track=tracks, ref_track=None, cache=rcache,
+                              ref_cache=tpl.setdefault("_rcache", {}))
+    if done[0]:
+        c["start"] = s
+        c["match_start"] = s
+    if done[1]:
+        c["end"] = e
+    c["refined"] = done
+
+
 def _detect_core(video, cfg, templates, stop_event, log):
     """The matching engine shared by run_batch and detect_segments. Returns
     None if no audio could be read, else {"duration", "n_tracks", <kind>:
@@ -461,8 +507,8 @@ def _detect_core(video, cfg, templates, stop_event, log):
     has_vis = any(t.get('vh') is not None for v in templates.values() for t in (v or ()))
     if mode == "both" and not has_vis:
         mode = "audio"            # no template has usable pictures
-    tracks, sr = ([], None) if mode == "visual" else _episode_tracks(video, cfg, stop_event,
-                                                                     librosa)
+    tracks, sr, track_idx = (([], None, []) if mode == "visual"
+                             else _episode_tracks_idx(video, cfg, stop_event, librosa))
     if not tracks and mode == "audio":
         return None
     # the timeline to cut is the VIDEO's, not the first audio track's
@@ -476,6 +522,7 @@ def _detect_core(video, cfg, templates, stop_event, log):
     if mode == "both" and not tracks:
         log("   no readable audio - matching the template pictures only")
     vcache = {}
+    rcache = {}               # episode windows decoded by the refinement
     conf = cfg["confidence"]
     anchor_cut = bool(cfg.get("anchor_cut"))
     res = {"duration": float(total), "n_tracks": len(tracks)}
@@ -509,6 +556,13 @@ def _detect_core(video, cfg, templates, stop_event, log):
                         log(f"   {_SEG_LOG[kind][0]} shorter here - trimmed cut"
                             f" {tpl['duration']:.0f}s -> {ml:.0f}s")
                     c["end"] = c["start"] + ml
+            # frame-exact edges (engine.refine): the valid candidates and the
+            # best one, each edge against the template clip's own edge
+            if (cfg.get("refine", True) and not _is_stopped(stop_event)
+                    and (c["ok"] or rank == 0) and c["_tpl"].get("path")):
+                _refine_cand(video, c, track_idx or None, rcache,
+                             log if rank == 0 or c["ok"] else (lambda m: None),
+                             _SEG_LOG[kind][0])
         best = cands[0] if cands else None
         if kind == "intro" and best and best["ok"]:
             intro_veto = best["end"]
@@ -553,7 +607,8 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
     confidence and run_batch's validity rules), "match_start" (where the
     audio matched, before intro_from_start), "anchored", "src" ('audio' /
     'visual' / 'audio+visual' - cfg['detect_mode']), "conflict" (audio and
-    pictures pointed at different places)}. Each list is best
+    pictures pointed at different places), "refined" (an edge was snapped
+    to the exact frame - cfg['refine'], on by default)}. Each list is best
     first, at most 5, near-misses (score >= 0.6 x confidence) with ok=False.
     Adds "error" if the episode's audio couldn't be read. Needs librosa."""
     log = log or (lambda m: None)
@@ -579,6 +634,7 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
                         "match_start": float(max(0.0, c["match_start"])),
                         "anchored": bool(c["anchored"]),
                         "src": c.get("src", "audio"),
-                        "conflict": bool(c.get("conflict"))})
+                        "conflict": bool(c.get("conflict")),
+                        "refined": bool(any(c.get("refined") or ()))})
         out[kind] = lst[:_MAX_CANDS]
     return out

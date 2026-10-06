@@ -25,6 +25,7 @@ from .cut_multi import MultiCutMixin
 from .cut_scan import ScanMixin
 from .templates import TemplateTab
 from .. import applog, presets
+from ..ui import icons
 
 
 # ======================= Tab 2 - Cut / Edit =======================
@@ -99,8 +100,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         ttk.Label(prog, textvariable=self.pct_var, width=44).grid(row=0, column=1, sticky="w", padx=(6, 0))
         # single Stop in the right corner, beside the progress bar - it's always
         # visible and drives whichever tool (Auto-detect / Manual / Multi) is running
-        self.stop_btn = ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled",
-                                   width=-8)
+        self.stop_btn = icons.decorate(ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled",
+                                   width=-8), "stop")
         self.stop_btn.grid(row=0, column=2, padx=(6, 0))
         add_tooltip(self.stop_btn, tr("Stop now: kills the running ffmpeg step immediately and "
                                       "discards its partial output (finished files are kept)"))
@@ -226,7 +227,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             self.subs_filter_var.set(True)
             self._upd_subs_label()
             dlg.destroy()
-        ttk.Button(btns, text=tr("OK"), command=_ok).pack(side="right")
+        ttk.Button(btns, style="Accent.TButton", text=tr("OK"), command=_ok).pack(side="right")
         ttk.Button(btns, text=tr("Cancel"), command=dlg.destroy).pack(side="right", padx=(0, 6))
         self._centre_dialog(dlg)
 

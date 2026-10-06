@@ -10,11 +10,12 @@ from ..engine.loudness import (change_gain, measure_loudness, normalize_loudness
                                peak_normalize, probe_volume)
 from ..engine.probe import probe_audio_tracks
 from ..i18n import N_, ntr, tr
-from ..ui.widgets import (KeyedCombobox, ScrollFrame, Tooltip, add_tooltip, auto_wrap,
+from ..ui.widgets import (info_icon, KeyedCombobox, ScrollFrame, Tooltip, add_tooltip,
                           bind_status_colors, enable_file_drop)
 from .audio_common import (DEFAULT_TP, GAIN_RANGE, TRACK_SCOPES, _discard_partial,
                            _first_number, _job_tracks, _mtime, _track_by_lang)
 from .. import jobs
+from ..ui import icons
 
 
 _ANY_LANG = N_("Any (first track)")     # key; shown as tr(_ANY_LANG)
@@ -65,7 +66,7 @@ class BatchGainMixin:
         bin_ent = ttk.Entry(ir, textvariable=self.bin_var, width=28)
         bin_ent.grid(row=0, column=0, sticky="we")
         enable_file_drop(bin_ent, self._drop_bin)
-        ttk.Button(ir, text="...", width=3, command=lambda: self._pick(self.bin_var)).grid(row=0, column=1, padx=(4, 0))
+        icons.decorate(ttk.Button(ir, text="...", width=3, command=lambda: self._pick(self.bin_var)), "folder").grid(row=0, column=1, padx=(4, 0))
 
         ttk.Label(bleft, text=tr("Output folder:")).grid(row=2, column=0, sticky="w", pady=(0, 2))
         orf = ttk.Frame(bleft)
@@ -75,7 +76,7 @@ class BatchGainMixin:
         bout_ent = ttk.Entry(orf, textvariable=self.bout_var, width=28)
         bout_ent.grid(row=0, column=0, sticky="we")
         enable_file_drop(bout_ent, self._drop_bout)
-        ttk.Button(orf, text="...", width=3, command=lambda: self._pick(self.bout_var)).grid(row=0, column=1, padx=(4, 0))
+        icons.decorate(ttk.Button(orf, text="...", width=3, command=lambda: self._pick(self.bout_var)), "folder").grid(row=0, column=1, padx=(4, 0))
 
         ttk.Label(bleft, text=tr("Match every file by:")).grid(row=4, column=0, sticky="w")
         mf = ttk.Frame(bleft)
@@ -140,10 +141,10 @@ class BatchGainMixin:
         ttk.Label(sf, text=tr("Apply to:")).pack(side="left")
         KeyedCombobox(sf, textvariable=self.scope_var, values=list(TRACK_SCOPES),
                       state="readonly", width=24).pack(side="left", padx=(4, 0), fill="x", expand=True)
-        self.refresh_btn = ttk.Button(bleft, text=tr("Refresh file list"), command=self.refresh_list)
+        self.refresh_btn = icons.decorate(ttk.Button(bleft, text=tr("Refresh file list"), command=self.refresh_list), "refresh")
         self.refresh_btn.grid(row=10, column=0, sticky="we", pady=2)
         add_tooltip(self.refresh_btn, tr("List the media files in the input folder"))
-        self.analyze_all_btn = ttk.Button(bleft, text=tr("Analyze all (loudness)"), command=self.analyze_all)
+        self.analyze_all_btn = icons.decorate(ttk.Button(bleft, text=tr("Analyze all (loudness)"), command=self.analyze_all), "audio")
         self.analyze_all_btn.grid(row=11, column=0, sticky="we", pady=2)
         add_tooltip(self.analyze_all_btn, tr("Measure the loudness of the TICKED files in the list "
                                               "(the list is not reloaded - removed rows stay "
@@ -169,11 +170,11 @@ class BatchGainMixin:
         bbrow = ttk.Frame(bleft)
         bbrow.grid(row=14, column=0, sticky="we", pady=(10, 2))
         bbrow.columnconfigure(0, weight=1)
-        self.batch_btn = ttk.Button(bbrow, text=tr("Normalize folder"), command=self.start_batch)
+        self.batch_btn = icons.decorate(ttk.Button(bbrow, style="Accent.TButton", text=tr("Normalize folder"), command=self.start_batch), "audio")
         self.batch_btn.grid(row=0, column=0, sticky="we")
         add_tooltip(self.batch_btn, tr("Two-pass normalize every file to the target so the season "
                                        "matches"))
-        self.queue_btn = ttk.Button(bbrow, text=tr("Add to queue"), command=self.queue_batch)
+        self.queue_btn = icons.decorate(ttk.Button(bbrow, text=tr("Add to queue"), command=self.queue_batch), "queue")
         self.queue_btn.grid(row=0, column=1, padx=(4, 0))
         add_tooltip(self.queue_btn, tr("Queue this normalize (the ticked files and current settings) "
                                        "to run after the jobs already running / queued - see "
@@ -182,11 +183,15 @@ class BatchGainMixin:
         hdr = ttk.Frame(bright)
         hdr.grid(row=0, column=0, sticky="we", pady=(0, 2))
         hdr.columnconfigure(0, weight=1)
-        auto_wrap(ttk.Label(hdr, text=tr("Files in the input folder - tick the ones to include "
-                                         "(loudness before normalizing; click the checkmark "
-                                         "header for all):"),
-                            style="Hint.TLabel", justify="left")).grid(row=0, column=0, sticky="we")
-        rm_btn = ttk.Button(hdr, text=tr("Remove selected"), command=self._remove_selected)
+        info_icon(hdr, tr("Files in the input folder - tick the ones to include "
+                          "(loudness before normalizing; click the checkmark "
+                          "header for all):") + "\n\n" + tr(
+            "Gain marked * = in LUFS mode loudnorm will compress "
+            "that file (its peaks would pass the true-peak "
+            "ceiling) - not a clean gain.\nTip: after "
+            "normalizing, set Input to the output folder and "
+            "Analyze all again to confirm they now match.")).grid(row=0, column=0, sticky="w")
+        rm_btn = icons.decorate(ttk.Button(hdr, text=tr("Remove selected"), command=self._remove_selected), "remove")
         rm_btn.grid(row=0, column=1, sticky="e", padx=(6, 0))
         add_tooltip(rm_btn, tr("Remove the highlighted rows from the list (or press Delete) so they "
                            "aren't processed. 'Refresh file list' re-adds everything from the "
@@ -196,7 +201,7 @@ class BatchGainMixin:
         tv.rowconfigure(0, weight=1)
         tv.columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(tv, columns=("sel", "file", "lufs", "peak", "mean", "dmed", "gain"),
-                                 show="headings", height=12)
+                                 show="headings", height=8)
         self.tree.heading("sel", text="\u2713", command=self._toggle_all)
         self.tree.heading("file", text=tr("File"))
         self.tree.heading("lufs", text="LUFS")
@@ -226,13 +231,6 @@ class BatchGainMixin:
         sb = ttk.Scrollbar(tv, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.grid(row=0, column=1, sticky="ns")
-        auto_wrap(ttk.Label(bright, text=tr("Gain marked * = in LUFS mode loudnorm will compress "
-                                            "that file (its peaks would pass the true-peak "
-                                            "ceiling) - not a clean gain.\nTip: after "
-                                            "normalizing, set Input to the output folder and "
-                                            "Analyze all again to confirm they now match."),
-                            style="Hint.TLabel", justify="left")).grid(
-            row=2, column=0, sticky="we", pady=(4, 0))
 
     def _drop_bin(self, path):
         path = (path or "").strip().strip('"')

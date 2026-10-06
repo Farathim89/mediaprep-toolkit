@@ -17,6 +17,7 @@ from .. import applog
 from ..i18n import tr, ntr
 from .widgets import help_button
 from ..engine.files import TRASH_DIR, move_into_trash
+from . import icons
 
 # (English label, shown label, path) - the English label names the trash
 # sub-folder and the log line, so it never changes with the language
@@ -166,7 +167,7 @@ class CleanupDialog(tk.Toplevel):
         self.trash_lbl.grid(row=0, column=1, sticky="e")
         er = ttk.Frame(trow)
         er.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        self.empty_btn = ttk.Button(er, text=tr("Empty trash older than"), command=self._empty_trash)
+        self.empty_btn = icons.decorate(ttk.Button(er, text=tr("Empty trash older than"), command=self._empty_trash), "trash")
         self.empty_btn.pack(side="left")
         self.days_var = tk.StringVar(value="14")
         ttk.Spinbox(er, from_=0, to=3650, width=5, textvariable=self.days_var).pack(
@@ -176,11 +177,11 @@ class CleanupDialog(tk.Toplevel):
         btns = ttk.Frame(frm)
         btns.grid(row=len(FOLDERS) + 2, column=0, columnspan=2,
                   sticky="we", pady=(12, 0))
-        ttk.Button(btns, text=tr("Refresh counts"), command=self._refresh).pack(side="left")
-        ttk.Button(btns, text=tr("Open trash folder"), command=self._open_trash).pack(
+        icons.decorate(ttk.Button(btns, text=tr("Refresh counts"), command=self._refresh), "refresh").pack(side="left")
+        icons.decorate(ttk.Button(btns, text=tr("Open trash folder"), command=self._open_trash), "folder").pack(
             side="left", padx=6)
         ttk.Button(btns, text=tr("Close"), command=self.destroy).pack(side="right")
-        self.clean_btn = ttk.Button(btns, text=tr("Clean up selected"), command=self._run)
+        self.clean_btn = icons.decorate(ttk.Button(btns, style="Accent.TButton", text=tr("Clean up selected"), command=self._run), "broom")
         self.clean_btn.pack(side="right", padx=6)
 
         self._refresh()

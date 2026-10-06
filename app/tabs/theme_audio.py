@@ -13,12 +13,13 @@ from ..engine.probe import probe_duration
 from ..ui.playback import AudioPlayer
 from ..i18n import N_, tr
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (KeyedCombobox, ScrollFrame, TimeEntry, add_tooltip, auto_wrap,
+from ..ui.widgets import (info_icon, KeyedCombobox, ScrollFrame, TimeEntry, add_tooltip,
                           build_log_tab, enable_file_drop, enable_file_drop_deep,
                           trim_text_lines)
 from .audio_common import (LUFS_RANGE, _TrackPicker, _check_range, _discard_partial,
                            _first_number, _mtime, _nb_help, _same_file, media_types)
 from .. import applog, jobs
+from ..ui import icons
 
 
 _THEME_EXTS = (".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus")
@@ -80,8 +81,8 @@ class ThemeAudioTab(ttk.Frame):
         self.file_var = tk.StringVar(value=saved.get("last_video", ""))
         ent = ttk.Entry(top, textvariable=self.file_var)
         ent.pack(side="left", fill="x", expand=True)
-        ttk.Button(top, text=tr("Browse..."), command=self.browse).pack(side="left", padx=6)
-        ttk.Button(top, text=tr("Load"), command=self.load_from_entry).pack(side="left")
+        icons.decorate(ttk.Button(top, text=tr("Browse..."), command=self.browse), "folder").pack(side="left", padx=6)
+        icons.decorate(ttk.Button(top, text=tr("Load"), command=self.load_from_entry), "load").pack(side="left")
 
         body = ttk.Frame(main)
         body.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
@@ -136,8 +137,8 @@ class ThemeAudioTab(ttk.Frame):
         of.columnconfigure(0, weight=1)
         self.outdir_var = tk.StringVar(value=saved.get("theme_out", OUTPUT_DIR))
         ttk.Entry(of, textvariable=self.outdir_var).grid(row=0, column=0, sticky="we")
-        ttk.Button(of, text="...", width=3,
-                   command=self._pick_out).grid(row=0, column=1, padx=(4, 0))
+        icons.decorate(ttk.Button(of, text="...", width=3,
+                   command=self._pick_out), "folder").grid(row=0, column=1, padx=(4, 0))
 
         ttk.Label(right, text=tr("File name:")).grid(row=5, column=0, sticky="e", padx=4, pady=3)
         self.name_var = tk.StringVar(value=saved.get("theme_name", "theme"))
@@ -170,18 +171,16 @@ class ThemeAudioTab(ttk.Frame):
         brow = ttk.Frame(right)
         brow.grid(row=8, column=0, columnspan=2, sticky="we", padx=4, pady=(8, 2))
         brow.columnconfigure(0, weight=1)
-        self.go_btn = ttk.Button(brow, text=tr("Export theme audio"), command=self.start_export)
+        self.go_btn = icons.decorate(ttk.Button(brow, style="Accent.TButton", text=tr("Export theme audio"), command=self.start_export), "export")
         self.go_btn.grid(row=0, column=0, sticky="we")
         add_tooltip(self.go_btn, tr("Cut the intro's audio to the chosen file"))
-        self.prev_btn = ttk.Button(brow, text=tr("Preview"), command=self.start_preview)
+        self.prev_btn = icons.decorate(ttk.Button(brow, text=tr("Preview"), command=self.start_preview), "play")
         self.prev_btn.grid(row=0, column=1, padx=(6, 0))
         add_tooltip(self.prev_btn, tr("Listen to From -> To exactly as it will be exported "
                                       "(track, fades and normalize applied). Stop ends it."))
-        auto_wrap(ttk.Label(right, text=tr("Tip: for Plex, name it 'theme', pick MP3, and put "
-                                           "the file in the show's folder (Plex plays theme.mp3 "
-                                           "on the series page)."),
-                            style="Hint.TLabel", justify="left")).grid(
-                      row=9, column=0, columnspan=2, sticky="we", padx=4, pady=(4, 0))
+        info_icon(brow, tr("Tip: for Plex, name it 'theme', pick MP3, and put "
+                           "the file in the show's folder (Plex plays theme.mp3 "
+                           "on the series page).")).grid(row=0, column=2, padx=(6, 0))
         self._prev_audio = None      # AudioPlayer while a preview plays
         self._prev_file = None       # its temp WAV
         self._prev_job = None        # after() id that ends the preview
@@ -201,7 +200,7 @@ class ThemeAudioTab(ttk.Frame):
         prog.columnconfigure(0, weight=1)
         self.bar = ttk.Progressbar(prog, mode="determinate", maximum=1000)
         self.bar.grid(row=0, column=0, sticky="we")
-        self.stop_btn = ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled")
+        self.stop_btn = icons.decorate(ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled"), "stop")
         self.stop_btn.grid(row=0, column=1, padx=(6, 0))
         add_tooltip(self.stop_btn, tr("Stop the export / preview"))
         self.logbox = build_log_tab(nb)

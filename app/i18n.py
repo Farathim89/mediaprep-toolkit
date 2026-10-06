@@ -19,7 +19,7 @@ Catalogs: app/locales/<code>.json =
      "<english singular>": {"one": "...", "other": "..."}}
 Missing or empty entries fall back to English.
 
-The language comes from settings.json "language" ("" = automatic: the
+The language comes from settings.json "language" (default "en"; "auto" = automatic: the
 Windows UI language when it is one of LANGUAGES, else English). It is read
 lazily on the first tr() call, so module-level tr() works too; a change in the
 Settings dialog takes effect after a restart.
@@ -54,7 +54,7 @@ LANGUAGES = {
     "id": ("Bahasa Indonesia", "Indonesian"),
 }
 DEFAULT = "en"
-AUTO = ""                       # settings value meaning "follow Windows"
+AUTO = "auto"                   # settings value meaning "follow Windows"
 
 # Windows locale (language_REGION) -> catalog code, for the cases where the
 # bare language part isn't enough
@@ -192,11 +192,12 @@ def match_locale(name):
 def resolve(setting):
     """A settings value ("" / "auto" / code) -> the language code to use."""
     s = (setting or "").strip()
-    if s and s.lower() != "auto":
-        for code in LANGUAGES:
-            if code.lower() == s.lower():
-                return code
-    return windows_language() or DEFAULT
+    if s.lower() == AUTO:              # explicitly chosen "Automatic"
+        return windows_language() or DEFAULT
+    for code in LANGUAGES:
+        if code.lower() == s.lower():
+            return code
+    return DEFAULT                     # unset / unknown -> English
 
 
 def current_language():
@@ -235,11 +236,11 @@ def set_language(code):
 
 def _init():
     """First use: take the language from the saved settings."""
-    setting = AUTO
+    setting = DEFAULT
     try:
         from .config import SETTINGS_FILE
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            setting = (json.load(f) or {}).get("language", AUTO)
+            setting = (json.load(f) or {}).get("language", DEFAULT)
     except Exception:
         pass
-    set_language(setting if isinstance(setting, str) else AUTO)
+    set_language(setting if isinstance(setting, str) else DEFAULT)

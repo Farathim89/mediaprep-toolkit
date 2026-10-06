@@ -70,6 +70,9 @@ hiddenimports = [
     "scipy.signal", "scipy.special.cython_special",
     "soundfile", "audioread", "soxr", "pooch", "decorator", "msgpack",
     "PIL.ImageTk", "PIL._tkinter_finder",
+    # the Fluent look (ui/fluent.py) and the icons (ui/icons.py) draw with these;
+    # the icon font itself is Windows' own (Segoe Fluent Icons / MDL2 Assets)
+    "PIL.ImageDraw", "PIL.ImageFont",
 ]
 
 excludes = [

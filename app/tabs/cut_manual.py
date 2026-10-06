@@ -11,11 +11,12 @@ from ..engine.formatting import fmt_time
 from ..engine.probe import probe_duration
 from ..i18n import tr
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (TimeEntry, add_tooltip, auto_wrap, enable_file_drop,
+from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, enable_file_drop,
                           enable_file_drop_deep, help_button)
 from .common import _VIDEO_TYPES, _same_file
 from .cut_common import _best_ok, _cand_label, _resolve_rng, tr_key
 from .. import jobs as jobreg
+from ..ui import icons
 
 
 class ManualCutMixin:
@@ -34,9 +35,9 @@ class ManualCutMixin:
         ment = ttk.Entry(mtop, textvariable=self.sel_var)
         ment.pack(side="left", fill="x", expand=True)
         ment.bind("<Return>", lambda e: self._load_sel())
-        ttk.Button(mtop, text=tr("Browse..."), command=self._browse_sel).pack(side="left", padx=6)
-        ttk.Button(mtop, text=tr("Load"), command=self._load_sel).pack(side="left")
-        self.man_detect_btn = ttk.Button(mtop, text=tr("Auto-detect"), command=self._manual_detect)
+        icons.decorate(ttk.Button(mtop, text=tr("Browse..."), command=self._browse_sel), "folder").pack(side="left", padx=6)
+        icons.decorate(ttk.Button(mtop, text=tr("Load"), command=self._load_sel), "load").pack(side="left")
+        self.man_detect_btn = icons.decorate(ttk.Button(mtop, text=tr("Auto-detect"), command=self._manual_detect), "detect")
         self.man_detect_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.man_detect_btn, tr(
             "Match the templates (Cut / Edit → Auto-detect folders, "
@@ -58,8 +59,8 @@ class ManualCutMixin:
         self.player.pack()
         self.player.enable_tab_shortcuts()   # arrows/space work anywhere on the tab
 
-        man = ttk.LabelFrame(mright, text=" {} ".format(
-            tr("Manual cut points for the previewed video (from / to)")), padding=(8, 4))
+        man = ttk.LabelFrame(mright, text=tr(
+            "Manual cut points for the previewed video (from / to)"))
         man.pack(fill="x")
         self._manual = {}
         for key, _label in self.MULTI_SEGS:
@@ -103,8 +104,8 @@ class ManualCutMixin:
                                       "position if the box is empty)", seg=seg))
                     add_tooltip(g, tr("Jump the player to the {seg} END time typed in the box",
                                       seg=seg))
-            b3 = ttk.Button(man, text="▶", width=3,
-                            command=lambda k=key: self._preview_manual(k))
+            b3 = icons.decorate(ttk.Button(man, text="", width=3,
+                            command=lambda k=key: self._preview_manual(k)), "play")
             b3.grid(row=r, column=6, padx=(2, 0), pady=(6 if i else 2, 0))
             add_tooltip(b3, tr("Play only the {seg} section (From to To) in the player",
                                seg=seg))
@@ -118,7 +119,7 @@ class ManualCutMixin:
 
         # subtitle-language picker for the previewed file (shares the same
         # keep-list as Cut / Edit → Auto-detect and Multi cut)
-        msubf = ttk.LabelFrame(mright, text=f" {tr('Subtitles')} ", padding=(8, 4))
+        msubf = ttk.LabelFrame(mright, text=tr("Subtitles"))
         msubf.pack(fill="x", pady=(6, 0))
         manf = ttk.Checkbutton(msubf, text=tr("Keep only chosen subtitle languages"),
                                variable=self.subs_filter_var, command=self._upd_subs_label)
@@ -128,25 +129,26 @@ class ManualCutMixin:
                              "Auto-detect and Multi cut."))
         manrow = ttk.Frame(msubf)
         manrow.pack(fill="x", pady=1)
-        ttk.Button(manrow, text=tr("Choose languages..."), command=self._manual_choose_subs).pack(side="left", padx=(0, 6))
+        icons.decorate(ttk.Button(manrow, text=tr("Choose languages..."), command=self._manual_choose_subs), "filter").pack(side="left", padx=(0, 6))
         self.manual_subs_lbl = tk.StringVar()
         ttk.Label(manrow, textvariable=self.manual_subs_lbl, style="Hint.TLabel").pack(side="left")
 
-        self.cut_sel_btn = ttk.Button(mright, text=tr("Cut previewed video (manual)"),
-                                      command=self.cut_selected)
+        self.cut_sel_btn = icons.decorate(ttk.Button(mright, style="Accent.TButton", text=tr("Cut previewed video (manual)"),
+                                      command=self.cut_selected), "cut")
         self.cut_sel_btn.pack(fill="x", pady=(6, 0))
         add_tooltip(self.cut_sel_btn, tr("Cut ONLY the previewed video using the ranges above "
                                          "(ignores auto-detect)"))
-        auto_wrap(ttk.Label(mright, text=tr(
+        encrow = ttk.Frame(mright)
+        encrow.pack(fill="x", pady=(6, 6))
+        info_icon(encrow, tr(
             "Leave a section's boxes empty to skip it. Manual cut removes the "
             "filled ranges and keeps the rest, using the Encoding settings and the "
             "subtitle choice above. Empty Pre-intro/Intro From = start of file; "
             "empty Credits/After-credits To = end of file."),
-            style="Hint.TLabel", wraplength=420, justify="left")).pack(
-                anchor="w", fill="x", pady=(2, 2))
-        auto_wrap(ttk.Label(mright, textvariable=self.enc_summary, style="Hint.TLabel",
-                            wraplength=420, justify="left")).pack(anchor="w", fill="x",
-                                                                  pady=(0, 6))
+        ).pack(side="left", anchor="n")
+        auto_wrap(ttk.Label(encrow, textvariable=self.enc_summary, style="Hint.TLabel",
+                            wraplength=420, justify="left")).pack(side="left", fill="x",
+                                                                  expand=True)
         self._upd_subs_label()      # fill in the new label now that it exists
 
         enable_file_drop_deep(self.player, self._drop_load_sel)   # drop anywhere in the player

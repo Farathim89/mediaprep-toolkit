@@ -277,6 +277,7 @@ def _match_known_templates(feats, tpl_paths, kind, fps_ref, thresh, np, librosa,
         clusters.append({
             "kind": kind,
             "known": os.path.basename(tp),
+            "known_path": tp,
             "members": list(mem),
             "ranges": {ep: b[2] for ep, b in mem.items()},
             "score": float(sum(b[0] for b in mem.values()) / len(mem)),
@@ -472,14 +473,49 @@ def representative_member(cluster):
     return ordered[len(ordered) // 2]
 
 
+def refine_clusters(clusters, lang=None, log=None, progress=None, stop_event=None):
+    """Frame-exact edges for every cluster (engine.refine): each member's
+    start and end against another member of its cluster - or, for a cluster
+    covered by an existing template ('known_path'), against that clip. The
+    ranges are replaced in place; each cluster gets 'refined' = how many
+    edges were refined."""
+    from .refine import refine_ranges
+    from .probe import probe_video_duration
+    tracks = {}
+
+    def track_for(p):
+        if not lang:
+            return None
+        if p not in tracks:
+            tracks[p] = audio_track_for_lang(p, lang)
+        return tracks[p]
+    n = len(clusters)
+    for i, c in enumerate(clusters):
+        if stop_event is not None and stop_event.is_set():
+            return
+        if progress:
+            progress(i / max(1, n), f"Refining {c['kind']} boundaries")
+        known = None
+        if c.get("known_path"):
+            tdur = probe_video_duration(c["known_path"]) or probe_duration(c["known_path"])
+            if not tdur:
+                continue
+            known = (c["known_path"], float(tdur))
+        done = {}
+        c["ranges"] = refine_ranges(c["ranges"], log=log, label=f"{c['kind']} ",
+                                    track_for=track_for, known_ref=known, done_out=done)
+        c["refined"] = sum(int(a) + int(b) for a, b in done.values())
+
+
 def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240.0,
                      min_lens=None, progress=None, stop_event=None, diag_out=None,
-                     log=None, **kw):
+                     log=None, refine=True, **kw):
     """detect_recurring_segments with a source choice. mode 'audio' = the
     classic audio fingerprints; 'visual' = recurring PICTURES (engine.vfp,
     intro and credits only - pre-intro / after-credits stay audio); 'both' =
     both, merged per episode (vfp.combine_clusters: overlapping results are
-    confirmed, else the better one). Every cluster gets 'src'."""
+    confirmed, else the better one). Every cluster gets 'src'. refine (on by
+    default) snaps every boundary to the exact frame (refine_clusters)."""
     from .vfp import combine_clusters, norm_mode, recurring_video
     mode = norm_mode(mode, "audio")
     min_lens = min_lens or {}
@@ -488,6 +524,11 @@ def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240
     a_kinds = list(kinds) if mode != "visual" else [k for k in kinds
                                                     if k in ("preintro", "aftercredits")]
     a_span = 0.6 if vis_kinds and a_kinds else 1.0
+    prog0 = prog
+    if refine:
+        # the last 10 % of the progress bar is the frame-exact refinement
+        def prog(f, t=""):
+            prog0(0.9 * f, t)
     out = []
     if a_kinds:
         out = detect_recurring_segments(
@@ -512,4 +553,8 @@ def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240
             out = [c for c in out if c["kind"] != kind] + combine_clusters(ac, vc, kind)
         else:
             out += vc
+    if refine and out and not (stop_event is not None and stop_event.is_set()):
+        refine_clusters(out, lang=kw.get("lang"), log=log,
+                        progress=lambda f, t="": prog0(0.9 + 0.1 * f, t),
+                        stop_event=stop_event)
     return out

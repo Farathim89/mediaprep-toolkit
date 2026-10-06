@@ -11,12 +11,13 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from ..engine.files import move_to_trash
 from ..engine.probe import probe_audio_streams, probe_duration
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (KeyedCombobox, add_tooltip, auto_wrap, bind_status_colors,
+from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, bind_status_colors,
                           enable_paths_drop, help_button)
 from .common import (_KIND_NAMES, _MEDIA_EXTS, _VIDEO_TYPES, _existing_template,
                      _list_media, _same_dir, _same_file)
 from .. import applog
 from ..i18n import tr, ntr, N_
+from ..ui import icons
 
 # tr() for a variable key whose literals are marked with N_() / tr() elsewhere
 # (a plain tr(var) works the same, but the extractor flags it)
@@ -51,6 +52,8 @@ class TemplatesManagerMixin:
     def _build_templates_tab(self, page):
         page.columnconfigure(0, weight=1)
         page.rowconfigure(1, weight=1)
+        _TM_ICONS = {"Refresh": "refresh", "Play": "play", "Rename...": "edit",
+                     "Reveal in Explorer": "folder", "Move to trash": "trash"}
         bar = ttk.Frame(page)
         bar.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 4))
         for txt, cmd, tip in [
@@ -64,7 +67,8 @@ class TemplatesManagerMixin:
                 (N_("Move to trash"), self._tm_trash,
                  N_("Move the selected template(s) to Data\\temp\\trash "
                     "(recoverable - nothing is deleted)"))]:
-            b = ttk.Button(bar, text=tr_key(txt), command=cmd)
+            b = icons.decorate(ttk.Button(bar, text=tr_key(txt), command=cmd),
+                               _TM_ICONS[txt])
             b.pack(side="left", padx=(0, 6))
             add_tooltip(b, tr_key(tip))
         ttk.Label(bar, text=tr("Import into:")).pack(side="left", padx=(12, 4))
@@ -74,18 +78,24 @@ class TemplatesManagerMixin:
                             values=[_KIND_NAMES[k] for k, *_r in self.SECTION_SPECS])
         kcb.pack(side="left")
         add_tooltip(kcb, tr("Which template folder a dropped / imported video is COPIED into"))
-        ib = ttk.Button(bar, text=tr("Import..."), command=self._tm_import_browse)
+        ib = icons.decorate(ttk.Button(bar, text=tr("Import..."), command=self._tm_import_browse), "import")
         ib.pack(side="left", padx=(6, 0))
         add_tooltip(ib, tr("Copy existing clip(s) into the chosen template folder "
                            "(or drop videos onto the list)"))
         help_button(bar, "templates_manager").pack(side="right", padx=(8, 0))
+        info_icon(bar, tr("Every template Cut / Edit matches against "
+                                       "(Media\\templates\\preintro, intro, credits, "
+                                       "aftercredits). Length = what gets cut from each episode. "
+                                       "Drop a video on the list to copy it into the 'Import "
+                                       "into' folder. Del = move to trash, F2 = rename.")).pack(
+            side="left", padx=(8, 0))
 
         tvf = ttk.Frame(page)
         tvf.grid(row=1, column=0, sticky="nsew")
         tvf.rowconfigure(0, weight=1)
         tvf.columnconfigure(0, weight=1)
         cols = ("kind", "file", "len", "lang", "size", "mod")
-        self.tm_tree = ttk.Treeview(tvf, columns=cols, show="headings", height=14,
+        self.tm_tree = ttk.Treeview(tvf, columns=cols, show="headings", height=9,
                                     selectmode="extended")
         for c, txt, w, anc in [("kind", N_("Kind"), 95, "w"), ("file", N_("File"), 280, "w"),
                                ("len", N_("Length"), 70, "center"),
@@ -111,14 +121,6 @@ class TemplatesManagerMixin:
         self.tm_status = tk.StringVar(value="")
         ttk.Label(page, textvariable=self.tm_status, style="Hint.TLabel").grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        hint = ttk.Label(page, text=tr("Every template Cut / Edit matches against "
-                                       "(Media\\templates\\preintro, intro, credits, "
-                                       "aftercredits). Length = what gets cut from each episode. "
-                                       "Drop a video on the list to copy it into the 'Import "
-                                       "into' folder. Del = move to trash, F2 = rename."),
-                         style="Hint.TLabel", wraplength=640, justify="left")
-        hint.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 0))
-        auto_wrap(hint)
         self._tm_paths = {}       # tree iid -> path
         self._tm_gen = 0          # bumps on every refresh; stale probes are dropped
         self.after(300, self._tm_refresh)

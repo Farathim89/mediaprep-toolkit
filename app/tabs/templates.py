@@ -14,7 +14,7 @@ from ..engine.files import move_to_trash
 from ..engine.formatting import fmt_time
 from ..engine.probe import audio_track_for_lang
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (ScrollFrame, TimeEntry, add_tooltip, auto_wrap, build_log_tab,
+from ..ui.widgets import (ScrollFrame, TimeEntry, add_tooltip, build_log_tab, info_icon,
                           enable_file_drop, enable_file_drop_deep, help_button,
                           trim_text_lines)
 from .common import (_KIND_NAMES, _MEDIA_EXTS, _VIDEO_TYPES, _existing_template,
@@ -26,6 +26,7 @@ from .templates_detect import TemplateDetectMixin
 from .templates_manager import TemplatesManagerMixin
 from .. import applog, jobs as jobreg
 from ..i18n import tr, N_
+from ..ui import icons
 
 # tr() for a variable key whose literals are marked with N_() / tr() elsewhere
 # (a plain tr(var) works the same, but the extractor flags it)
@@ -97,9 +98,9 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         ent = ttk.Entry(top, textvariable=self.file_var)
         ent.pack(side="left", fill="x", expand=True)
         ent.bind("<Return>", lambda e: self.load_from_entry())
-        ttk.Button(top, text=tr("Browse..."), command=self.browse).pack(side="left", padx=6)
-        ttk.Button(top, text=tr("Load"), command=self.load_from_entry).pack(side="left")
-        self.tpl_detect_btn = ttk.Button(top, text=tr("Auto-detect"), command=self.tpl_autodetect)
+        icons.decorate(ttk.Button(top, text=tr("Browse..."), command=self.browse), "folder").pack(side="left", padx=6)
+        icons.decorate(ttk.Button(top, text=tr("Load"), command=self.load_from_entry), "load").pack(side="left")
+        self.tpl_detect_btn = icons.decorate(ttk.Button(top, text=tr("Auto-detect"), command=self.tpl_autodetect), "detect")
         self.tpl_detect_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.tpl_detect_btn, tr(
             "Fill the From / To boxes of the loaded episode automatically: compares it "
@@ -185,8 +186,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                                "player position if the box is empty)", section=desc))
             self._snap_btns[(key, "from")] = sf
             self._snap_btns[(key, "to")] = st
-            bp = ttk.Button(sect, text="▶", width=3,
-                            command=lambda k=key: self._preview_section(k))
+            bp = icons.decorate(ttk.Button(sect, text="", width=3,
+                            command=lambda k=key: self._preview_section(k)), "play")
             bp.grid(row=r0, column=5, rowspan=2, padx=(6, 0), pady=(top_pad, 0))
             add_tooltip(bp, tr("Play only the {section} section (From to To) in the player",
                                section=desc))
@@ -200,16 +201,17 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             for v in ef.vars + et.vars:
                 v.trace_add("write", lambda *a: self._refresh_markers())
 
-        hint = ttk.Label(right, text=tr("Cut the WHOLE segment - Cut / Edit uses the template "
-                                        "length as the cut length. Credits / After-credits 'To' "
-                                        "empty = end of file; Pre-intro 'From' empty = start of "
-                                        "file. Pre-intro & after-credits are optional "
-                                        "(recaps / teasers)."),
-                         style="Hint.TLabel", wraplength=360, justify="left")
-        hint.grid(row=4, column=0, sticky="ew", pady=(8, 4))
-        auto_wrap(hint)
-        self.cut_btn = ttk.Button(right, text=tr("Cut template(s)"), command=self.start_cut)
-        self.cut_btn.grid(row=5, column=0, sticky="we", pady=4)
+        crow = ttk.Frame(right)
+        crow.grid(row=5, column=0, sticky="we", pady=(10, 4))
+        self.cut_btn = icons.decorate(ttk.Button(crow, style="Accent.TButton",
+                                                 text=tr("Cut template(s)"),
+                                                 command=self.start_cut), "cut")
+        self.cut_btn.pack(side="left", fill="x", expand=True)
+        info_icon(crow, tr("Cut the WHOLE segment - Cut / Edit uses the template "
+                           "length as the cut length. Credits / After-credits 'To' "
+                           "empty = end of file; Pre-intro 'From' empty = start of "
+                           "file. Pre-intro & after-credits are optional "
+                           "(recaps / teasers).")).pack(side="left", padx=(6, 0))
         add_tooltip(self.cut_btn, tr("Cut each enabled section into a template clip in its folder"))
 
         # left column: player. Fine-tune the boundary with the player's own
@@ -237,8 +239,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         self.bar = ttk.Progressbar(prow, mode="indeterminate")
         self.bar.grid(row=0, column=0, sticky="we")
         # Stop in the right corner beside the progress bar
-        self.cut_stop_btn = ttk.Button(prow, text=tr("Stop"), command=self.stop_cut,
-                                       state="disabled", width=-8)
+        self.cut_stop_btn = icons.decorate(ttk.Button(prow, text=tr("Stop"), command=self.stop_cut,
+                                       state="disabled", width=-8), "stop")
         self.cut_stop_btn.grid(row=0, column=1, padx=(6, 0))
         add_tooltip(self.cut_stop_btn, tr("Stop the template cut (or Auto-cut all) after the "
                                           "current section finishes"))
