@@ -1,9 +1,14 @@
 # user media & working files - never commit these
-intro/
-credits/
+input/
 videos/
 output/
 temp/
+logs/
+Audio Gain/
+backups/
 toolkit_settings.json
+toolkit_settings.json.tmp
+*.part.*
+.claude/
 __pycache__/
 *.pyc

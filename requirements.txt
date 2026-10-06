@@ -1,3 +1,7 @@
 librosa
 numpy
 scipy
+opencv-python
+Pillow
+sounddevice
+tkinterdnd2
