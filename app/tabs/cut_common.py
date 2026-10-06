@@ -1,13 +1,46 @@
 """Helpers shared by the Cut / Edit sub-tabs (Auto-detect, Manual, Multi cut)."""
 import os
+import tkinter as tk
+from tkinter import ttk
 
 from ..config import CODECS
 from ..i18n import N_, tr
+from ..ui.widgets import KeyedCombobox
 from .common import _KIND_NAMES
 
 # tr() for a variable key whose literals are marked with N_() / tr() elsewhere
 # (a plain tr(var) works the same, but the extractor flags it)
 tr_key = tr
+
+
+# the four sections, in cut order: (key, English label - shown with tr_key)
+_SEGS = (("preintro", N_("Pre-intro")), ("intro", N_("Intro")),
+         ("credits", N_("Credits")), ("aftercredits", N_("After-credits")))
+
+# where a detection came from (engine 'src' / scan source) -> label
+_SRC_NAMES = {"audio": N_("audio"), "visual": N_("visual"),
+              "audio+visual": N_("audio + visual")}
+# detection source option: key -> combobox label
+_MODE_LABELS = {"both": N_("Audio + Visual"), "audio": N_("Audio"), "visual": N_("Visual")}
+
+
+_MODE_KEYS = ("both", "audio", "visual")
+
+
+def mode_combobox(parent, var, width=16):
+    """'Audio + Visual' / 'Audio' / 'Visual' picker whose variable holds the
+    key ('both' / 'audio' / 'visual')."""
+    return KeyedCombobox(parent, textvariable=var, values=list(_MODE_KEYS),
+                         labels=[tr_key(_MODE_LABELS[k]) for k in _MODE_KEYS],
+                         state="readonly", width=width)
+
+
+def _src_label(src, ui=True):
+    """'audio' / 'visual' / 'audio+visual' -> shown text (translated when ui)."""
+    if not src:
+        return ""
+    name = _SRC_NAMES.get(src, src)
+    return tr_key(name) if ui else src
 
 
 # empty-box rules shared by Manual and Multi cut (display, markers and the cut
@@ -69,6 +102,78 @@ def _cand_label(kind, i, c, ui=False):
     name = _KIND_NAMES.get(kind, kind)
     txt = (f"{tr_key(name) if ui else name} #{i} '{tpl}' {score} "
            f"{_mmss(c.get('start'))}–{_mmss(c.get('end'))}")
+    if c.get("src") and (c["src"] != "audio" or c.get("conflict")):
+        txt += " " + _src_label(c["src"], ui)
+    if c.get("conflict"):
+        txt += " ⚠"
     if c.get("ok"):
         return txt
     return tr("{label} (weak)", label=txt) if ui else txt + " (weak)"
+
+
+def _detect_notes(res, use, have=None, ui=False):
+    """Problems in one detect_segments result, honouring the use_* ticks:
+    ['intro weak 0.41', 'credits not found', ...]. `have` = the kinds that
+    have templates at all (None = all); the others can't be 'not found'.
+    ui=True: translated (the Multi cut Notes column); else English (log)."""
+    if not res:
+        return [tr("detect failed") if ui else "detect failed"]
+    if res.get("error"):
+        return [tr("detect failed: {error}", error=res["error"]) if ui
+                else f"detect failed: {res['error']}"]
+    notes = []
+    for key, label in _SEGS:
+        if not use.get(key, True) or (have is not None and key not in have):
+            continue
+        cands = (res or {}).get(key) or []
+        seg = tr_key(label) if ui else key
+        best = _best_ok(cands)
+        if best and best.get("conflict"):
+            notes.append(tr("{seg}: audio and pictures disagree", seg=seg) if ui
+                         else f"{key}: audio and pictures disagree")
+        if best:
+            continue
+        if cands:
+            try:
+                score = float(cands[0].get('score') or 0)
+                notes.append(tr("{seg} weak {score:.2f}", seg=seg, score=score) if ui
+                             else f"{key} weak {score:.2f}")
+            except (TypeError, ValueError):
+                notes.append(tr("{seg} weak", seg=seg) if ui else f"{key} weak")
+        else:
+            notes.append(tr("{seg} not found", seg=seg) if ui else f"{key} not found")
+    return notes
+
+
+def _ask_choice(parent, title, message, choices):
+    """Small modal dialog with one button per choice; returns the chosen
+    key, or None if closed. choices = [("replace", tr("Replace")), ...]
+    (key, button text) pairs."""
+    dlg = tk.Toplevel(parent)
+    dlg.title(title)
+    dlg.transient(parent.winfo_toplevel())
+    dlg.resizable(False, False)
+    out = {"v": None}
+    body = ttk.Frame(dlg, padding=12)
+    body.pack(fill="both", expand=True)
+    ttk.Label(body, text=message, wraplength=380, justify="left").pack(anchor="w")
+    row = ttk.Frame(body)
+    row.pack(anchor="e", pady=(12, 0))
+
+    def pick(v):
+        out["v"] = v
+        dlg.destroy()
+    for key, text in choices:
+        ttk.Button(row, text=text, command=lambda k=key: pick(k)).pack(side="left", padx=(6, 0))
+    dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+    dlg.bind("<Escape>", lambda e: dlg.destroy())
+    dlg.update_idletasks()
+    x = max(0, (dlg.winfo_screenwidth() - dlg.winfo_width()) // 2)
+    y = max(0, (dlg.winfo_screenheight() - dlg.winfo_height()) // 2)
+    dlg.geometry(f"+{x}+{y}")
+    try:
+        dlg.grab_set()
+    except tk.TclError:
+        pass
+    parent.wait_window(dlg)
+    return out["v"]

@@ -5,7 +5,8 @@ and the Info tab's tab list both read from here, so they never drift apart.
 HELP_ORDER is the order the help index / Info tab lists them in.
 
 Titles and texts are marked with N_() and translated by get() / sections(),
-so each help page is ONE translation entry (a whole paragraph block)."""
+so each help page is ONE translation entry (a whole paragraph block). A page
+may also be a tuple of such blocks (later additions), joined by a blank line."""
 
 from .i18n import N_, tr
 
@@ -33,7 +34,13 @@ HELP = {
         "Info - Info / Settings and Recommended encoding notes.\n\n"
         "The app remembers the tab and sub-tab you were on. Every tab has a "
         "'?' button (top-right) with its help; 'Help' in the status bar lists "
-        "all of them."))),
+        "all of them."),
+        N_("Finding intros / credits: with templates (clips you cut once - "
+           "Templates → Cut template / Auto-detect) Cut / Edit matches them by sound, "
+           "pictures or both ('Match templates by'). Without templates, the "
+           "'Plex-style scan' (Multi cut, or Review first on Cut / Edit → "
+           "Auto-detect) finds the intro that recurs across a season's episodes and "
+           "the credits near the end, like Plex does."))),
     "template_cut": (N_("Templates – Cut template"), (
         N_("Cut the intro / credits (and optional pre-intro / after-credits) of ONE "
         "episode into template clips that Cut / Edit then searches for in every "
@@ -53,7 +60,19 @@ HELP = {
         ".mkv'. Only the audio matters (the track chosen in Auto-detect's "
         "'Detect on audio'). If the name exists you are asked: Yes = overwrite, "
         "No = keep both (_v2, _v3 ...), Cancel = skip. Stop takes effect after "
-        "the current section."))),
+        "the current section."),
+        N_("Auto-detect (next to Load) fills the boxes for you: it compares the "
+           "loaded episode with up to N neighbouring episodes of its folder ('Scan at "
+           "most' on the Auto-detect sub-tab; 0 = 4) and takes what recurs there - "
+           "intro, credits and, if ticked on Auto-detect, pre-intro / after-credits - "
+           "and also matches the templates you already have; the Log says which kinds "
+           "are 'already covered by' a template, so you only cut a new variant when "
+           "needed. The combobox beside it chooses Audio, Visual (the pictures) or "
+           "Audio + Visual (same setting as Auto-detect's 'Detect by'). A lone "
+           "episode gets credits from credits-like pictures only - the intro needs 2+ "
+           "episodes. Found sections are ticked; each row's ▾ lists every candidate "
+           "(season scan and template matches) with its source and score. Check in "
+           "the player, nudge with Set / Snap / the frame keys, then Cut template(s)."))),
     "template_detect": (N_("Templates – Auto-detect"), (
         N_("Finds the intro / credits that repeat across a season automatically, "
         "so you don't have to mark them by hand.\n\n"
@@ -75,7 +94,15 @@ HELP = {
         "'have' straight into the input folders (disabled after a stopped, "
         "partial detect).\n\n"
         "Nothing found? Lower the minimum length, loosen the sensitivity or "
-        "enlarge the search window - the Log suggests which."))),
+        "enlarge the search window - the Log suggests which."),
+        N_("'Detect by': Audio = the sound that recurs (classic), Visual = the "
+           "PICTURES that recur (frame fingerprints, 4 per second - finds an opening "
+           "whose audio differs, e.g. a dubbed episode, and recurring credits "
+           "pictures), Audio + Visual (default) = both, merged per episode: where they "
+           "overlap the times are confirmed, otherwise the source that found it is "
+           "used. The Kind column shows '(visual)' / '(audio + visual)' for rows that "
+           "pictures found. Pre-intro / after-credits always use audio. Black / flat "
+           "frames are ignored, so black screens don't count as recurring."))),
     "templates_manager": (N_("Templates – Templates"), (
         N_("Lists every template clip in the four input folders with kind, length, "
         "audio language, size and date - manage them without Explorer.\n\n"
@@ -127,7 +154,19 @@ HELP = {
         "- change the folders and add again to line up several seasons; it "
         "starts when nothing else runs (Queue... in the status bar).\n\n"
         "Stop kills the current ffmpeg step and discards its partial file; "
-        "finished files are kept."))),
+        "finished files are kept."),
+        N_("'Match templates by' (Detection): Audio = the template's sound (the "
+           "classic matcher), Visual = its pictures (frame fingerprints slid over the "
+           "start / end of each episode - also finds an opening with different audio, "
+           "e.g. a dub, and works for templates without audio), Audio + Visual "
+           "(default) = both: a match both agree on is marked 'audio + visual'; if they "
+           "disagree, a confident audio match is kept and the row gets a ⚠. Used by "
+           "Start batch, Review first, Manual cut and Multi cut, and saved in presets.\n\n"
+           "Review first: 'Match templates' uses the template folders; 'Plex-style "
+           "scan (no templates)' needs no templates at all - it scans the Videos folder "
+           "like Plex (intro = what recurs across the episodes, credits = a recurring "
+           "ending or credits-like pictures near the end; see Multi cut help) and loads "
+           "the results into Multi cut for checking."))),
     "cut_manual": (N_("Cut / Edit – Manual cut"), (
         N_("Cut ranges you mark yourself out of ONE file - no templates needed.\n\n"
         "Load the video, then for each section use Set (take the current "
@@ -170,7 +209,29 @@ HELP = {
         "list as it is now (times and encoding captured) - it starts when "
         "nothing else runs (Queue... in the status bar). Encoding comes from "
         "Cut / Edit → Auto-detect, so a Show preset (Load) applies here too. "
-        "The list is restored next session."))),
+        "The list is restored next session."),
+        N_("Auto-detect ▾ → Detect selected / Detect all: matches the templates "
+           "(folders and Detection settings of Cut / Edit → Auto-detect, incl. 'Match "
+           "templates by') in those files and fills their times - the best confident "
+           "match per section; ⚠ in Notes = not found or only weak. The ▾ next to each "
+           "section lists every candidate.\n\n"
+           "'Plex-style scan (no templates)': finds the intro and credits without any "
+           "templates, like Plex. Intro = the opening that recurs across the episodes "
+           "(the first N seconds are fingerprinted by audio and/or pictures and compared "
+           "pairwise; several openings are fine - each episode gets the one it shares). "
+           "Credits = an ending that recurs near the end, plus a picture check for "
+           "credits (mostly dark frames with bright text, or text rolling upwards) in "
+           "the last N seconds; when the two disagree the one nearer the end of the "
+           "file wins. It scans all files in the list, or only the selected ones when 2 "
+           "or more are selected. Options: episode length preset, intro / credits "
+           "search windows (default 420 s from the end for credits), min lengths, "
+           "sensitivity, Intro / Credits detection (Audio, Visual or Audio + Visual), "
+           "snap the boundaries to the nearest silence / black within ±1 s. Notes "
+           "shows where each result came from ('intro audio · credits visual'); ⚠ = "
+           "something was not found - the intro needs 2+ episodes with the same "
+           "opening, a single file only gets visual credits.\n\n"
+           "Both ask once before changing files that already have times: Overwrite, "
+           "Only fill empty (sections that are still blank) or Cancel."))),
     "theme": (N_("Audio → Theme Audio"), (
         N_("Exports a stretch of a file's FIRST audio track as an audio file - "
         "e.g. the intro as theme.mp3 for Plex.\n\n"
@@ -317,6 +378,8 @@ HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager"
 def get(key):
     """(title, text) for key, translated; unknown keys get a harmless placeholder."""
     title, body = HELP.get(key, (N_("Help"), N_("No help is available for this page yet.")))
+    if isinstance(body, tuple):
+        return tr(title), "\n\n".join(tr(b) for b in body)
     return tr(title), tr(body)
 
 

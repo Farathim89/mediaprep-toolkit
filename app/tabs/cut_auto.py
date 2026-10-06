@@ -8,77 +8,11 @@ from ..config import (AFTERCREDITS_DIR, AUDIO_LANG_CHOICES, BIT_DEPTHS, CODECS,
                       CREDITS_DIR, DEFAULT_CODEC_LABEL, INTRO_DIR, LEGACY_CODEC_LABELS,
                       OUTPUT_DIR, PREINTRO_DIR, VALID_PRESETS, VIDEO_DIR)
 from ..engine.cut import run_batch
-from ..engine.detect import detect_segments, load_templates_for
 from ..i18n import N_, ntr, tr
 from ..ui.widgets import KeyedCombobox, add_tooltip, auto_wrap, enable_file_drop, help_button
 from .common import _list_media, _same_dir
-from .cut_common import _best_ok, _is_plex, _mmss, tr_key
-from .cut_multi import MultiCutMixin
+from .cut_common import _ask_choice, _detect_notes, _is_plex, mode_combobox, tr_key
 from .. import jobs as jobreg
-
-
-def _detect_notes(res, use, have=None, ui=False):
-    """Problems in one detect_segments result, honouring the use_* ticks:
-    ['intro weak 0.41', 'credits not found', ...]. `have` = the kinds that
-    have templates at all (None = all); the others can't be 'not found'.
-    ui=True: translated (the Multi cut Notes column); else English (log)."""
-    if not res:
-        return [tr("detect failed") if ui else "detect failed"]
-    if res.get("error"):
-        return [tr("detect failed: {error}", error=res["error"]) if ui
-                else f"detect failed: {res['error']}"]
-    notes = []
-    for key, label in MultiCutMixin.MULTI_SEGS:
-        if not use.get(key, True) or (have is not None and key not in have):
-            continue
-        cands = (res or {}).get(key) or []
-        if _best_ok(cands):
-            continue
-        seg = tr_key(label) if ui else key
-        if cands:
-            try:
-                score = float(cands[0].get('score') or 0)
-                notes.append(tr("{seg} weak {score:.2f}", seg=seg, score=score) if ui
-                             else f"{key} weak {score:.2f}")
-            except (TypeError, ValueError):
-                notes.append(tr("{seg} weak", seg=seg) if ui else f"{key} weak")
-        else:
-            notes.append(tr("{seg} not found", seg=seg) if ui else f"{key} not found")
-    return notes
-
-
-def _ask_choice(parent, title, message, choices):
-    """Small modal dialog with one button per choice; returns the chosen
-    key, or None if closed. choices = [("replace", tr("Replace")), ...]
-    (key, button text) pairs."""
-    dlg = tk.Toplevel(parent)
-    dlg.title(title)
-    dlg.transient(parent.winfo_toplevel())
-    dlg.resizable(False, False)
-    out = {"v": None}
-    body = ttk.Frame(dlg, padding=12)
-    body.pack(fill="both", expand=True)
-    ttk.Label(body, text=message, wraplength=380, justify="left").pack(anchor="w")
-    row = ttk.Frame(body)
-    row.pack(anchor="e", pady=(12, 0))
-
-    def pick(v):
-        out["v"] = v
-        dlg.destroy()
-    for key, text in choices:
-        ttk.Button(row, text=text, command=lambda k=key: pick(k)).pack(side="left", padx=(6, 0))
-    dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
-    dlg.bind("<Escape>", lambda e: dlg.destroy())
-    dlg.update_idletasks()
-    x = max(0, (dlg.winfo_screenwidth() - dlg.winfo_width()) // 2)
-    y = max(0, (dlg.winfo_screenheight() - dlg.winfo_height()) // 2)
-    dlg.geometry(f"+{x}+{y}")
-    try:
-        dlg.grab_set()
-    except tk.TclError:
-        pass
-    parent.wait_window(dlg)
-    return out["v"]
 
 
 class AutoCutMixin:
@@ -283,6 +217,21 @@ class AutoCutMixin:
                              "(language-proof, recommended). Pick a language to match only that "
                              "track (falls back to all if a file doesn't have it)."))
 
+        dmrow = ttk.Frame(left)
+        dmrow.grid(row=6, column=0, sticky="w", pady=(6, 2))
+        ttk.Label(dmrow, text=tr("Match templates by:")).pack(side="left")
+        dm = saved.get("detect_mode")
+        self.detect_mode_var = tk.StringVar(value=dm if dm in ("audio", "visual", "both")
+                                            else "both")
+        dmcb = mode_combobox(dmrow, self.detect_mode_var)
+        dmcb.pack(side="left", padx=(6, 0))
+        add_tooltip(dmcb, tr("Audio = match the template's sound (the classic matcher); "
+                             "Visual = match its PICTURES (also finds an opening whose audio "
+                             "differs, e.g. a dub, or a template without audio); Audio + "
+                             "Visual = both - a match confirmed by both is marked "
+                             "'audio + visual', a disagreement gets a ⚠. Used by Start batch, "
+                             "Review first, Manual cut and Multi cut."))
+
         # ---------- RIGHT: run options (one per row - translations run longer) ----------
         self.move_done_var = tk.BooleanVar(value=bool(saved.get("move_done", False)))
         mdcb = ttk.Checkbutton(right, text=tr("Move finished videos to a 'done' subfolder"),
@@ -387,6 +336,24 @@ class AutoCutMixin:
             "seasons (change the folders, Add to queue again). See Queue... in the "
             "status bar."))
         # Stop lives beside the progress bar at the bottom (shared by all tools)
+        rmrow = ttk.Frame(auto)
+        rmrow.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Label(rmrow, text=tr("Review first:")).pack(side="left")
+        rm = saved.get("review_method")
+        self.review_method_var = tk.StringVar(value=rm if rm in ("templates", "plex")
+                                              else "templates")
+        r1 = ttk.Radiobutton(rmrow, text=tr("Match templates"), value="templates",
+                             variable=self.review_method_var)
+        r1.pack(side="left", padx=(6, 0))
+        add_tooltip(r1, tr("Review first matches the templates in the template folders "
+                           "(like Start batch)"))
+        r2 = ttk.Radiobutton(rmrow, text=tr("Plex-style scan (no templates)"), value="plex",
+                             variable=self.review_method_var)
+        r2.pack(side="left", padx=(10, 0))
+        add_tooltip(r2, tr("Review first finds the intro and credits WITHOUT templates, like "
+                           "Plex: the opening that recurs across the episodes of the Videos "
+                           "folder and the credits near the end. Opens the scan options "
+                           "first."))
 
         # read-only summary of the shared encoding settings, shown on the Manual
         # and Multi sub-tabs (they use Cut / Edit → Auto-detect's Encoding group)
@@ -423,8 +390,32 @@ class AutoCutMixin:
         self._open_subs_dialog(files)
 
     # ---------------- Review first (detect only -> Multi cut) ----------------
+    def _review_list_mode(self):
+        """'replace' / 'append' for loading review results into Multi cut
+        (asked when the list isn't empty), None = cancelled."""
+        if not self._multi_paths:
+            return "replace"
+        choice = _ask_choice(
+            self, tr("Multi cut list isn't empty"),
+            ntr("The Multi cut list already holds {n} file.",
+                "The Multi cut list already holds {n} files.", len(self._multi_paths))
+            + "\n\n" + tr("Replace it with the review results, Append them (files already "
+                          "in the list get their times updated), or Cancel?"),
+            [("replace", tr("Replace")), ("append", tr("Append")),
+             ("cancel", tr("Cancel"))])
+        return choice if choice in ("replace", "append") else None
+
     def review_first(self):
-        if self._busy or not self._engine_ready():
+        if self._busy:
+            return
+        if self.review_method_var.get() == "plex":
+            files = _list_media(self.dirs["Videos folder:"].get().strip().strip('"'))
+            if not files:
+                messagebox.showerror(tr("Error"), tr("No videos found in the Videos folder."))
+                return
+            self._plex_review(files)
+            return
+        if not self._engine_ready():
             return
         cfg = self._batch_cfg(check_output=False)
         if cfg is None:
@@ -433,19 +424,9 @@ class AutoCutMixin:
         if not files:
             messagebox.showerror(tr("Error"), tr("No videos found in the Videos folder."))
             return
-        mode = "replace"
-        if self._multi_paths:
-            choice = _ask_choice(
-                self, tr("Multi cut list isn't empty"),
-                ntr("The Multi cut list already holds {n} file.",
-                    "The Multi cut list already holds {n} files.", len(self._multi_paths))
-                + "\n\n" + tr("Replace it with the review results, Append them (files already "
-                              "in the list get their times updated), or Cancel?"),
-                [("replace", tr("Replace")), ("append", tr("Append")),
-                 ("cancel", tr("Cancel"))])
-            if choice not in ("replace", "append"):
-                return
-            mode = choice
+        mode = self._review_list_mode()
+        if mode is None:
+            return
         if self.save_hook:
             self.save_hook()
         self.stop_event.clear()
@@ -463,44 +444,7 @@ class AutoCutMixin:
         have = None         # kinds that have templates at all
         try:
             self.log(f"[REVIEW] detecting in {n} video(s) - nothing is cut")
-            self.progress(0.0, tr("Loading templates..."))
-            self.status(tr("Review: loading templates..."))
-            templates = load_templates_for(cfg, log=self.log, stop_event=self.stop_event)
-            empty = not templates or (isinstance(templates, dict)
-                                      and not any(templates.values()))
-            if isinstance(templates, dict):
-                have = {k for k, v in templates.items() if v}
-            if empty and not self.stop_event.is_set():
-                self.log("[REVIEW] no usable templates in the template folders - nothing to "
-                         "detect with.")
-            for i, f in enumerate(files if not empty else (), 1):
-                if self.stop_event.is_set():
-                    break
-                name = os.path.basename(f)
-                self.status(tr("Review {i}/{n}: {name}", i=i, n=n, name=name))
-                self.progress((i - 1) / n, tr("Review {i}/{n}", i=i, n=n))
-                try:
-                    res = detect_segments(f, cfg, stop_event=self.stop_event,
-                                                log=None, templates=templates)
-                except Exception as e:
-                    self.log(f"  [{i}/{n}] [FAIL] {name}: {e!r}")
-                    res = None
-                if self.stop_event.is_set():
-                    break               # the interrupted file's result is partial
-                results[f] = res
-                notes = _detect_notes(res, cfg.get("use", {}), have)
-                bits = []
-                for key, label in self.MULTI_SEGS:
-                    best = _best_ok((res or {}).get(key))
-                    if best and cfg.get("use", {}).get(key, True):
-                        bits.append(f"{label} {_mmss(best['start'])}-{_mmss(best['end'])} "
-                                    f"({float(best.get('score') or 0):.2f})")
-                if notes:
-                    n_warn += 1
-                self.log(f"  [{i}/{n}] {name}: {', '.join(bits) or 'nothing found'}"
-                         + (f"   ⚠ {'; '.join(notes)}" if notes else ""))
-            self.progress(len(results) / n if n else 0.0,
-                          tr("Reviewed {done}/{n}", done=len(results), n=n))
+            results, have, n_warn = self._detect_loop(files, cfg, "REVIEW", review=True)
         except Exception as e:
             crashed = True
             self.log(f"[FAIL] review crashed: {e!r}")
@@ -522,54 +466,19 @@ class AutoCutMixin:
         if mode == "replace":
             self._multi_clear()
         use = cfg.get("use", {})
-        existing = {os.path.normcase(os.path.abspath(p)): iid
-                    for iid, p in self._multi_paths.items()}
-        n_ok = n_warn = n_upd = 0
-        first_warn = first = None
+        entries = []
         for f in files:
             if f not in results:
                 continue
             res = results[f]
-            ranges = {}
-            for key, _label in self.MULTI_SEGS:
-                best = _best_ok((res or {}).get(key)) if use.get(key, True) else None
-                fr = to = None
-                if best:
-                    fr, to = float(best["start"]), float(best["end"])
-                    if key == "intro" and cfg.get("intro_from_start"):
-                        fr = None
-                    if key == "credits" and cfg.get("credits_to_end"):
-                        to = None
-                ranges[key] = [fr, to]
-            notes = "; ".join(_detect_notes(res, use, have, ui=True))
-            iid = existing.get(os.path.normcase(os.path.abspath(f)))
-            if iid is None:
-                iid = self.multi_tree.insert(
-                    "", "end", values=(os.path.basename(f),) + ("-",) * len(self.MULTI_SEGS))
-                self._multi_paths[iid] = f
-            else:
-                n_upd += 1
-            self._multi_seg[iid] = ranges
-            self._multi_write_row(iid)
-            self._multi_set_notes(iid, notes)
-            if res:
-                self._multi_cands[f] = res
-            else:
-                self._multi_cands.pop(f, None)
-            if notes:
-                n_warn += 1
-                first_warn = first_warn or iid
-            else:
-                n_ok += 1
-            first = first or iid
-        self._rnb.select(self._multi_page)
-        pick = first_warn or first
-        if pick:
-            self._multi_sel = None
-            self.multi_tree.selection_set(())      # so re-selecting the same row still fires
-            self.multi_tree.selection_set(pick)    # loads it + fills the boxes
-            self.multi_tree.focus(pick)
-            self.multi_tree.see(pick)
+            entries.append((f, self._multi_ranges_from_detect(res, cfg),
+                            "; ".join(_detect_notes(res, use, have, ui=True)), True,
+                            res or None))
+        _new, n_upd, first, first_warn = self._multi_apply_results(entries)
+        n_warn = sum(1 for e in entries if e[2])
+        n_ok = len(entries) - n_warn
+        self._multi_sel = None              # open the first row that needs a look
+        self._multi_reselect(first_warn or first)
         summary = (f"{len(results)} file(s) loaded into Multi cut: {n_ok} complete, "
                    f"{n_warn} need a look (⚠)" + (f", {n_upd} updated" if n_upd else ""))
         shown = ntr("{n} file loaded into Multi cut: {ok} complete, {warn} need a look (⚠)",
@@ -633,6 +542,7 @@ class AutoCutMixin:
             "intro_from_start": self.intro_from_start_var.get(),
             "credits_to_end": self.credits_to_end_var.get(),
             "match_lang": AUDIO_LANG_CHOICES.get(self.match_lang_var.get()),
+            "detect_mode": self.detect_mode_var.get(),
             "subs_langs": (sorted(self.subs_langs)
                            if self.subs_filter_var.get() and self.subs_langs else None),
         }

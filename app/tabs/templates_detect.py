@@ -6,11 +6,12 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..config import AUDIO_LANG_CHOICES, VIDEO_DIR
 from ..engine.formatting import fmt_time
-from ..engine.recurring import detect_recurring_segments, representative_member
+from ..engine.recurring import detect_recurring, representative_member
 from ..ui.widgets import (KeyedCombobox, add_tooltip, auto_wrap, bind_status_colors,
                           enable_file_drop, help_button)
 from .audition import _AuditionWindow
 from .common import _KIND_NAMES, _list_media, _template_stem
+from .cut_common import mode_combobox
 from .. import jobs as jobreg
 from ..i18n import tr, N_
 
@@ -23,6 +24,18 @@ _SENS = {N_("High (strict)"): 0.9, N_("Medium"): 0.8,
          N_("Low (loose)"): 0.7, N_("Very loose"): 0.62}
 # episode-length presets (the key is saved; _apply_eplen_preset reads it)
 _EPLEN = (N_("Short (3-8 min)"), N_("Standard (20-40 min)"), N_("Long (45+ min)"))
+# preset -> (search window, min intro, min credits, min pre/after) in seconds.
+# Short episodes need a small window so the intro and credits searches don't
+# overlap; the standard window is generous because long recaps (e.g. late One
+# Piece) push the intro past 4 minutes into the episode.
+_EPLEN_VALUES = {_EPLEN[0]: (90, 6, 6, 3), _EPLEN[1]: (420, 10, 10, 4),
+                 _EPLEN[2]: (600, 12, 15, 5)}
+
+
+def eplen_values(preset):
+    """(window, min_intro, min_credits, min_pa) for an episode-length preset
+    key (unknown = Standard)."""
+    return _EPLEN_VALUES.get(preset, _EPLEN_VALUES[_EPLEN[1]])
 
 
 class TemplateDetectMixin:
@@ -137,6 +150,19 @@ class TemplateDetectMixin:
                              "'All / default' uses the file's default track; pick a language "
                              "(e.g. English) so a foreign default track doesn't skew detection. "
                              "Falls back to the default on files without that language."))
+        ttk.Label(opt, text=tr("Detect by:")).grid(row=4, column=3, columnspan=2, sticky="e",
+                                                   padx=(16, 4), pady=(4, 0))
+        if not hasattr(self, "det_mode_var"):
+            dm = saved.get("det_mode")
+            self.det_mode_var = tk.StringVar(value=dm if dm in ("audio", "visual", "both")
+                                             else "both")
+        dmcb = mode_combobox(opt, self.det_mode_var)
+        dmcb.grid(row=4, column=5, columnspan=3, sticky="w", pady=(4, 0))
+        add_tooltip(dmcb, tr("Audio = the sound that recurs across the episodes; Visual = the "
+                             "PICTURES that recur (intro and credits - finds an opening whose "
+                             "audio differs, e.g. a dub); Audio + Visual = both, merged per "
+                             "episode. Pre-intro / after-credits always use audio. Also used "
+                             "by Auto-detect on the Cut template sub-tab."))
 
         rr = ttk.Frame(detect)
         rr.grid(row=2, column=0, sticky="we", pady=(8, 2))
@@ -217,24 +243,11 @@ class TemplateDetectMixin:
         """Fill the search window + min length from an episode-length preset.
         Short episodes (shorts) need a small window so the intro and credits
         searches don't overlap, and a shorter min length for brief openings."""
-        preset = self.det_eplen.get()
-        if preset.startswith("Short"):
-            self.det_window.set("90")
-            self.det_minlen_intro.set("6")
-            self.det_minlen_credits.set("6")
-            self.det_minlen_pa.set("3")
-        elif preset.startswith("Long"):
-            self.det_window.set("600")
-            self.det_minlen_intro.set("12")
-            self.det_minlen_credits.set("15")
-            self.det_minlen_pa.set("5")
-        else:
-            # generous window: long recaps (e.g. late One Piece) push the
-            # intro past 4 minutes into the episode
-            self.det_window.set("420")
-            self.det_minlen_intro.set("10")
-            self.det_minlen_credits.set("10")
-            self.det_minlen_pa.set("4")
+        win, mi, mc, pa = eplen_values(self.det_eplen.get())
+        self.det_window.set(str(win))
+        self.det_minlen_intro.set(str(mi))
+        self.det_minlen_credits.set(str(mc))
+        self.det_minlen_pa.set(str(pa))
 
     # ---------------- auto-detect logic ----------------
     def _browse_detect(self):
@@ -336,22 +349,22 @@ class TemplateDetectMixin:
                                        tab=self)
         threading.Thread(target=self._detect_worker,
                          args=(files, kinds, window, minlens, thresh, known, lang,
-                               self.det_sens.get(), jid),
+                               self.det_sens.get(), jid, self.det_mode_var.get()),
                          daemon=True).start()
 
     def _detect_worker(self, files, kinds, window, minlens, thresh, known=None, lang=None,
-                       sens_label="", jid=None):
+                       sens_label="", jid=None, mode="audio"):
         found = []
         crashed = False
         try:
             self.log(f"[DETECT] {len(files)} episode(s) - detecting {', '.join(kinds)} "
-                     f"(sensitivity {sens_label}"
+                     f"(sensitivity {sens_label}, by {mode}"
                      + (f", {lang} audio" if lang else "") + ")")
             diag = {}
-            found = detect_recurring_segments(
-                files, kinds=kinds, window=window, min_lens=minlens, thresh=thresh,
-                progress=self._detect_progress, stop_event=self.detect_stop,
-                diag_out=diag, known=known, lang=lang)
+            found = detect_recurring(
+                files, mode=mode, kinds=kinds, window=window, min_lens=minlens,
+                thresh=thresh, progress=self._detect_progress, stop_event=self.detect_stop,
+                diag_out=diag, known=known, lang=lang, log=self.log)
             order = {"preintro": 0, "intro": 1, "credits": 2, "aftercredits": 3}
             found.sort(key=lambda c: (order.get(c["kind"], 9),
                                       c.get("known") is not None, -c["count"]))
@@ -366,7 +379,9 @@ class TemplateDetectMixin:
                         self.log(f"[DETECT] {kind}: {c['count']} ep(s) already covered by "
                                  f"template '{c['known']}'")
                     if new_cl:
-                        self.log(f"[DETECT] {kind}: {len(new_cl)} NEW variant(s) found")
+                        self.log(f"[DETECT] {kind}: {len(new_cl)} NEW variant(s) found ("
+                                 + ", ".join(f"{c['count']} ep(s) by {c.get('src', 'audio')}"
+                                             for c in new_cl) + ")")
                         continue
                     if known_cl:
                         self.log(f"[DETECT] {kind}: no new variants - existing template(s) "

@@ -9,12 +9,12 @@ from ..config import BIT_DEPTHS, CODECS
 from ..engine.cut import keep_from_drops, run_manual
 from ..engine.formatting import fmt_time, format_seconds
 from ..engine.probe import probe_duration
-from ..i18n import N_, ntr, tr
+from ..i18n import ntr, tr
 from ..ui.player import VideoPlayer
 from ..ui.widgets import (TimeEntry, add_tooltip, auto_wrap, bind_status_colors,
                           enable_file_drop_deep, enable_paths_drop, help_button)
 from .common import _VIDEO_TYPES
-from .cut_common import _TO_END, _ZERO_FROM, _resolve_rng, tr_key
+from .cut_common import _SEGS, _TO_END, _ZERO_FROM, _resolve_rng, tr_key
 from .. import jobs as jobreg
 
 
@@ -33,8 +33,7 @@ class MultiCutMixin:
 
     # ---------------- Multi cut (many files, per-file times) ----------------
     # (key, English label - shown with tr_key(label))
-    MULTI_SEGS = (("preintro", N_("Pre-intro")), ("intro", N_("Intro")),
-                  ("credits", N_("Credits")), ("aftercredits", N_("After-credits")))
+    MULTI_SEGS = _SEGS
 
     def _build_multi_tab(self, multi, saved):
         btns = ttk.Frame(multi)
@@ -58,6 +57,30 @@ class MultiCutMixin:
                              "if the intro sits at the same position. Untick to always start "
                              "each clip at 0:00."))
 
+        # detection that fills the list: template matching or the Plex-style scan
+        drow = ttk.Frame(multi)
+        drow.pack(fill="x", padx=6, pady=(4, 0))
+        self.multi_detect_mb = ttk.Menubutton(drow, text=tr("Auto-detect"))
+        dmenu = tk.Menu(self.multi_detect_mb, tearoff=False)
+        dmenu.add_command(label=tr("Detect selected"), command=lambda: self._multi_detect(True))
+        dmenu.add_command(label=tr("Detect all"), command=lambda: self._multi_detect(False))
+        self.multi_detect_mb["menu"] = dmenu
+        self.multi_detect_mb.pack(side="left")
+        add_tooltip(self.multi_detect_mb, tr(
+            "Match the templates (folders and Detection settings of Cut / Edit → "
+            "Auto-detect) in the selected files or all files of this list and fill their "
+            "times; ⚠ = not found or only weak. Asks before overwriting times a file "
+            "already has."))
+        self.multi_plex_btn = ttk.Button(drow, text=tr("Plex-style scan (no templates)"),
+                                         command=self._multi_plex_scan)
+        self.multi_plex_btn.pack(side="left", padx=(6, 0))
+        add_tooltip(self.multi_plex_btn, tr(
+            "Find the intro and credits WITHOUT templates, like Plex: the opening that "
+            "recurs across the episodes (sound and/or pictures) and the credits near the "
+            "end (a recurring ending, or credits-like pictures: text on black, rolling "
+            "text). Scans every file in the list - or only the selected ones when 2 or "
+            "more are selected. The intro needs at least 2 episodes of the same show."))
+
         tvf = ttk.Frame(multi)
         tvf.pack(fill="x", padx=6, pady=(4, 0))
         cols = ("file",) + tuple(k for k, _ in self.MULTI_SEGS) + ("notes",)
@@ -68,7 +91,7 @@ class MultiCutMixin:
             self.multi_tree.heading(k, text=tr_key(txt))
             self.multi_tree.column(k, width=100, anchor="center", stretch=False)
         self.multi_tree.heading("notes", text=tr("Notes"))
-        self.multi_tree.column("notes", width=170, anchor="w", stretch=False)
+        self.multi_tree.column("notes", width=220, anchor="w", stretch=False)
         # rows 'Review first' couldn't fill confidently: ⚠ + warning colour
         bind_status_colors(self.multi_tree, {"warn": "warn"})
         self.multi_tree.pack(side="left", fill="x", expand=True)
@@ -245,17 +268,20 @@ class MultiCutMixin:
             self._multi_write_row(iid)
             notes = it.get("notes")
             if isinstance(notes, str) and notes:
-                self._multi_set_notes(iid, notes)
+                self._multi_set_notes(iid, notes, warn=bool(it.get("warn", True)))
 
     def _multi_snapshot(self):
         return [{"path": self._multi_paths[iid],
                  "seg": {k: list(v) for k, v in self._multi_seg.get(iid, {}).items()},
-                 "notes": self._multi_notes.get(iid, "")}
+                 "notes": self._multi_notes.get(iid, ""),
+                 "warn": iid not in self._multi_info}
                 for iid in self.multi_tree.get_children() if iid in self._multi_paths]
 
-    def _multi_set_notes(self, iid, notes):
+    def _multi_set_notes(self, iid, notes, warn=True):
         """Show a row's review notes ('intro weak 0.41; credits not found'):
-        Notes column, a ⚠ before the file name and the warning colour."""
+        Notes column, a ⚠ before the file name and the warning colour.
+        warn=False: an informational note only ('intro audio · credits
+        visual') - no ⚠, normal colour."""
         notes = notes or ""
         path = self._multi_paths.get(iid, "")
         name = os.path.basename(path)
@@ -263,10 +289,15 @@ class MultiCutMixin:
             self._multi_notes[iid] = notes
         else:
             self._multi_notes.pop(iid, None)
+        if notes and not warn:
+            self._multi_info.add(iid)
+        else:
+            self._multi_info.discard(iid)
+        bad = bool(notes) and warn
         try:
-            self.multi_tree.set(iid, "file", ("⚠ " + name) if notes else name)
+            self.multi_tree.set(iid, "file", ("⚠ " + name) if bad else name)
             self.multi_tree.set(iid, "notes", notes)
-            self.multi_tree.item(iid, tags=("warn",) if notes else ())
+            self.multi_tree.item(iid, tags=("warn",) if bad else ())
         except tk.TclError:
             pass
 
@@ -315,6 +346,7 @@ class MultiCutMixin:
             self._multi_cands.pop(self._multi_paths.pop(iid, None), None)
             self._multi_seg.pop(iid, None)
             self._multi_notes.pop(iid, None)
+            self._multi_info.discard(iid)
             self.multi_tree.delete(iid)
         self._multi_sel = None
         self._multi_clear_boxes()
@@ -334,6 +366,7 @@ class MultiCutMixin:
         self._multi_paths.clear()
         self._multi_seg.clear()
         self._multi_notes.clear()
+        self._multi_info.clear()
         self._multi_cands.clear()
         self._multi_sel = None
         self._multi_clear_boxes()

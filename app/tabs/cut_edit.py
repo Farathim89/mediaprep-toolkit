@@ -22,12 +22,13 @@ from .cut_auto import AutoCutMixin
 from .cut_common import _cand_label, _is_plex, tr_key
 from .cut_manual import ManualCutMixin
 from .cut_multi import MultiCutMixin
+from .cut_scan import ScanMixin
 from .templates import TemplateTab
 from .. import applog, presets
 
 
 # ======================= Tab 2 - Cut / Edit =======================
-class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ttk.Frame):
+class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Frame):
     def __init__(self, master, saved=None, bottom=None):
         super().__init__(master, padding=8)
         saved = saved or {}
@@ -40,6 +41,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ttk.Frame):
         self._manual_cands_path = ""      # ... and the video it belongs to
         self._multi_cands = {}            # Multi cut: path -> detect_segments result
         self._multi_notes = {}            # Multi cut: iid -> "intro weak 0.41; ..."
+        self._multi_info = set()          # ... iids whose note is informational (no ⚠)
+        self._plex_saved = dict(saved.get("plex_scan") or {})   # last scan options
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
@@ -235,10 +238,10 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ttk.Frame):
                    "skip_incomplete", "trim_to_match", "anchor_cut", "anchor_secs",
                    "intro_from_start", "credits_to_end", "match_lang", "subs_filter",
                    "subs_langs", "use_preintro", "use_intro", "use_credits",
-                   "use_aftercredits")
+                   "use_aftercredits", "detect_mode", "review_method", "plex_scan")
     # ... plus these TemplateTab.snapshot() keys (its Auto-detect settings)
     PRESET_TPL_KEYS = ("det_window", "det_minlen_intro", "det_minlen_credits",
-                       "det_minlen_pa", "det_sens", "det_eplen", "det_lang")
+                       "det_minlen_pa", "det_sens", "det_eplen", "det_lang", "det_mode")
     _DIR_KEYS = {"video_dir": "Videos folder:", "intro_dir": "Intro templates:",
                  "credits_dir": "Credits templates:", "preintro_dir": "Pre-intro templates:",
                  "aftercredits_dir": "After-credits templates:",
@@ -353,6 +356,12 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ttk.Frame):
             lbl = next((k for k, v in AUDIO_LANG_CHOICES.items() if v == d["match_lang"]), None)
             if lbl:
                 self.match_lang_var.set(lbl)
+        if d.get("detect_mode") in ("audio", "visual", "both"):
+            self.detect_mode_var.set(d["detect_mode"])
+        if d.get("review_method") in ("templates", "plex"):
+            self.review_method_var.set(d["review_method"])
+        if isinstance(d.get("plex_scan"), dict):
+            self._plex_saved = dict(d["plex_scan"])
         if isinstance(d.get("subs_langs"), list):
             self.subs_langs = {str(x) for x in d["subs_langs"]}
         self._upd_trim_state()
@@ -365,6 +374,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ttk.Frame):
                 var = getattr(tt, key, None)
                 if var is not None and isinstance(tpl.get(key), (str, int, float)):
                     var.set(str(tpl[key]))
+            if tpl.get("det_mode") in ("audio", "visual", "both") and hasattr(tt, "det_mode_var"):
+                tt.det_mode_var.set(tpl["det_mode"])
             if "det_lang" in tpl and hasattr(tt, "det_lang_var"):
                 lbl = next((k for k, v in AUDIO_LANG_CHOICES.items()
                             if v == tpl["det_lang"]), None)
@@ -599,7 +610,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ttk.Frame):
         st = "disabled" if on else "normal"
         # 'Add to queue' stays usable while a job runs - that's what it's for
         for name in ("start_btn", "cut_sel_btn", "multi_cut_btn", "review_btn",
-                     "man_detect_btn"):
+                     "man_detect_btn", "multi_detect_mb", "multi_plex_btn"):
             w = getattr(self, name, None)
             if w is not None:
                 w.configure(state=st)
@@ -637,6 +648,9 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ttk.Frame):
             "intro_from_start": self.intro_from_start_var.get(),
             "credits_to_end": self.credits_to_end_var.get(),
             "match_lang": AUDIO_LANG_CHOICES.get(self.match_lang_var.get()),
+            "detect_mode": self.detect_mode_var.get(),
+            "review_method": self.review_method_var.get(),
+            "plex_scan": dict(self._plex_saved or {}),
             "subs_filter": self.subs_filter_var.get(),
             "subs_langs": sorted(self.subs_langs),
             "multi_keep_pos": self._multi_keep_pos_var.get(),

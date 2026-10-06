@@ -223,7 +223,14 @@ def _is_stopped(stop_event):
     return stop_event is not None and stop_event.is_set()
 
 
-def _load_template_folder(folder, label, log, stop_event, librosa):
+def _det_mode(cfg):
+    """cfg['detect_mode']: 'audio' (default - the classic matcher), 'visual'
+    (template PICTURES, engine.vfp) or 'both'."""
+    m = cfg.get("detect_mode")
+    return m if m in ("audio", "visual", "both") else "audio"
+
+
+def _load_template_folder(folder, label, log, stop_event, librosa, visual=False):
     data = []
     os.makedirs(TEMP_DIR, exist_ok=True)
     for i, file in enumerate(sorted(glob.glob(os.path.join(folder, "*.*")))):
@@ -235,17 +242,32 @@ def _load_template_folder(folder, label, log, stop_event, librosa):
         log(f"Loading {label}: {name}")
         tmp = os.path.join(TEMP_DIR, f"tpl_{os.getpid()}_{threading.get_ident()}"
                                      f"_{label.lower()}_{i}.wav")
+        y = sr = None
         try:
-            if not extract_wav(file, tmp):
-                log(f"   [WARN] could not convert template {name}")
-                continue
-            y, sr = librosa.load(tmp, sr=None)
+            if extract_wav(file, tmp):
+                y, sr = librosa.load(tmp, sr=None)
         finally:
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
             except OSError:
                 pass
+        vh = None
+        if visual and not _is_stopped(stop_event):
+            from .vfp import video_hashes
+            vh = video_hashes(file, stop_event=stop_event)
+            if vh is not None and int(vh.valid.sum()) < 4:
+                vh = None
+            if vh is None:
+                log(f"   [WARN] template {name} has no usable pictures - audio only")
+        if y is None or len(y) == 0:
+            if vh is None:
+                log(f"   [WARN] could not convert template {name}")
+                continue
+            log(f"   [WARN] template {name} has no audio - matching its pictures only")
+            data.append({'name': name, 'y': None, 'y_match': None, 'sr': None,
+                         'lead': 0.0, 'duration': len(vh) / vh.fps, 'vh': vh})
+            continue
         # A silent/quiet lead-in has no fingerprint, so the matcher would
         # lock onto the first audible note and the cut would start late.
         # Trim the leading silence for MATCHING and remember how much, so
@@ -261,7 +283,7 @@ def _load_template_folder(folder, label, log, stop_event, librosa):
         except Exception:
             pass
         data.append({'name': name, 'y': y, 'y_match': y_match, 'sr': sr,
-                     'lead': lead, 'duration': len(y) / sr})
+                     'lead': lead, 'duration': len(y) / sr, 'vh': vh})
     return data
 
 
@@ -269,14 +291,17 @@ def load_templates_for(cfg, log=None, stop_event=None):
     """Load every template (each file = one variant) of each enabled segment
     folder in cfg. Returns {"intro": [tpl...], "credits": [...],
     "preintro": [...], "aftercredits": [...]} - pass it to detect_segments()
-    so a batch doesn't reload them per file. Needs librosa."""
+    so a batch doesn't reload them per file. Needs librosa. With
+    cfg['detect_mode'] 'visual' / 'both' each template's pictures are
+    fingerprinted too (tpl['vh'])."""
     import librosa
     log = log or (lambda m: None)
+    visual = _det_mode(cfg) != "audio"
     out = {}
     for kind in _SEG_KINDS:
         folder = cfg.get(_SEG_DIR_KEY[kind])
         out[kind] = (_load_template_folder(folder, _SEG_LOAD_LABEL[kind], log,
-                                           stop_event, librosa)
+                                           stop_event, librosa, visual)
                      if folder and _want_seg(cfg, kind) and not _is_stopped(stop_event)
                      else [])
     return out
@@ -334,6 +359,8 @@ def _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log, np, librosa, fftco
     for tpl in tpls:
         if _is_stopped(stop_event):        # Stop responds between templates
             break
+        if tpl.get('y_match') is None:     # picture-only template
+            continue
         am = (anchor_match(slices, tpl['y_match'], sr, anchor_secs, librosa, np, fftconvolve)
               if anchor_cut else None)
         if am is not None:
@@ -345,8 +372,80 @@ def _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log, np, librosa, fftco
             st, en = s - tpl['lead'], s - tpl['lead'] + tpl['duration']
             log(f"     {lname} {tpl['name']:{width}} -> {score:.3f}")
         cands.append({"start": st + offset, "end": en + offset, "score": float(score),
-                      "template": tpl['name'], "anchored": am is not None, "_tpl": tpl})
+                      "template": tpl['name'], "anchored": am is not None, "_tpl": tpl,
+                      "src": "audio"})
     return cands
+
+
+_VIS_MIN = 0.5          # a picture match needs >= this share of matching frames
+_AGREE = 2.0            # audio and picture starts this close = the same match
+
+
+def _match_kind_visual(kind, tpls, total, video, stop_event, log, cache):
+    """Picture candidates: each template's frame hashes slid over the
+    episode's start (intro / pre-intro) or end (credits / after-credits)
+    region (decoded once per episode, kept in `cache`). One candidate per
+    template that has pictures."""
+    from .vfp import match_template, video_hashes
+    side = "start" if kind in ("intro", "preintro") else "end"
+    if side not in cache:
+        if side == "start":
+            cache[side] = video_hashes(video, 0.0, INTRO_SEARCH_WINDOW, stop_event=stop_event)
+        else:
+            cache[side] = video_hashes(video, max(0.0, total - CREDITS_SEARCH_WINDOW), None,
+                                       stop_event=stop_event)
+    eh = cache[side]
+    lname, width, _ = _SEG_LOG[kind]
+    cands = []
+    if eh is None:
+        return cands
+    for tpl in tpls:
+        if _is_stopped(stop_event):
+            break
+        if tpl.get('vh') is None:
+            continue
+        r = match_template(tpl['vh'], eh)
+        if r is None:
+            continue
+        st, score = r
+        log(f"     {lname} {tpl['name']:{width}} -> {score:.3f} (video)")
+        cands.append({"start": st, "end": st + tpl['duration'], "score": float(score),
+                      "template": tpl['name'], "anchored": False, "_tpl": tpl,
+                      "src": "visual"})
+    return cands
+
+
+def _merge_sources(a_cands, v_cands, mode, conf):
+    """One candidate per template from its audio and picture candidates.
+    'both': agreeing starts (within 2 s) = confirmed 'audio+visual' (audio's
+    finer timing, the better score); disagreeing = a valid audio match is
+    kept, else a valid picture match, flagged 'conflict' (the two scores are
+    on different scales, so a confident audio match is never overruled);
+    one source = that."""
+    if mode == "audio":
+        return a_cands
+    if mode == "visual":
+        return v_cands
+    by_a = {c["template"]: c for c in a_cands}
+    by_v = {c["template"]: c for c in v_cands}
+    order = [c["template"] for c in a_cands] + [t for t in by_v if t not in by_a]
+    out = []
+    for name in order:
+        ca, cv = by_a.get(name), by_v.get(name)
+        if cv and cv["score"] < max(conf, _VIS_MIN) and ca:
+            cv = None                     # a weak picture match neither confirms nor vetoes
+        if ca and cv:
+            if abs(ca["start"] - cv["start"]) <= _AGREE:
+                c = dict(ca, score=max(ca["score"], cv["score"]), src="audio+visual",
+                         v_score=cv["score"])
+            elif ca["score"] >= conf:
+                c = dict(ca, conflict=True, v_score=cv["score"])
+            else:
+                c = dict(cv, a_score=ca["score"])     # audio was only weak
+        else:
+            c = ca or cv
+        out.append(c)
+    return out
 
 
 def _detect_core(video, cfg, templates, stop_event, log):
@@ -358,14 +457,25 @@ def _detect_core(video, cfg, templates, stop_event, log):
     import numpy as np
     import librosa
     from scipy.signal import fftconvolve
-    tracks, sr = _episode_tracks(video, cfg, stop_event, librosa)
-    if not tracks:
+    mode = _det_mode(cfg)
+    has_vis = any(t.get('vh') is not None for v in templates.values() for t in (v or ()))
+    if mode == "both" and not has_vis:
+        mode = "audio"            # no template has usable pictures
+    tracks, sr = ([], None) if mode == "visual" else _episode_tracks(video, cfg, stop_event,
+                                                                     librosa)
+    if not tracks and mode == "audio":
         return None
     # the timeline to cut is the VIDEO's, not the first audio track's
     # (audio often ends a little early or runs a little long)
-    total = probe_video_duration(video) or probe_duration(video) or len(tracks[0]) / sr
+    total = (probe_video_duration(video) or probe_duration(video)
+             or (len(tracks[0]) / sr if tracks else 0.0))
+    if not total:
+        return None
     log(f"   Duration: {total:.1f}s"
         + (f"  ({len(tracks)} audio tracks)" if len(tracks) > 1 else ""))
+    if mode == "both" and not tracks:
+        log("   no readable audio - matching the template pictures only")
+    vcache = {}
     conf = cfg["confidence"]
     anchor_cut = bool(cfg.get("anchor_cut"))
     res = {"duration": float(total), "n_tracks": len(tracks)}
@@ -375,16 +485,22 @@ def _detect_core(video, cfg, templates, stop_event, log):
         res[kind] = []
         if not tpls:
             continue
-        cands = _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log,
-                            np, librosa, fftconvolve)
+        a_c = (_match_kind(kind, tpls, tracks, sr, cfg, stop_event, log,
+                           np, librosa, fftconvolve) if tracks else [])
+        v_c = (_match_kind_visual(kind, tpls, total, video, stop_event, log, vcache)
+               if mode != "audio" else [])
+        cands = _merge_sources(a_c, v_c, mode, conf)
         cands.sort(key=lambda c: -c["score"])          # stable: template order on ties
         for rank, c in enumerate(cands):
             c["match_start"] = c["start"]
-            c["ok"] = c["score"] >= conf and not _is_stopped(stop_event)
+            c["thr"] = max(conf, _VIS_MIN) if c.get("src") == "visual" else conf
+            c["ok"] = c["score"] >= c["thr"] and not _is_stopped(stop_event)
             # only a VALID intro may veto credits (a weak match's end is noise)
             if kind == "credits":
                 c["ok"] = c["ok"] and c["start"] > intro_veto + 10
             if (cfg.get("trim_to_match") and not anchor_cut and not _is_stopped(stop_event)
+                    and tracks and c["_tpl"].get('y') is not None
+                    and c.get("src") != "visual"
                     and (c["ok"] or (rank > 0 and c["score"] >= _NEAR_MISS * conf))):
                 tpl = c["_tpl"]
                 ml = matched_seconds(tracks, c["start"], tpl['y'], sr, librosa, np)
@@ -396,11 +512,14 @@ def _detect_core(video, cfg, templates, stop_event, log):
         best = cands[0] if cands else None
         if kind == "intro" and best and best["ok"]:
             intro_veto = best["end"]
+        how = f" ({best['src']})" if best and mode != "audio" else ""
+        if best and best.get("conflict"):
+            how += " - audio and pictures disagree"
         if best and best["ok"]:
-            log(f"   [OK] {_SEG_LOG[kind][2]} at {best['start']:.2f}s")
+            log(f"   [OK] {_SEG_LOG[kind][2]} at {best['start']:.2f}s{how}")
         else:
             log(f"   [--] weak {_SEG_LOG[kind][0]} match"
-                f" ({max(0.0, best['score'] if best else 0.0):.3f})")
+                f" ({max(0.0, best['score'] if best else 0.0):.3f}){how}")
         res[kind] = cands
     # optional: extend the intro cut back to the START of the file (also
     # removes any recap/cold-open before the intro), and the credits cut
@@ -432,7 +551,9 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
              "credits": [...], "aftercredits": [...]}
     cand = {"start", "end", "score", "template" (file name), "ok" (score >=
     confidence and run_batch's validity rules), "match_start" (where the
-    audio matched, before intro_from_start), "anchored"}. Each list is best
+    audio matched, before intro_from_start), "anchored", "src" ('audio' /
+    'visual' / 'audio+visual' - cfg['detect_mode']), "conflict" (audio and
+    pictures pointed at different places)}. Each list is best
     first, at most 5, near-misses (score >= 0.6 x confidence) with ok=False.
     Adds "error" if the episode's audio couldn't be read. Needs librosa."""
     log = log or (lambda m: None)
@@ -446,17 +567,18 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
         return out
     total = res["duration"]
     out["duration"] = total
-    floor = _NEAR_MISS * cfg["confidence"]
     for kind in ("preintro", "intro", "credits", "aftercredits"):
         lst = []
         for c in res.get(kind, []):
-            if not (c["ok"] or c["score"] >= floor):
+            if not (c["ok"] or c["score"] >= _NEAR_MISS * c.get("thr", cfg["confidence"])):
                 continue
             lst.append({"start": float(max(0.0, c["start"])),
                         "end": float(min(total, c["end"])),
                         "score": float(c["score"]), "template": c["template"],
                         "ok": bool(c["ok"]),
                         "match_start": float(max(0.0, c["match_start"])),
-                        "anchored": bool(c["anchored"])})
+                        "anchored": bool(c["anchored"]),
+                        "src": c.get("src", "audio"),
+                        "conflict": bool(c.get("conflict"))})
         out[kind] = lst[:_MAX_CANDS]
     return out

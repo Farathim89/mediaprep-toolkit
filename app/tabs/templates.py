@@ -19,6 +19,9 @@ from ..ui.widgets import (ScrollFrame, TimeEntry, add_tooltip, auto_wrap, build_
                           trim_text_lines)
 from .common import (_KIND_NAMES, _MEDIA_EXTS, _VIDEO_TYPES, _existing_template,
                      _snap_in_thread, _template_stem)
+from .cut_common import _src_label
+from .cut_common import mode_combobox
+from .templates_autodetect import TemplateAutoMixin
 from .templates_detect import TemplateDetectMixin
 from .templates_manager import TemplatesManagerMixin
 from .. import applog, jobs as jobreg
@@ -34,7 +37,7 @@ _WHICH = {"from": N_("From"), "to": N_("To")}
 
 
 # ======================= Templates tab =======================
-class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
+class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin, ttk.Frame):
     SECTION_SPECS = [
         ("preintro",     "Pre-intro (before intro)",      False, True),
         ("intro",        "Intro",                         True,  True),
@@ -58,6 +61,9 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
         self._cutting = False               # manual template cut
         self._autocutting = False
         self._detect_partial = False        # results came from a stopped detect
+        self._tpl_detecting = False         # Cut template -> Auto-detect running
+        self._tpl_cands = {}                # ... its candidates per kind (▾ menus)
+        self._tpl_cands_path = ""           # ... and the video they belong to
 
         nb = ttk.Notebook(self)
         self._nb = nb
@@ -93,7 +99,24 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
         ent.bind("<Return>", lambda e: self.load_from_entry())
         ttk.Button(top, text=tr("Browse..."), command=self.browse).pack(side="left", padx=6)
         ttk.Button(top, text=tr("Load"), command=self.load_from_entry).pack(side="left")
+        self.tpl_detect_btn = ttk.Button(top, text=tr("Auto-detect"), command=self.tpl_autodetect)
+        self.tpl_detect_btn.pack(side="left", padx=(6, 0))
+        add_tooltip(self.tpl_detect_btn, tr(
+            "Fill the From / To boxes of the loaded episode automatically: compares it "
+            "with up to N neighbouring episodes of its folder ('Scan at most' on "
+            "Auto-detect, default 4) and takes what recurs, and matches the templates you "
+            "already have (the Log says which kinds are already covered). Check the times "
+            "in the player, then Cut template(s)."))
         help_button(top, "template_cut").pack(side="right", padx=(8, 0))
+        # the Audio / Visual choice of Templates -> Auto-detect, shown here too
+        # (the variable is created early; _build_detect_tab reuses it)
+        dm = saved.get("det_mode")
+        self.det_mode_var = tk.StringVar(value=dm if dm in ("audio", "visual", "both")
+                                         else "both")
+        tdm = mode_combobox(top, self.det_mode_var, width=14)
+        tdm.pack(side="right", padx=(8, 0))
+        add_tooltip(tdm, tr("Detect by: Audio, Visual (the pictures) or both - the same "
+                            "setting as on the Auto-detect sub-tab"))
 
         # ---- body: player (left) + cut points (right), single view ----
         body = ttk.Frame(main)
@@ -167,6 +190,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
             bp.grid(row=r0, column=5, rowspan=2, padx=(6, 0), pady=(top_pad, 0))
             add_tooltip(bp, tr("Play only the {section} section (From to To) in the player",
                                section=desc))
+            self._tpl_cand_button(sect, key).grid(row=r0, column=6, rowspan=2, padx=(2, 0),
+                                                  pady=(top_pad, 0))
             self.sections[key] = (on, ef, et)
             if ss:                       # restore last session's times
                 for te, val in ((ef, ss[1]), (et, ss[2])):
@@ -400,7 +425,11 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
     @staticmethod
     def _kind_disp(c):
         name = tr_key(_KIND_NAMES.get(c["kind"], c["kind"]))
-        return tr("✔ {kind} (have)", kind=name) if c.get("known") else name
+        if c.get("known"):
+            return tr("✔ {kind} (have)", kind=name)
+        if c.get("src") and c["src"] != "audio":
+            return f"{name} ({_src_label(c['src'])})"
+        return name
 
     def _template_saved(self, out, replace, kind, member=None, cluster=None):
         """Worker-side after a successful cut: move the older copies an
@@ -436,8 +465,11 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
         self.detect_stop_btn.configure(state="normal" if scanning else "disabled")
         self.autocut_btn.configure(state="disabled" if (scanning or cutting or self._detect_partial)
                                    else "normal")
-        self.cut_btn.configure(state="disabled" if cutting else "normal")
-        self.cut_stop_btn.configure(state="normal" if cutting else "disabled")
+        busy = cutting or self._tpl_detecting
+        self.cut_btn.configure(state="disabled" if busy else "normal")
+        self.cut_stop_btn.configure(state="normal" if busy else "disabled")
+        if hasattr(self, "tpl_detect_btn"):
+            self.tpl_detect_btn.configure(state="disabled" if busy else "normal")
 
     def start_cut(self):
         video = self.file_var.get().strip().strip('"')
@@ -495,7 +527,9 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
 
     def stop_cut(self):
         self.cut_stop.set()
-        if self._autocutting:
+        if self._tpl_detecting:
+            self.log("[AUTO] stopping auto-detect...")
+        elif self._autocutting:
             self.log("[DETECT] stopping auto-cut after the current template...")
         else:
             self.log("[CUT] stopping after the current section...")
@@ -603,6 +637,7 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, ttk.Frame):
             "det_sens": self.det_sens.get(),
             "det_eplen": self.det_eplen.get(),
             "det_lang": AUDIO_LANG_CHOICES.get(self.det_lang_var.get()),
+            "det_mode": self.det_mode_var.get(),
             "tpl_sections": self._sections_snapshot(),
         }
 

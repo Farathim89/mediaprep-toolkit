@@ -470,3 +470,46 @@ def representative_member(cluster):
     lens = {m: cluster["ranges"][m][1] - cluster["ranges"][m][0] for m in members}
     ordered = sorted(members, key=lambda m: lens[m])
     return ordered[len(ordered) // 2]
+
+
+def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240.0,
+                     min_lens=None, progress=None, stop_event=None, diag_out=None,
+                     log=None, **kw):
+    """detect_recurring_segments with a source choice. mode 'audio' = the
+    classic audio fingerprints; 'visual' = recurring PICTURES (engine.vfp,
+    intro and credits only - pre-intro / after-credits stay audio); 'both' =
+    both, merged per episode (vfp.combine_clusters: overlapping results are
+    confirmed, else the better one). Every cluster gets 'src'."""
+    from .vfp import combine_clusters, norm_mode, recurring_video
+    mode = norm_mode(mode, "audio")
+    min_lens = min_lens or {}
+    prog = progress or (lambda f, t="": None)
+    vis_kinds = [k for k in ("intro", "credits") if k in kinds] if mode != "audio" else []
+    a_kinds = list(kinds) if mode != "visual" else [k for k in kinds
+                                                    if k in ("preintro", "aftercredits")]
+    a_span = 0.6 if vis_kinds and a_kinds else 1.0
+    out = []
+    if a_kinds:
+        out = detect_recurring_segments(
+            files, kinds=a_kinds, window=window, min_lens=min_lens,
+            progress=lambda f, t="": prog(a_span * f, t), stop_event=stop_event,
+            diag_out=diag_out, **kw)
+        for c in out:
+            c.setdefault("src", "audio")
+        if stop_event is not None and stop_event.is_set():
+            return out
+    lo = a_span if a_kinds else 0.0
+    step = (1.0 - lo) / max(1, len(vis_kinds)) if a_kinds else 1.0 / max(1, len(vis_kinds))
+    for i, kind in enumerate(vis_kinds):
+        b0 = lo + step * i
+        vc = recurring_video(files, window, kind=kind, min_len=min_lens.get(kind, 10.0),
+                             progress=lambda f, t="", b0=b0: prog(b0 + step * f, t),
+                             stop_event=stop_event, log=log)
+        if vc is None:
+            return out
+        if mode == "both":
+            ac = [c for c in out if c["kind"] == kind]
+            out = [c for c in out if c["kind"] != kind] + combine_clusters(ac, vc, kind)
+        else:
+            out += vc
+    return out
