@@ -1,21 +1,93 @@
-"""Constants, codec/audio maps, settings persistence and GUI themes."""
+"""Constants, codec/audio maps, folder layout and settings persistence.
+(The GUI themes live in ui/themes.py.)"""
 import json
 import os
 import subprocess
-import tkinter as tk
+import sys
 
-# ======================= shared settings =======================
-INPUT_DIR = "input"                        # parent folder for the template clips
-INTRO_DIR = "input/intro"
-CREDITS_DIR = "input/credits"
-PREINTRO_DIR = "input/preintro"            # clips that come BEFORE the intro (recaps, logos)
-AFTERCREDITS_DIR = "input/aftercredits"    # clips that come AFTER the credits (teasers, previews)
-VIDEO_DIR = "videos"
-OUTPUT_DIR = "output"
-TEMP_DIR = "temp"
-AUDIOGAIN_DIR = "Audio Gain"
-AUDIOGAIN_INPUT = "Audio Gain/input"
-AUDIOGAIN_OUTPUT = "Audio Gain/output"
+from .i18n import N_
+
+# ======================= version =======================
+APP_VERSION = "2.0.0"
+APP_NAME = "MediaPrep Toolkit"
+# GitHub repo whose latest release the update check looks at
+UPDATE_REPO = "Farathim89/intro-credits-toolkit"
+
+# ======================= folder layout =======================
+# APP_ROOT is the folder the user sees: next to "MediaPrep Toolkit.exe" when
+# frozen (PyInstaller), else the folder holding intro_credits_toolkit.py (the
+# parent of this app/ package). Every working folder is an ABSOLUTE path under
+# it, so the app works no matter what the current working directory is.
+#
+#   <APP_ROOT>\Media\  videos (+done), output, templates\<kind>, Audio Gain\in/out
+#   <APP_ROOT>\Data\   settings.json, presets, logs, temp (+trash), backups
+#
+# app/migrate.py moves an old-layout install (videos\, input\, logs\,
+# toolkit_settings.json ...) into these places at startup.
+APP_DIR = os.path.dirname(os.path.abspath(__file__))          # the app/ package
+if getattr(sys, "frozen", False):
+    APP_ROOT = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    APP_ROOT = os.path.dirname(APP_DIR)
+
+
+def resource_path(rel):
+    """Absolute path of a bundled read-only resource given relative to the
+    app/ package (e.g. "assets/icon.ico"). Frozen builds unpack them under
+    sys._MEIPASS (as app/<rel>, or <rel> at the bundle root)."""
+    rel = rel.replace("/", os.sep)
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        for cand in (os.path.join(base, "app", rel), os.path.join(base, rel)):
+            if os.path.exists(cand):
+                return cand
+        return os.path.join(base, "app", rel)
+    return os.path.join(APP_DIR, rel)
+
+
+MEDIA_DIR = os.path.join(APP_ROOT, "Media")
+DATA_DIR = os.path.join(APP_ROOT, "Data")
+
+TEMPLATES_DIR = os.path.join(MEDIA_DIR, "templates")   # parent of the template clips
+INPUT_DIR = TEMPLATES_DIR                               # old name, kept for imports
+INTRO_DIR = os.path.join(TEMPLATES_DIR, "intro")
+CREDITS_DIR = os.path.join(TEMPLATES_DIR, "credits")
+PREINTRO_DIR = os.path.join(TEMPLATES_DIR, "preintro")        # clips BEFORE the intro
+AFTERCREDITS_DIR = os.path.join(TEMPLATES_DIR, "aftercredits")  # clips AFTER the credits
+VIDEO_DIR = os.path.join(MEDIA_DIR, "videos")
+OUTPUT_DIR = os.path.join(MEDIA_DIR, "output")
+AUDIOGAIN_DIR = os.path.join(MEDIA_DIR, "Audio Gain")
+AUDIOGAIN_INPUT = os.path.join(AUDIOGAIN_DIR, "input")
+AUDIOGAIN_OUTPUT = os.path.join(AUDIOGAIN_DIR, "output")
+
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+PRESETS_DIR = os.path.join(DATA_DIR, "presets")
+LOGS_DIR = os.path.join(DATA_DIR, "logs")
+TEMP_DIR = os.path.join(DATA_DIR, "temp")
+TRASH_DIR = os.path.join(TEMP_DIR, "trash")
+BACKUPS_DIR = os.path.join(DATA_DIR, "backups")
+
+# folders created at startup
+WORK_DIRS = (INTRO_DIR, CREDITS_DIR, PREINTRO_DIR, AFTERCREDITS_DIR, VIDEO_DIR,
+             OUTPUT_DIR, AUDIOGAIN_INPUT, AUDIOGAIN_OUTPUT, PRESETS_DIR, LOGS_DIR,
+             TEMP_DIR)
+
+# settings keys holding a folder / file path (a relative value is resolved
+# against APP_ROOT on load, and migrate.py rewrites old-layout values)
+PATH_KEYS = ("video_dir", "intro_dir", "credits_dir", "preintro_dir",
+             "aftercredits_dir", "output_dir", "detect_dir", "theme_out",
+             "ag_in", "ag_out", "manual_video", "last_video", "multi_files")
+
+
+def short_path(path):
+    """`path` shown relative to APP_ROOT when it lies inside it (for labels),
+    e.g. 'Data\\temp\\trash'."""
+    try:
+        rel = os.path.relpath(path, APP_ROOT)
+    except ValueError:            # other drive
+        return path
+    return path if rel.startswith("..") else rel
+
 
 INTRO_SEARCH_WINDOW = 600
 CREDITS_SEARCH_WINDOW = 600
@@ -25,13 +97,17 @@ VALID_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast",
 
 # ---- video codec selection ----
 CODECS = {
-    "Auto - CPU (match source)": "auto",
-    "Auto - GPU / NVENC (match source)": "auto_gpu",
-    "H.264 (libx264) - most compatible": "libx264",
-    "H.265 / HEVC (libx265) - smaller files": "libx265",
-    "H.264 NVENC (NVIDIA GPU, fast)": "h264_nvenc",
-    "H.265 NVENC (NVIDIA GPU, fast)": "hevc_nvenc",
-    "AV1 (libsvtav1) - smallest, slow": "libsvtav1",
+    N_("Auto - CPU (match source)"): "auto",
+    N_("Auto - GPU / NVENC (match source)"): "auto_gpu",
+    # Plex-ready: NVENC if usable else CPU, near-lossless quality capped at
+    # the source's video bitrate (never bigger), Plex direct-play audio, MKV
+    N_("Plex-ready HEVC (near-lossless, never bigger)"): "plex_hevc",
+    N_("Plex-ready H.264 (near-lossless, never bigger)"): "plex_h264",
+    N_("H.264 (libx264) - most compatible"): "libx264",
+    N_("H.265 / HEVC (libx265) - smaller files"): "libx265",
+    N_("H.264 NVENC (NVIDIA GPU, fast)"): "h264_nvenc",
+    N_("H.265 NVENC (NVIDIA GPU, fast)"): "hevc_nvenc",
+    N_("AV1 (libsvtav1) - smallest, slow"): "libsvtav1",
 }
 
 # label used before the CPU/GPU auto split -> its replacement, so old saved
@@ -49,16 +125,16 @@ AUTO_GPU_CODEC_MAP = {"hevc": "hevc_nvenc", "h264": "h264_nvenc",
 DEFAULT_CODEC_LABEL = "H.264 (libx264) - most compatible"
 
 # audio-track language choices for detection/matching (label -> ISO code or None
-# for "all / default"). Used by the Cut / Edit and the Auto-detect tab.
+# for "all / default"). Used by Cut / Edit and Templates -> Auto-detect.
 AUDIO_LANG_CHOICES = {
-    "All / default track": None,
-    "English": "eng",
-    "Japanese": "jpn",
-    "Spanish": "spa",
-    "Portuguese": "por",
-    "French": "fre",
-    "German": "ger",
-    "Arabic": "ara",
+    N_("All / default track"): None,
+    N_("English"): "eng",
+    N_("Japanese"): "jpn",
+    N_("Spanish"): "spa",
+    N_("Portuguese"): "por",
+    N_("French"): "fre",
+    N_("German"): "ger",
+    N_("Arabic"): "ara",
 }
 
 # NVENC uses p1-p7 presets and -cq instead of -crf
@@ -71,7 +147,12 @@ SVT_PRESET_MAP = {"ultrafast": "12", "superfast": "11", "veryfast": "10",
                   "slow": "6", "slower": "5", "veryslow": "4"}
 
 
-BIT_DEPTHS = {"Auto (match source)": "auto", "8-bit": "8", "10-bit": "10"}
+BIT_DEPTHS = {N_("Auto (match source)"): "auto", N_("8-bit"): "8", N_("10-bit"): "10"}
+
+# every video container the toolkit accepts (lower-case, with the dot) - shared
+# by the engines and the file pickers so they always agree
+MEDIA_EXTS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v",
+              ".ts", ".mpg", ".mpeg", ".wmv", ".flv")
 
 # ffmpeg subprocesses must not flash a console window on Windows
 POPEN_FLAGS = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
@@ -96,33 +177,82 @@ DEFAULT_AUDIO_RECODE = ("aac", "320k")
 # audio output choices for the Audio Gain tool (None = match the source codec,
 # preserving 5.1 / Dolby / DTS and channel layout per track)
 AUDIO_OUT_CHOICES = {
-    "Match source (keep codec & channels)": None,
-    "AAC 320k": ("aac", "320k"),
-    "AC3 640k (Dolby Digital)": ("ac3", "640k"),
-    "E-AC3 640k": ("eac3", "640k"),
-    "FLAC (lossless)": ("flac", None),
-    "Opus 320k": ("libopus", "320k"),
+    N_("Match source (keep codec & channels)"): None,
+    N_("AAC 320k"): ("aac", "320k"),
+    N_("AC3 640k (Dolby Digital)"): ("ac3", "640k"),
+    N_("E-AC3 640k"): ("eac3", "640k"),
+    N_("FLAC (lossless)"): ("flac", None),
+    N_("Opus 320k"): ("libopus", "320k"),
 }
 
 
 # ======================= settings persistence =======================
-SETTINGS_FILE = "toolkit_settings.json"
+def _abs_setting(v):
+    """A relative path value from the settings -> absolute under APP_ROOT."""
+    if isinstance(v, str) and v.strip() and not os.path.isabs(v):
+        return os.path.normpath(os.path.join(APP_ROOT, v))
+    return v
+
+
+def _rel_setting(v):
+    """An absolute path value inside APP_ROOT -> relative with forward slashes
+    ("Media/videos"), so the app folder can be moved or renamed. Paths
+    elsewhere (other folders / drives) stay absolute."""
+    if not (isinstance(v, str) and v.strip() and os.path.isabs(v)):
+        return v
+    try:
+        rel = os.path.relpath(os.path.normpath(v), APP_ROOT)
+    except ValueError:            # other drive
+        return v
+    if rel == os.curdir or rel.startswith(os.pardir):
+        return v
+    return rel.replace("\\", "/")
+
+
+def resolve_paths(d):
+    """In place: relative PATH_KEYS values of a settings/preset dict ->
+    absolute under APP_ROOT. Returns d."""
+    for k in PATH_KEYS:
+        if isinstance(d.get(k), list):
+            d[k] = [_abs_setting(v) for v in d[k]]
+        elif k in d:
+            d[k] = _abs_setting(d[k])
+    return d
+
+
+def relativize_paths(d):
+    """A copy of a settings/preset dict with PATH_KEYS values inside APP_ROOT
+    stored relative (see _rel_setting)."""
+    d = dict(d)
+    for k in PATH_KEYS:
+        if isinstance(d.get(k), list):
+            d[k] = [_rel_setting(v) for v in d[k]]
+        elif k in d:
+            d[k] = _rel_setting(d[k])
+    return d
+
 
 def load_settings():
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             d = json.load(f)
-            return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(d, dict):
+        return {}
+    # relative folder values mean "next to the app", not "wherever the
+    # working directory happens to be"
+    return resolve_paths(d)
+
 
 def save_settings(d):
     # write a temp file and swap it in, so a crash mid-write can't leave a
     # truncated (unloadable) settings file behind
     tmp = SETTINGS_FILE + ".tmp"
     try:
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2)
+            json.dump(relativize_paths(d), f, indent=2)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, SETTINGS_FILE)
@@ -130,70 +260,41 @@ def save_settings(d):
         pass
 
 
-# ======================= themes =======================
-THEMES = {
-    "Light": dict(bg="#f0f0f0", fg="#1a1a1a", field="#ffffff", border="#b0b0b0",
-                  tab="#dcdcdc", btn="#e1e1e1", btn_active="#d0d0d0",
-                  accent="#2f6fd6", text_bg="#ffffff", text_fg="#1a1a1a",
-                  hint="#666666"),
-    "Dark": dict(bg="#2b2b2b", fg="#e6e6e6", field="#3c3f41", border="#555555",
-                 tab="#3c3f41", btn="#444444", btn_active="#555555",
-                 accent="#4a88ff", text_bg="#1e1e1e", text_fg="#dcdcdc",
-                 hint="#9a9a9a"),
-    "High Contrast": dict(bg="#000000", fg="#ffffff", field="#000000", border="#ffffff",
-                          tab="#000000", btn="#000000", btn_active="#333333",
-                          accent="#ffff00", text_bg="#000000", text_fg="#ffff00",
-                          hint="#00ffff"),
+# app-wide preferences (notifications, update check, log retention) - kept in
+# the same Data\settings.json. app.py loads them once (load_prefs), the
+# Settings dialog edits PREFS, and persist() writes them back with the tabs'
+# settings (prefs_snapshot).
+PREF_DEFAULTS = {
+    "notify_on": True,            # done-notifications at all
+    "notify_toast": True,         # Windows toast (else / on failure: in-app popup)
+    "notify_sound": True,         # ok / error sound
+    "notify_min_minutes": 1.0,    # only for jobs that ran at least this long
+    "update_check": True,         # look for a newer release at startup
+    "update_last_check": 0.0,     # epoch seconds of the last check
+    "log_keep_days": 30,          # session logs older than this go to the trash
+    "language": "",               # UI language code ("" = Windows language), see i18n.py
 }
+PREFS = dict(PREF_DEFAULTS)
 
-def apply_theme(root, style, name):
-    t = THEMES.get(name, THEMES["Light"])
-    style.theme_use("clam")
-    style.configure(".", background=t["bg"], foreground=t["fg"],
-                    fieldbackground=t["field"], bordercolor=t["border"],
-                    lightcolor=t["bg"], darkcolor=t["bg"])
-    style.configure("TFrame", background=t["bg"])
-    style.configure("TLabel", background=t["bg"], foreground=t["fg"])
-    style.configure("Hint.TLabel", background=t["bg"], foreground=t["hint"])
-    style.configure("TNotebook", background=t["bg"])
-    style.configure("TNotebook.Tab", background=t["tab"], foreground=t["fg"])
-    style.map("TNotebook.Tab", background=[("selected", t["bg"])])
-    style.configure("TEntry", fieldbackground=t["field"], foreground=t["fg"],
-                    insertcolor=t["fg"])
-    style.configure("TCombobox", fieldbackground=t["field"], foreground=t["fg"],
-                    arrowcolor=t["fg"])
-    style.map("TCombobox", fieldbackground=[("readonly", t["field"])],
-              foreground=[("readonly", t["fg"])])
-    style.configure("TSpinbox", fieldbackground=t["field"], foreground=t["fg"],
-                    arrowcolor=t["fg"], insertcolor=t["fg"])
-    style.configure("TButton", background=t["btn"], foreground=t["fg"])
-    style.map("TButton", background=[("active", t["btn_active"])])
-    for w in ("TCheckbutton", "TRadiobutton"):
-        style.configure(w, background=t["bg"], foreground=t["fg"])
-        style.map(w, background=[("active", t["bg"])])
-    style.configure("Horizontal.TProgressbar", background=t["accent"],
-                    troughcolor=t["field"])
-    style.configure("Treeview", background=t["field"], foreground=t["fg"],
-                    fieldbackground=t["field"])
-    style.configure("Treeview.Heading", background=t["btn"], foreground=t["fg"])
-    style.map("Treeview", background=[("selected", t["accent"])],
-              foreground=[("selected", t["fg"])])
-    style.configure("TLabelframe", background=t["bg"], bordercolor=t["border"],
-                    lightcolor=t["bg"], darkcolor=t["bg"])
-    style.configure("TLabelframe.Label", background=t["bg"], foreground=t["accent"])
-    root.configure(bg=t["bg"])
-    # dropdown lists of comboboxes
-    root.option_add("*TCombobox*Listbox.background", t["field"])
-    root.option_add("*TCombobox*Listbox.foreground", t["fg"])
-    root.option_add("*TCombobox*Listbox.selectBackground", t["accent"])
-    # plain-tk widgets (Text logs, Canvas) aren't themed by ttk - walk and recolor
-    def walk(w):
-        for c in w.winfo_children():
-            if isinstance(c, tk.Text):
-                c.configure(bg=t["text_bg"], fg=t["text_fg"],
-                            insertbackground=t["fg"],
-                            selectbackground=t["accent"])
-            elif isinstance(c, tk.Canvas):
-                c.configure(bg=t["bg"])
-            walk(c)
-    walk(root)
+
+def load_prefs(saved):
+    """Fill PREFS from a loaded settings dict (bad/missing values -> default)."""
+    for k, dflt in PREF_DEFAULTS.items():
+        v = saved.get(k, dflt)
+        try:
+            if isinstance(dflt, bool):
+                v = bool(v)
+            elif isinstance(dflt, int):
+                v = int(v)
+            elif isinstance(dflt, float):
+                v = float(v)
+            elif isinstance(dflt, str):
+                v = v if isinstance(v, str) else dflt
+        except (TypeError, ValueError):
+            v = dflt
+        PREFS[k] = v
+    return PREFS
+
+
+def prefs_snapshot():
+    return dict(PREFS)

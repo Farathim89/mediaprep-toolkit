@@ -4,11 +4,14 @@ import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from . import applog
+from .. import applog
+from ..i18n import tr
+from ..config import LOGS_DIR
+from ..ui.widgets import trim_text_lines, help_button
 
 
 class LogTab(ttk.Frame):
-    def __init__(self, master, logdir="logs"):
+    def __init__(self, master, logdir=LOGS_DIR):
         super().__init__(master, padding=8)
         self.logdir = logdir
         self.columnconfigure(0, weight=1)
@@ -16,10 +19,13 @@ class LogTab(ttk.Frame):
 
         bar = ttk.Frame(self)
         bar.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 4))
-        ttk.Button(bar, text="Save log...", command=self.save).pack(side="left")
-        ttk.Button(bar, text="Clear", command=self.clear).pack(side="left", padx=6)
-        ttk.Button(bar, text="Open logs folder", command=self.open_folder).pack(side="left")
-        ttk.Label(bar, text="  (all activity is also auto-saved to the logs folder)",
+        ttk.Button(bar, text=tr("Save log..."), command=self.save).pack(side="left")
+        ttk.Button(bar, text=tr("Clear"), command=self.clear).pack(side="left", padx=6)
+        ttk.Button(bar, text=tr("Open logs folder"), command=self.open_folder).pack(side="left")
+        help_button(bar, "log").pack(side="right")
+        ttk.Label(bar, text="  " + tr("(all activity is also auto-saved to the logs folder; "
+                                      "the view keeps the last {n:,} lines)",
+                                      n=applog.MAX_LINES),
                   style="Hint.TLabel").pack(side="left", padx=(8, 0))
 
         self.text = tk.Text(self, state="disabled", font=("Consolas", 9), wrap="none")
@@ -39,6 +45,7 @@ class LogTab(ttk.Frame):
             return
         self.text.configure(state="normal")
         self.text.insert("end", s + "\n")
+        trim_text_lines(self.text, applog.MAX_LINES)   # same cap as the in-memory log
         self.text.see("end")
         self.text.configure(state="disabled")
 
@@ -49,20 +56,21 @@ class LogTab(ttk.Frame):
         self.text.configure(state="disabled")
 
     def save(self):
-        p = filedialog.asksaveasfilename(title="Save log", defaultextension=".log",
-                                         filetypes=[("Log files", "*.log *.txt"), ("All files", "*.*")])
+        p = filedialog.asksaveasfilename(title=tr("Save log"), defaultextension=".log",
+                                         filetypes=[(tr("Log files"), "*.log *.txt"),
+                                                    (tr("All files"), "*.*")])
         if not p:
             return
         try:
             with open(p, "w", encoding="utf-8") as f:
                 f.write(applog.all_text())
-            messagebox.showinfo("Saved", f"Log saved to:\n{p}")
+            messagebox.showinfo(tr("Saved"), tr("Log saved to:\n{path}", path=p))
         except OSError as e:
-            messagebox.showerror("Error", str(e))
+            messagebox.showerror(tr("Error"), str(e))
 
     def open_folder(self):
         try:
             os.makedirs(self.logdir, exist_ok=True)
             os.startfile(os.path.abspath(self.logdir))   # Windows
         except Exception:
-            messagebox.showinfo("Logs folder", os.path.abspath(self.logdir))
+            messagebox.showinfo(tr("Logs folder"), os.path.abspath(self.logdir))

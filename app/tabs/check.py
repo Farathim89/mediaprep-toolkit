@@ -5,21 +5,48 @@
   Full:  decode the entire file and report any errors (slow, but catches
          corruption anywhere in the file)."""
 import os
-import glob
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from .media import quick_check, full_check, probe_duration
-from .widgets import add_tooltip, enable_file_drop, enable_paths_drop
-from . import applog
+from ..engine.probe import quick_check, full_check, probe_duration
+from ..ui.widgets import (add_tooltip, enable_file_drop, enable_paths_drop,
+                          bind_status_colors, trim_text_lines, help_button)
+from .. import applog
+from .. import jobs
+from ..i18n import tr, ntr
 
-_MEDIA_GLOBS = ("*.mp4", "*.mkv", "*.mov", "*.avi", "*.webm", "*.m4v",
-                "*.ts", "*.mpg", "*.mpeg", "*.wmv", "*.flv")
-_MEDIA_TYPES = [("Video files", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.ts *.mpg *.mpeg *.wmv *.flv"),
-                ("All files", "*.*")]
+_MEDIA_TYPES = [(tr("Video files"),
+                 "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.ts *.mpg *.mpeg *.wmv *.flv"),
+                (tr("All files"), "*.*")]
 _MEDIA_EXTS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v",
                ".ts", ".mpg", ".mpeg", ".wmv", ".flv")
+
+
+def _walk_media(folder):
+    """Every media file under `folder`, recursively, sorted. os.walk instead of
+    glob so folder names with [brackets] (e.g. 'Show [1080p]') still work."""
+    out = []
+    for root, _d, files in os.walk(folder):
+        for fn in files:
+            if fn.lower().endswith(_MEDIA_EXTS):
+                out.append(os.path.join(root, fn))
+    return sorted(out)
+
+
+def _detail_text(detail):
+    """The Detail cell: the fixed engine.probe check messages translated (they
+    stay English in the log); anything else (ffmpeg errors, stream counts)
+    is shown as-is."""
+    fixed = {
+        "missing or zero-byte file": tr("missing or zero-byte file"),
+        "ffprobe could not read it (corrupt header / not media)":
+            tr("ffprobe could not read it (corrupt header / not media)"),
+        "no readable streams": tr("no readable streams"),
+        "no valid duration": tr("no valid duration"),
+        "decoded clean, no errors": tr("decoded clean, no errors"),
+    }
+    return fixed.get(str(detail), detail)
 
 
 def _run_check(path, depth, stop_event):
@@ -41,47 +68,50 @@ class CheckTab(ttk.Frame):
         super().__init__(master, padding=8)
         saved = saved or {}
         self.stop_event = threading.Event()
+        self._jid = None              # jobs registry id of the running check
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
         nb = ttk.Notebook(self)
         nb.grid(row=0, column=0, sticky="nsew")
+        # '?' on the right end of the sub-tab strip
+        help_button(self, "check").place(in_=nb, relx=1.0, x=0, y=0, anchor="ne")
         files_tab = ttk.Frame(nb, padding=6)
         log_tab = ttk.Frame(nb, padding=6)
-        nb.add(files_tab, text="  Files  ")
-        nb.add(log_tab, text="  Log  ")
+        nb.add(files_tab, text="  " + tr("Files") + "  ")
+        nb.add(log_tab, text="  " + tr("Log") + "  ")
         files_tab.columnconfigure(0, weight=1)
         files_tab.rowconfigure(3, weight=1)
 
         drow = ttk.Frame(files_tab)
         drow.grid(row=0, column=0, sticky="w", pady=(0, 4))
-        ttk.Label(drow, text="Check depth:").pack(side="left", padx=(0, 8))
+        ttk.Label(drow, text=tr("Check depth:")).pack(side="left", padx=(0, 8))
         self.depth_var = tk.StringVar(value=saved.get("check_depth", "quick"))
-        ttk.Radiobutton(drow, text="Quick (opens & has valid streams)",
+        ttk.Radiobutton(drow, text=tr("Quick (opens & has valid streams)"),
                         variable=self.depth_var, value="quick").pack(side="left")
-        ttk.Radiobutton(drow, text="Full (decode whole file - slow, thorough)",
+        ttk.Radiobutton(drow, text=tr("Full (decode whole file - slow, thorough)"),
                         variable=self.depth_var, value="full").pack(side="left", padx=(12, 0))
 
         srow = ttk.Frame(files_tab)
         srow.grid(row=1, column=0, sticky="we", pady=2)
         srow.columnconfigure(1, weight=1)
-        ttk.Label(srow, text="Single file:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(srow, text=tr("Single file:")).grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.file_var = tk.StringVar()
         sent = ttk.Entry(srow, textvariable=self.file_var)
         sent.grid(row=0, column=1, sticky="we")
-        ttk.Button(srow, text="Browse...", command=self._browse_file).grid(row=0, column=2, padx=4)
-        self.file_btn = ttk.Button(srow, text="Check file", command=self.check_file)
+        ttk.Button(srow, text=tr("Browse..."), command=self._browse_file).grid(row=0, column=2, padx=4)
+        self.file_btn = ttk.Button(srow, text=tr("Check file"), command=self.check_file)
         self.file_btn.grid(row=0, column=3)
 
         frow = ttk.Frame(files_tab)
         frow.grid(row=2, column=0, sticky="we", pady=2)
         frow.columnconfigure(1, weight=1)
-        ttk.Label(frow, text="Folder:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(frow, text=tr("Folder:")).grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.dir_var = tk.StringVar()
         dent = ttk.Entry(frow, textvariable=self.dir_var)
         dent.grid(row=0, column=1, sticky="we")
-        ttk.Button(frow, text="Browse...", command=self._browse_dir).grid(row=0, column=2, padx=4)
-        ttk.Button(frow, text="Refresh list", command=self.refresh_list).grid(row=0, column=3)
+        ttk.Button(frow, text=tr("Browse..."), command=self._browse_dir).grid(row=0, column=2, padx=4)
+        ttk.Button(frow, text=tr("Refresh list"), command=self.refresh_list).grid(row=0, column=3)
 
         tvf = ttk.Frame(files_tab)
         tvf.grid(row=3, column=0, sticky="nsew")
@@ -90,16 +120,14 @@ class CheckTab(ttk.Frame):
         self.tree = ttk.Treeview(tvf, columns=("sel", "file", "result", "detail"),
                                  show="headings", height=12, selectmode="extended")
         self.tree.heading("sel", text="✓", command=self._toggle_all)
-        self.tree.heading("file", text="File")
-        self.tree.heading("result", text="Result")
-        self.tree.heading("detail", text="Detail")
+        self.tree.heading("file", text=tr("File"))
+        self.tree.heading("result", text=tr("Result"))
+        self.tree.heading("detail", text=tr("Detail"))
         self.tree.column("sel", width=30, anchor="center", stretch=False)
         self.tree.column("file", width=260, anchor="w")
-        self.tree.column("result", width=80, anchor="center", stretch=False)
+        self.tree.column("result", width=110, anchor="center", stretch=False)
         self.tree.column("detail", width=280, anchor="w")
-        self.tree.tag_configure("good", foreground="#2e9e4f")
-        self.tree.tag_configure("bad", foreground="#d43a3a")
-        self.tree.tag_configure("unknown", foreground="#e0902e")
+        bind_status_colors(self.tree, {"good": "good", "bad": "bad", "unknown": "warn"})
         self.tree.grid(row=0, column=0, sticky="nsew")
         sb = ttk.Scrollbar(tvf, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
@@ -112,12 +140,17 @@ class CheckTab(ttk.Frame):
 
         rrow = ttk.Frame(files_tab)
         rrow.grid(row=4, column=0, sticky="we", pady=(6, 2))
-        self.folder_btn = ttk.Button(rrow, text="Check ticked files", command=self.check_folder)
+        self.folder_btn = ttk.Button(rrow, text=tr("Check ticked files"), command=self.check_folder)
         self.folder_btn.pack(side="left", fill="x", expand=True)
-        add_tooltip(self.folder_btn, "Run the chosen check on every ticked file in the list")
-        self.stop_btn = ttk.Button(rrow, text="Stop", command=self.stop, state="disabled", width=8)
+        add_tooltip(self.folder_btn, tr("Run the chosen check on every ticked file in the list"))
+        self.queue_btn = ttk.Button(rrow, text=tr("Add to queue"), command=self.queue_folder)
+        self.queue_btn.pack(side="left", padx=(6, 0))
+        add_tooltip(self.queue_btn, tr("Queue a check of the ticked files (with the chosen "
+                                       "depth) to run after the jobs already running / queued "
+                                       "- see Queue... in the status bar"))
+        self.stop_btn = ttk.Button(rrow, text=tr("Stop"), command=self.stop, state="disabled")
         self.stop_btn.pack(side="left", padx=(6, 0))
-        ttk.Label(rrow, text="  select rows · Del = remove · Ctrl+A = all",
+        ttk.Label(rrow, text="  " + tr("select rows · Del = remove · Ctrl+A = all"),
                   style="Hint.TLabel").pack(side="left")
 
         self.status_var = tk.StringVar(value="")
@@ -136,7 +169,7 @@ class CheckTab(ttk.Frame):
         lsb = ttk.Scrollbar(log_tab, orient="vertical", command=self.logbox.yview)
         self.logbox.configure(yscrollcommand=lsb.set)
         lsb.grid(row=0, column=1, sticky="ns")
-        ttk.Button(log_tab, text="Clear log", command=self._clear_log).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Button(log_tab, text=tr("Clear log"), command=self._clear_log).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         enable_file_drop(sent, self._drop_file)
         enable_file_drop(dent, self._drop_dir)
@@ -144,12 +177,12 @@ class CheckTab(ttk.Frame):
 
     # ---- helpers ----
     def _browse_file(self):
-        p = filedialog.askopenfilename(title="Select video", filetypes=_MEDIA_TYPES)
+        p = filedialog.askopenfilename(title=tr("Select video"), filetypes=_MEDIA_TYPES)
         if p:
             self.file_var.set(p)
 
     def _browse_dir(self):
-        d = filedialog.askdirectory(title="Select folder")
+        d = filedialog.askdirectory(title=tr("Select folder"))
         if d:
             self.dir_var.set(d)
             self.refresh_list()
@@ -180,15 +213,12 @@ class CheckTab(ttk.Frame):
             if not p:
                 continue
             if os.path.isdir(p):
-                for root, _d, files in os.walk(p):
-                    for fn in sorted(files):
-                        if fn.lower().endswith(_MEDIA_EXTS):
-                            fp = os.path.join(root, fn)
-                            if fp not in existing:
-                                self.tree.insert("", "end", iid=fp,
-                                                 values=("☑", os.path.basename(fp), "-", ""))
-                                existing.add(fp)
-                                added += 1
+                for fp in _walk_media(p):
+                    if fp not in existing:
+                        self.tree.insert("", "end", iid=fp,
+                                         values=("☑", os.path.basename(fp), "-", ""))
+                        existing.add(fp)
+                        added += 1
             elif os.path.isfile(p):
                 if p not in existing:
                     self.tree.insert("", "end", iid=p,
@@ -204,10 +234,7 @@ class CheckTab(ttk.Frame):
         d = self.dir_var.get().strip()
         if not d or not os.path.isdir(d):
             return []
-        files = []
-        for pat in _MEDIA_GLOBS:
-            files += glob.glob(os.path.join(d, pat))
-        return sorted(set(files))
+        return _walk_media(d)   # recursive, same as dropping the folder
 
     def refresh_list(self):
         self.tree.delete(*self.tree.get_children())
@@ -251,6 +278,7 @@ class CheckTab(ttk.Frame):
         def _a():
             self.logbox.configure(state="normal")
             self.logbox.insert("end", msg + "\n")
+            trim_text_lines(self.logbox)
             self.logbox.see("end")
             self.logbox.configure(state="disabled")
         self.after(0, _a)
@@ -274,7 +302,7 @@ class CheckTab(ttk.Frame):
             b.configure(state="disabled" if on else "normal")
         self.stop_btn.configure(state="normal" if on else "disabled")
         if not on:
-            self.status_var.set("Idle")
+            self.status_var.set(tr("Idle"))
 
     def stop(self):
         self.stop_event.set()
@@ -287,38 +315,76 @@ class CheckTab(ttk.Frame):
     def check_file(self):
         f = self.file_var.get().strip().strip('"')
         if not f or not os.path.isfile(f):
-            messagebox.showerror("Error", "Pick a valid file first.")
+            messagebox.showerror(tr("Error"), tr("Pick a valid file first."))
             return
         self.stop_event.clear()
         self._running(True)
+        self._jid = jobs.begin(tr("Check file"), stop_event=self.stop_event, tab=self)
         threading.Thread(target=self._file_worker, args=(f,), daemon=True).start()
 
     def _file_worker(self, f):
-        msg = "Failed - see log."
+        msg = tr("Failed - see log.")
+        failed = True
+        jid = self._jid
         try:
             depth = self.depth_var.get()
-            self.status(f"Checking ({depth})...")
+            self.status(tr("Checking (full)...") if depth == "full"
+                        else tr("Checking (quick)..."))
             self.log(f"[CHECK] {os.path.basename(f)}  ({depth})")
             ok, detail = _run_check(f, depth, self.stop_event)
             if ok is None:
                 self.log("  stopped.")
-                msg = "Stopped."
+                msg = tr("Stopped.")
             elif ok == "timeout":
                 self.log(f"  [UNKNOWN] {detail}")
-                msg = "UNKNOWN (timed out) - see log."
+                msg = tr("UNKNOWN (timed out) - see log.")
             elif ok:
                 self.log(f"  [OK] {detail}")
-                msg = "OK - not broken."
+                msg = tr("OK - not broken.")
             else:
                 self.log(f"  [BROKEN] {detail}")
-                msg = "BROKEN - see log."
+                msg = tr("BROKEN - see log.")
+            failed = False
         except Exception as e:
             self.log(f"  [FAIL] {e}")
         finally:
+            jobs.end(jid, ok=not failed,
+                     summary=f"{os.path.basename(f)}: {msg}")
             self.after(0, lambda: (self._running(False), self.status_var.set(msg)))
 
     # ---- folder ----
     def check_folder(self):
+        files = self._ticked_files()
+        if files:
+            self._start_folder(files, self.depth_var.get())
+
+    def queue_folder(self):
+        """Add to queue: the ticked files and depth as they are now."""
+        files = self._ticked_files()
+        if not files:
+            return
+        depth = self.depth_var.get()
+        name = (ntr("Check {n} file (full)", "Check {n} files (full)", len(files))
+                if depth == "full" else
+                ntr("Check {n} file (quick)", "Check {n} files (quick)", len(files)))
+        jobs.enqueue(name, lambda: self._start_folder(files, depth))
+        self.log(f"[QUEUE] added: Check {len(files)} file(s) ({depth})")
+
+    def _start_folder(self, files, depth):
+        """Start a folder check (Tk thread). Returns the job id, or None if a
+        check is already running (a queued entry is then dropped)."""
+        if self.stop_btn.instate(["!disabled"]):
+            self.log("[QUEUE] Check is busy - not started.")
+            return None
+        self.stop_event.clear()
+        self._running(True)
+        self._jid = jobs.begin(tr("Check folder"), stop_event=self.stop_event, tab=self)
+        threading.Thread(target=self._folder_worker, args=(files, depth), daemon=True).start()
+        return self._jid
+
+    def _ticked_files(self):
+        """The ticked rows (loads the folder if the list is empty); shows an
+        error and returns [] when there is nothing to check."""
         rows = self.tree.get_children()
         if not rows:
             d = self.dir_var.get().strip()
@@ -326,24 +392,27 @@ class CheckTab(ttk.Frame):
                 self.refresh_list()
                 rows = self.tree.get_children()
         if not rows:
-            messagebox.showerror("Error", "Drop files/folders onto the list (or pick a folder), then tick some.")
-            return
+            messagebox.showerror(tr("Error"), tr("Drop files/folders onto the list (or pick a "
+                                                 "folder), then tick some."))
+            return []
         files = [r for r in rows if self.tree.set(r, "sel") == "☑"]
         if not files:
-            messagebox.showerror("Error", "No files ticked - tick at least one (or click the checkmark header).")
-            return
-        self.stop_event.clear()
-        self._running(True)
-        threading.Thread(target=self._folder_worker, args=(files,), daemon=True).start()
+            messagebox.showerror(tr("Error"), tr("No files ticked - tick at least one (or click "
+                                                 "the checkmark header)."))
+            return []
+        return files
 
-    def _folder_worker(self, files):
+    def _folder_worker(self, files, depth="quick"):
         okc = badc = unkc = 0
+        stopped = False
+        failed = False
+        n = len(files)
+        jid = self._jid
         try:
-            depth = self.depth_var.get()
-            n = len(files)
             self.log(f"[CHECK] {n} file(s) - {depth} check")
             for i, f in enumerate(files, 1):
                 if self.stop_event.is_set():
+                    stopped = True
                     self.log("[CHECK] stopped.")
                     break
                 name = os.path.basename(f)
@@ -351,32 +420,44 @@ class CheckTab(ttk.Frame):
                 self.progress((i - 1) / n, f"{i - 1}/{n}")
                 ok, detail = _run_check(f, depth, self.stop_event)
                 if ok is None:
+                    stopped = True
                     self.log("[CHECK] stopped.")
                     break
                 if ok == "timeout":
-                    res, tag = "UNKNOWN (timed out)", "unknown"
+                    res, tag = tr("UNKNOWN (timed out)"), "unknown"
                     unkc += 1
                     self.log(f"  [UNKNOWN] {name}: {detail}")
                 elif ok:
-                    res, tag = "OK", "good"
+                    res, tag = tr("OK"), "good"
                     okc += 1
                 else:
-                    res, tag = "BROKEN", "bad"
+                    res, tag = tr("BROKEN"), "bad"
                     badc += 1
                     self.log(f"  [BROKEN] {name}: {detail}")
                 self.after(0, lambda p=f, r=res, d=detail, t=tag: self._set_result(p, r, d, t))
                 self.progress(i / n, f"{i}/{n}")
         except Exception as e:
+            failed = True
             self.log(f"[CHECK] [FAIL] {e}")
         finally:
             extra = f", {unkc} unknown" if unkc else ""
-            self.log(f"[CHECK] done: {okc} OK, {badc} broken{extra}.")
-            self.after(0, lambda: (self._running(False),
-                                   self.status_var.set(f"Done - {okc} OK, {badc} broken{extra}.")))
+            ui_extra = tr(", {n} unknown", n=unkc) if unkc else ""
+            if stopped:
+                left = n - okc - badc - unkc
+                summary = f"Stopped - {okc} OK, {badc} broken{extra} ({left} not checked)."
+                ui_summary = tr("Stopped - {ok} OK, {bad} broken{extra} ({left} not checked).",
+                                ok=okc, bad=badc, extra=ui_extra, left=left)
+            else:
+                summary = f"Done - {okc} OK, {badc} broken{extra}."
+                ui_summary = tr("Done - {ok} OK, {bad} broken{extra}.",
+                                ok=okc, bad=badc, extra=ui_extra)
+            jobs.end(jid, ok=not failed, summary=ui_summary)
+            self.log(f"[CHECK] {summary}")
+            self.after(0, lambda: (self._running(False), self.status_var.set(ui_summary)))
 
     def _set_result(self, path, res, detail, tag):
         if not self.tree.exists(path):   # row removed from the list mid-run
             return
         self.tree.set(path, "result", res)
-        self.tree.set(path, "detail", detail)
+        self.tree.set(path, "detail", _detail_text(detail))
         self.tree.item(path, tags=(tag,))

@@ -1,6 +1,10 @@
-"""Small shared widgets: the HH:MM:SS:mmm TimeEntry and the scrollable help tabs."""
+"""Small shared widgets: the HH:MM:SS:mmm TimeEntry, the scrollable help tabs
+and the "?" help buttons / help windows."""
 import tkinter as tk
 from tkinter import ttk
+
+from . import themes
+from ..i18n import N_, tr
 
 
 class TimeEntry(ttk.Frame):
@@ -101,8 +105,8 @@ class TimeEntry(ttk.Frame):
 
 # ======================= Info + Recommended help content =======================
 INFO_SECTIONS = [
-    ("Video codec",
-     "H.264 (libx264) - plays on everything (TVs, phones, old devices). "
+    (N_("Video codec"),
+     N_("H.264 (libx264) - plays on everything (TVs, phones, old devices). "
      "Baseline choice. Biggest files of the modern codecs.\n\n"
      "H.265 (libx265) - roughly 30-50% smaller files than H.264 at the same "
      "visual quality. Needs a reasonably modern player/TV. Encoding is 2-4x "
@@ -112,9 +116,9 @@ INFO_SECTIONS = [
      "encoders. Great for bulk jobs where time matters more than megabytes.\n\n"
      "AV1 (libsvtav1) - smallest files of all (~20-30% below H.265), but slow "
      "to encode and only newer devices play it. Best for archiving on a "
-     "machine you can leave running."),
-    ("Bit depth - 8 vs 10",
-     "10-bit stores brightness/color in finer steps. Even for 8-bit sources, "
+     "machine you can leave running.")),
+    (N_("Bit depth - 8 vs 10"),
+     N_("10-bit stores brightness/color in finer steps. Even for 8-bit sources, "
      "encoding in 10-bit usually compresses ~5% BETTER (less rounding noise "
      "inside the encoder) and strongly reduces banding in smooth gradients - "
      "especially anime.\n\n"
@@ -124,72 +128,92 @@ INFO_SECTIONS = [
      "to 8-bit and says so in the log).\n\n"
      "Auto (recommended) matches the source: 10-bit source -> 10-bit output. "
      "The log shows each source's codec, bit depth and bitrate before "
-     "encoding, and warns when your settings will likely inflate the file."),
-    ("CRF / CQ - quality knob (0-51, LOWER = better quality = bigger file)",
-     "Logarithmic scale: +6 roughly halves the file size.\n\n"
+     "encoding, and warns when your settings will likely inflate the file.")),
+    (N_("CRF / CQ - quality knob (0-51, LOWER = better quality = bigger file)"),
+     N_("Logarithmic scale: +6 roughly halves the file size.\n\n"
      "H.264: 18 = visually lossless, 20-23 = great, 26+ = visible loss.\n"
      "H.265: 20 = visually lossless, 22-26 = great (x265 numbers sit ~2-4 "
      "higher than x264 for the same look).\n"
      "NVENC: CQ works the same idea; use ~2 lower than you would for CPU.\n"
-     "AV1: 26-32 is the typical sweet spot."),
-    ("Preset - speed knob (does NOT change quality, changes file size)",
-     "With CRF, quality is fixed; the preset decides how hard the encoder "
+     "AV1: 26-32 is the typical sweet spot.")),
+    (N_("Preset - speed knob (does NOT change quality, changes file size)"),
+     N_("With CRF, quality is fixed; the preset decides how hard the encoder "
      "works to COMPRESS that quality. Slower preset = same look, smaller "
      "file.\n\n"
      "ultrafast = biggest files, instant.  medium = the balanced default.  "
      "slow = ~5-10% smaller than medium at ~2x encode time (sweet spot).  "
-     "veryslow = diminishing returns, mostly not worth it."),
-    ("Keyframe interval (Cut / Edit)",
-     "0 (default): a clean keyframe is forced exactly at every cut point - "
+     "veryslow = diminishing returns, mostly not worth it.")),
+    (N_("Keyframe interval (Cut / Edit)"),
+     N_("0 (default): a clean keyframe is forced exactly at every cut point - "
      "that is all a normal player needs. Set 2-5 s if your media server "
      "scrubs/skips inside the Cold Open / Post Credits and you want every "
-     "seek frame-perfect. Smaller interval = slightly bigger file (only "
-     "affects those short segments)."),
-    ("Min confidence (Cut / Edit)",
-     "How strong the audio match must be to accept an intro/credits "
+     "seek frame-perfect.\n\n"
+     "It only applies to the SHORT pieces that get re-encoded (cold open, "
+     "post credits) - not to the main episode. Smaller interval = slightly "
+     "bigger file.")),
+    (N_("Min confidence (Cut / Edit)"),
+     N_("How strong the audio match must be to accept an intro/credits "
      "detection.\n\n"
      "0.32 (default) works for most shows. Raise to 0.40+ if it cuts things "
      "it should not (false matches). Lower to ~0.25 if it misses intros it "
      "should find - check the per-template scores in the log to see how "
-     "close it was."),
-    ("Modes",
-     "Cut: removes intro/credits, keeps cold open + post-credits, stitches "
+     "close it was.")),
+    (N_("Run modes (Cut / Edit)"),
+     N_("Cut: removes intro/credits, keeps cold open + post-credits, stitches "
      "the rest back together.\n\n"
-     "Inject: keeps the whole video, only inserts keyframes at the detected "
-     "boundaries (for media servers with their own skip buttons)."),
-    ("Templates (Template Cutter tab)",
-     "Only the AUDIO of a template matters (matching is done on sound), so "
-     "the template tab always uses fast x264 - no need to configure it.\n\n"
-     "IMPORTANT: the Remover uses the template LENGTH as the cut length, so "
-     "cut the WHOLE intro/credits, not just a recognizable part."),
+     "Inject keyframes: keeps the whole video, only inserts keyframes at the "
+     "detected boundaries (for media servers with their own skip buttons). "
+     "Audio is copied as-is.\n\n"
+     "Add chapter markers: keeps the whole video and adds chapters at the "
+     "boundaries (Intro / Episode / Credits ...). Nothing is re-encoded - "
+     "video, audio and subtitles are copied, so it is fast and lossless.")),
+    (N_("Audio & subtitles (Cut / Edit)"),
+     N_("Audio is re-encoded at a high bitrate in its OWN codec and channel "
+     "layout (5.1 stays 5.1). The one exception is DTS: "
+     "ffmpeg's DTS encoder is experimental, so DTS becomes E-AC3 at 640k.\n\n"
+     "Subtitles are copied unchanged - unless the subtitle language filter is "
+     "on, then only the chosen languages are kept. Inject keyframes and "
+     "chapter markers copy the audio untouched.")),
+    (N_("Templates (Templates tab)"),
+     N_("Only the AUDIO of a template matters (matching is done on sound). "
+     "Templates are saved as .mkv.\n\n"
+     "IMPORTANT: Cut / Edit uses the template LENGTH as the cut length, so "
+     "cut the WHOLE intro/credits, not just a recognizable part. Trim and "
+     "Anchor change that length - re-check it after using them.")),
 ]
+# per-tab help (Theme Audio, Audio Gain, Compare, Check, Log, Clean up, ...)
+# lives in helpdocs.HELP - the Info tab appends it, so Info and the "?"
+# buttons always show the same text
+
 
 RECOMMENDED_SECTIONS = [
-    ("Closest to original quality  (the tool's default)",
-     "H.264,  CRF 18,  preset slow,  bit depth Auto\n\n"
+    (N_("Closest to original quality  (the tool's default)"),
+     N_("H.264,  CRF 18,  preset slow,  bit depth Auto\n\n"
      "Visually indistinguishable from the source. The file lands near the "
      "original's size - sometimes a bit over, which is the price of "
      "re-encoding an already-compressed file. Use CRF 17 if you ever spot "
-     "a difference in very dark scenes."),
-    ("Best balance  (recommended)",
-     "H.265,  CRF 22,  preset slow\n\n"
-     "High quality + small files. Use preset 'medium' if encodes feel too slow."),
-    ("Anime / 10-bit sources (Hi10P)",
-     "H.265,  10-bit,  CRF 22-23,  preset slow\n\n"
+     "a difference in very dark scenes.")),
+    (N_("Best balance  (recommended)"),
+     N_("H.265,  CRF 22,  preset slow\n\n"
+     "High quality + small files. Use preset 'medium' if encodes feel too slow.")),
+    (N_("Anime / 10-bit sources (Hi10P)"),
+     N_("H.265,  10-bit,  CRF 22-23,  preset slow\n\n"
      "Matches the efficiency of typical fansub Hi10P H.264 encodes. Keeping "
-     "8-bit H.264 output for such sources can easily triple the file size."),
-    ("Max compatibility",
-     "H.264,  CRF 20,  preset medium\n\n"
-     "For old TVs/devices, or when unsure what will play the files."),
-    ("Fast bulk job  (NVIDIA GPU)",
-     "H.265 NVENC,  CQ 24,  preset slow\n\n"
-     "Encodes many episodes quickly with good (not maximal) efficiency."),
-    ("Smallest archive",
-     "AV1,  CRF 28,  preset slow\n\n"
-     "Leave it running overnight; check that your players support AV1."),
-    ("Note on audio & subtitles",
-     "Audio is always re-encoded to the same codec/channels at high bitrate "
-     "and subtitles are copied - none of the settings above touch them."),
+     "8-bit H.264 output for such sources can easily triple the file size.")),
+    (N_("Max compatibility"),
+     N_("H.264,  CRF 20,  preset medium\n\n"
+     "For old TVs/devices, or when unsure what will play the files.")),
+    (N_("Fast bulk job  (NVIDIA GPU)"),
+     N_("H.265 NVENC,  CQ 24,  preset slow\n\n"
+     "Encodes many episodes quickly with good (not maximal) efficiency.")),
+    (N_("Smallest archive"),
+     N_("AV1,  CRF 28,  preset slow\n\n"
+     "Leave it running overnight; check that your players support AV1.")),
+    (N_("Note on audio & subtitles"),
+     N_("Audio keeps its codec and channels (re-encoded at a high bitrate; "
+     "DTS becomes E-AC3 640k). Subtitles are copied "
+     "unless the language filter is on. None of the settings above touch "
+     "them.")),
 ]
 
 
@@ -208,9 +232,11 @@ class SectionList(ttk.Frame):
 
         self._labels = []
         for title, body in sections:
-            box = ttk.LabelFrame(inner, text=f" {title} ", padding=(10, 6))
+            # tr(): the module-level sections are N_()-marked English; the
+            # helpdocs ones arrive translated (tr of a translation = itself)
+            box = ttk.LabelFrame(inner, text=f" {tr(title)} ", padding=(10, 6))
             box.pack(fill="x", expand=True, padx=4, pady=5)
-            lbl = ttk.Label(box, text=body, wraplength=580, justify="left")
+            lbl = ttk.Label(box, text=tr(body), wraplength=580, justify="left")
             lbl.pack(anchor="w", fill="x")
             self._labels.append(lbl)
 
@@ -243,8 +269,12 @@ class SectionList(ttk.Frame):
 
 
 class InfoTab(SectionList):
+    """General encoding notes + the help of every tab (from helpdocs)."""
     def __init__(self, master):
-        super().__init__(master, INFO_SECTIONS)
+        from .. import helpdocs
+        tab_help = [(tr("Tab help – {title}", title=t), body)
+                    for t, body in helpdocs.sections()]
+        super().__init__(master, INFO_SECTIONS + tab_help)
 
 
 class RecommendedTab(SectionList):
@@ -257,10 +287,11 @@ class Tooltip:
     """A small hover tooltip for any widget. Shows after a short delay and
     hides on leave or click. Tkinter has no built-in tooltip, so this is it."""
 
-    def __init__(self, widget, text, delay=450):
+    def __init__(self, widget, text, delay=450, follow=False):
         self.widget = widget
         self.text = text
         self.delay = delay
+        self.follow = follow          # show at the pointer (per-cell tips)
         self.tip = None
         self._after = None
         widget.bind("<Enter>", self._schedule, add="+")
@@ -282,8 +313,12 @@ class Tooltip:
     def _show(self):
         if self.tip is not None or not self.text:
             return
-        x = self.widget.winfo_rootx() + 14
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        if self.follow:
+            x = self.widget.winfo_pointerx() + 14
+            y = self.widget.winfo_pointery() + 18
+        else:
+            x = self.widget.winfo_rootx() + 14
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)      # no title bar
         self.tip.wm_geometry(f"+{x}+{y}")
@@ -291,9 +326,10 @@ class Tooltip:
             self.tip.attributes("-topmost", True)
         except Exception:
             pass
+        pal = themes.current()
         tk.Label(self.tip, text=self.text, justify="left",
-                 background="#ffffe0", foreground="#1a1a1a",
-                 relief="solid", borderwidth=1,
+                 background=pal["tooltip_bg"], foreground=pal["tooltip_fg"],
+                 relief="solid", borderwidth=1, highlightthickness=0,
                  font=("Segoe UI", 9), padx=7, pady=4, wraplength=320).pack()
 
     def _hide(self, _e=None):
@@ -310,6 +346,175 @@ def add_tooltip(widget, text):
     """Attach a hover tooltip to widget and return the widget (for chaining)."""
     Tooltip(widget, text)
     return widget
+
+
+# ======================= translated drop-downs =======================
+class KeyedCombobox(ttk.Combobox):
+    """A ttk.Combobox that SHOWS translated labels while its `textvariable`
+    keeps the stable KEY (the English text the settings / dicts use).
+
+        KeyedCombobox(parent, textvariable=self.codec_var,
+                      values=list(CODECS), state="readonly", width=40)
+
+    values = the keys; labels default to tr(key) (labels=[...] overrides,
+    translate=False shows the keys as-is). var.get() / cb.get() return the
+    key, var.set(key) / cb.set(key) select it. configure(values=...),
+    cb["values"] = ... and cget("values") work with keys too. Text typed into
+    an editable box that isn't a known label is passed through as the key, so
+    free values (e.g. "-14") keep working."""
+
+    def __init__(self, master=None, textvariable=None, values=(), labels=None,
+                 translate=True, **kw):
+        self._keyvar = textvariable if textvariable is not None else tk.StringVar(master=master)
+        self._translate = translate
+        self._keys, self._k2l, self._l2k = [], {}, {}
+        self._sync = False
+        super().__init__(master, **kw)
+        self._disp = tk.StringVar(master=self)
+        super().configure(textvariable=self._disp)
+        self._set_values(values, labels)
+        self._t_key = self._keyvar.trace_add("write", self._key_changed)
+        self._disp.trace_add("write", self._disp_changed)
+        self.bind("<Destroy>", self._untrace, add="+")
+        self._key_changed()
+
+    # -- mapping
+    def _label(self, key):
+        key = str(key)
+        if not self._translate:
+            return key
+        from ..i18n import tr
+        return tr(key)
+
+    def _set_values(self, keys, labels=None):
+        if isinstance(keys, str):
+            keys = self.tk.splitlist(keys)
+        self._keys = [str(k) for k in (keys or ())]
+        labels = list(labels) if labels is not None else [self._label(k) for k in self._keys]
+        self._k2l = dict(zip(self._keys, labels))
+        self._l2k = {lbl: k for k, lbl in zip(self._keys, labels)}
+        super().configure(values=labels)
+        self._key_changed()
+
+    def _key_changed(self, *_a):
+        if self._sync:
+            return
+        k = self._keyvar.get()
+        self._sync = True
+        try:
+            self._disp.set(self._k2l.get(k, k))
+        finally:
+            self._sync = False
+
+    def _disp_changed(self, *_a):
+        if self._sync:
+            return
+        d = self._disp.get()
+        self._sync = True
+        try:
+            self._keyvar.set(self._l2k.get(d, d))
+        finally:
+            self._sync = False
+
+    def _untrace(self, e):
+        if e.widget is self and self._t_key is not None:
+            try:
+                self._keyvar.trace_remove("write", self._t_key)
+            except (tk.TclError, ValueError):
+                pass
+            self._t_key = None
+
+    # -- Combobox API with keys
+    def configure(self, cnf=None, **kw):
+        if isinstance(cnf, dict):
+            kw = dict(cnf, **kw)
+            cnf = None
+        handled = False
+        if "values" in kw or "labels" in kw:
+            self._set_values(kw.pop("values", self._keys), kw.pop("labels", None))
+            handled = True
+        if handled and cnf is None and not kw:
+            return None
+        return super().configure(cnf, **kw)
+
+    config = configure
+
+    def __setitem__(self, key, value):
+        if key == "values":
+            self._set_values(value)
+        else:
+            super().__setitem__(key, value)
+
+    def cget(self, key):
+        if key == "values":
+            return tuple(self._keys)
+        if key == "textvariable":
+            return str(self._keyvar)
+        return super().cget(key)
+
+    def __getitem__(self, key):
+        return self.cget(key)
+
+    def get(self):
+        return self._keyvar.get()
+
+    def set(self, value):
+        self._keyvar.set(value)
+
+    def label(self):
+        """The text shown (translated)."""
+        return self._disp.get()
+
+
+def auto_wrap(label, margin=4, minimum=80):
+    """Let a ttk/tk Label wrap at its current width (follows resizes), so a
+    long translated hint wraps instead of pushing the layout wider. The label
+    must be stretched by its manager (pack fill="x" / grid sticky="ew")."""
+    def _on(e):
+        w = max(minimum, e.width - margin)
+        try:
+            if int(float(str(label.cget("wraplength")) or 0)) != w:
+                label.configure(wraplength=w)
+        except (tk.TclError, ValueError):
+            pass
+    label.bind("<Configure>", _on, add="+")
+    return label
+
+
+# ======================= theme-aware status colours =======================
+# result colours (OK / broken / warning) come from the theme palette (ok /
+# error / warn), which keeps them readable (>= 4.5:1) on every theme's lists
+_STATUS_KEYS = {"good": "ok", "bad": "error", "warn": "warn"}
+
+
+def status_palette(_widget=None):
+    """{"good", "bad", "warn"} -> colour for the current theme."""
+    pal = themes.current()
+    return {kind: pal[key] for kind, key in _STATUS_KEYS.items()}
+
+
+def bind_status_colors(widget, mapping):
+    """Colour Treeview tags by status kind, e.g. {"bad": "bad", "unknown":
+    "warn"}, and re-colour them whenever the theme changes."""
+    def apply(pal):
+        for tag, kind in mapping.items():
+            widget.tag_configure(tag, foreground=pal[_STATUS_KEYS[kind]])
+    themes.on_palette(widget, apply)
+
+
+# ======================= log Text size cap =======================
+MAX_LOG_LINES = 20000
+
+
+def trim_text_lines(text, max_lines=MAX_LOG_LINES, chunk=2000):
+    """Keep a Text log from growing forever: once it holds more than
+    max_lines, drop the oldest lines in one chunk (not one line per append)."""
+    try:
+        lines = int(text.index("end-1c").split(".")[0])
+        if lines > max_lines + chunk:
+            text.delete("1.0", f"{lines - max_lines}.0")
+    except Exception:
+        pass
 
 
 # ======================= vertically scrollable frame =======================
@@ -507,13 +712,13 @@ def enable_paths_drop(widget, callback):
         return False
 
 
-def build_log_tab(notebook, text="  Log  "):
+def build_log_tab(notebook, text=None):
     """Add a '  Log  ' page to *notebook* holding a full-height, scrollable log
     box plus a 'Clear log' button. Returns the (read-only) Text widget so the
     caller can keep appending to it. Used by every tool tab so the log lives in
     its own sub-tab and the main view gets the whole window."""
     frame = ttk.Frame(notebook, padding=6)
-    notebook.add(frame, text=text)
+    notebook.add(frame, text=text if text is not None else f"  {tr('Log')}  ")
     frame.columnconfigure(0, weight=1)
     frame.rowconfigure(0, weight=1)
     # small requested height so this page doesn't force a hug-content notebook
@@ -528,6 +733,145 @@ def build_log_tab(notebook, text="  Log  "):
         box.configure(state="normal")
         box.delete("1.0", "end")
         box.configure(state="disabled")
-    ttk.Button(frame, text="Clear log", command=_clear).grid(
+    ttk.Button(frame, text=tr("Clear log"), command=_clear).grid(
         row=1, column=0, sticky="w", pady=(4, 0))
     return box
+
+
+# ======================= "?" help buttons / help windows =======================
+_HELP_WINDOWS = {}      # key -> open Toplevel (one window per key)
+
+
+def _theme_colors(_widget=None):
+    """(bg, fg, text_bg, text_fg, accent) of the current theme."""
+    p = themes.current()
+    return p["bg"], p["fg"], p["field"], p["fg"], p["accent"]
+
+
+def _open_help_window(parent, wkey, title, sections, index=False):
+    """Themed, scrollable help window (re-used/raised if already open).
+    sections = [(heading, text)]; index=True adds a clickable topic list."""
+    old = _HELP_WINDOWS.get(wkey)
+    if old is not None:
+        try:
+            if old.winfo_exists():
+                old.deiconify()
+                old.lift()
+                old.focus_force()
+                return old
+        except tk.TclError:
+            pass
+    top = parent.winfo_toplevel()
+    bg, fg, tbg, tfg, acc = _theme_colors(top)
+    win = tk.Toplevel(top)
+    win.title(title)
+    win.configure(bg=bg)
+    win.transient(top)
+    try:
+        dpi = max(1.0, win.winfo_fpixels("1i") / 96.0)
+    except tk.TclError:
+        dpi = 1.0
+    w, h = int((760 if index else 560) * dpi), int((560 if index else 460) * dpi)
+    try:
+        x = top.winfo_rootx() + max(0, (top.winfo_width() - w) // 2)
+        y = top.winfo_rooty() + max(0, (top.winfo_height() - h) // 3)
+        win.geometry(f"{w}x{h}+{x}+{y}")
+    except tk.TclError:
+        win.geometry(f"{w}x{h}")
+    win.minsize(int(320 * dpi), int(220 * dpi))
+
+    outer = ttk.Frame(win, padding=8)
+    outer.pack(fill="both", expand=True)
+    bar = ttk.Frame(outer)
+    bar.pack(side="bottom", fill="x", pady=(6, 0))
+    ttk.Button(bar, text=tr("Close"), command=win.destroy).pack(side="right")
+
+    body = ttk.Frame(outer)
+    body.pack(fill="both", expand=True)
+    text = tk.Text(body, wrap="word", bg=tbg, fg=tfg, relief="flat",
+                   font=("Segoe UI", 10), padx=12, pady=10, borderwidth=0,
+                   highlightthickness=1, highlightbackground=acc,
+                   selectbackground=acc, insertbackground=tfg, cursor="arrow",
+                   selectforeground=themes.current()["select_fg"])
+    sb = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+    text.configure(yscrollcommand=sb.set)
+    if index:
+        lb = tk.Listbox(body, exportselection=False, activestyle="none",
+                        bg=tbg, fg=tfg, selectbackground=themes.current()["select_bg"],
+                        selectforeground=themes.current()["select_fg"], relief="flat",
+                        highlightthickness=1, highlightbackground=acc,
+                        font=("Segoe UI", 10), width=30)
+        lb.pack(side="left", fill="y", padx=(0, 8))
+    sb.pack(side="right", fill="y")
+    text.pack(side="left", fill="both", expand=True)
+
+    text.tag_configure("h", font=("Segoe UI", 12, "bold"), foreground=acc,
+                       spacing1=10, spacing3=4)
+
+    def _repaint(p):
+        # the walk in themes.apply recolours Text/Listbox; these are the
+        # help window's own accent bits
+        text.tag_configure("h", foreground=p["accent"])
+        text.configure(highlightbackground=p["accent"], selectbackground=p["select_bg"],
+                       selectforeground=p["select_fg"])
+        if index:
+            lb.configure(highlightbackground=p["accent"])
+    themes.on_palette(win, _repaint)
+    text.tag_configure("p", spacing1=1, spacing3=1, lmargin1=2, lmargin2=2)
+    marks = []
+    for i, (head, para) in enumerate(sections):
+        mark = f"sec{i}"
+        text.mark_set(mark, "end-1c")
+        text.mark_gravity(mark, "left")
+        marks.append(mark)
+        text.insert("end", head + "\n", "h")
+        text.insert("end", para.strip() + "\n\n", "p")
+        if index:
+            lb.insert("end", head)
+    text.configure(state="disabled")
+
+    if index:
+        def jump(_e=None):
+            sel = lb.curselection()
+            if sel:
+                text.yview(marks[sel[0]])
+        lb.bind("<<ListboxSelect>>", jump)
+
+    def wheel(e):
+        text.yview_scroll(-1 if e.delta > 0 else 1, "units")
+        return "break"
+    text.bind("<MouseWheel>", wheel)
+    win.bind("<Escape>", lambda e: win.destroy())
+
+    def gone(e):
+        if e.widget is win and _HELP_WINDOWS.get(wkey) is win:
+            _HELP_WINDOWS.pop(wkey, None)
+    win.bind("<Destroy>", gone, add="+")
+    _HELP_WINDOWS[wkey] = win
+    win.focus_set()
+    return win
+
+
+def show_help(parent, key):
+    """Open (or raise) the help window for a helpdocs key."""
+    from .. import helpdocs
+    title, body = helpdocs.get(key)
+    return _open_help_window(parent, "help:" + key, tr("Help – {title}", title=title),
+                             [(title, body)])
+
+
+def show_help_index(parent):
+    """Open (or raise) the help window listing every tab's help."""
+    from .. import helpdocs
+    return _open_help_window(parent, "help:index", tr("{app} – Help", app="MediaPrep Toolkit"),
+                             helpdocs.sections(), index=True)
+
+
+def help_button(parent, key, text="?"):
+    """A small '?' ttk.Button that opens the help for helpdocs.HELP[key].
+    The caller places it (pack/grid) like any other widget."""
+    from .. import helpdocs
+    btn = ttk.Button(parent, text=text, width=max(2, len(text) + 1),
+                     command=lambda: show_help(parent, key))
+    add_tooltip(btn, tr("Help: {title}", title=helpdocs.get(key)[0]))
+    return btn

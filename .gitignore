@@ -1,14 +1,19 @@
-# user media & working files - never commit these
+# user media & app data - never commit these
+Media/
+Data/
+# old (1.x) layout folders
 input/
 videos/
 output/
 temp/
 logs/
-Audio Gain/
+presets/
 backups/
+Audio Gain/
 toolkit_settings.json
-toolkit_settings.json.tmp
-*.part.*
-.claude/
+# build / python
+build/
+dist/
 __pycache__/
 *.pyc
+.claude/

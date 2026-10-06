@@ -1,134 +1,129 @@
-# MediaPrep Toolkit (Intro & Credits Toolkit)
+# MediaPrep Toolkit
 
-A Windows GUI toolkit for preparing TV episodes for a media server (Plex,
-Jellyfin, ...): find and remove intros and credits, add Skip-Intro chapter
-markers, export theme songs, normalise loudness, and check/compare the results.
-Built on FFmpeg with a Tkinter interface.
+A Windows app for getting TV episodes and anime ready for **Plex / Jellyfin**:
+find and remove intros and credits (or mark them with *Skip Intro* chapters),
+export theme songs, even out loudness across a season, and check that nothing
+was lost or broken along the way. Built on FFmpeg.
 
-> This is the successor of the original single-file *Intro & Credits Toolkit*.
-> The code is now split into small modules under `app/`, and it gained
-> auto-detection without templates, preview players with sound, and several
-> new tools.
+> Successor of the original single-file *Intro & Credits Toolkit*. Version 2.0
+> is a near-complete rewrite: template-free detection, a review-before-encoding
+> workflow, Plex-ready presets, audio tools, a job queue, 13 themes and
+> 19 languages.
+
+**Download:** grab the latest `MediaPrep Toolkit` zip from
+[Releases](../../releases), unzip anywhere and run `MediaPrep Toolkit.exe`.
+FFmpeg is included - nothing else to install.
 
 ## Features
 
-**Template Cutter**
-- *Cut template* - open an episode in the built-in frame-accurate preview
-  player, scrub to each boundary and click **Set** to capture the exact frame
-  for Pre-intro, Intro, Credits and After-credits, then cut template clips.
-- *Auto-detect* - point it at a folder of episodes (2+) from the same show and
-  it finds the intro and credits **without any template**, by fingerprinting
-  the audio and spotting the segment that recurs across episodes. Shows with
-  several different openings get one row per opening. Adjustable sensitivity.
+### Templates
+- **Cut template** - frame-accurate preview player (with sound), **Set** the
+  current frame as a boundary, **Snap** it to the nearest silence / black frame,
+  cut pre-intro / intro / credits / after-credits template clips.
+- **Auto-detect** - point it at a season (2+ episodes): it finds the intro and
+  credits **without any template** by spotting audio that recurs across
+  episodes. Shows with several openings/endings (anime!) get one row per
+  variant. **Audition** a row across episodes before cutting it.
+- **Templates manager** - list, play, rename, import, reveal or trash templates.
 
-**Cut / Edit**
-- *Auto-detect* batch - finds the segments in every episode of the `videos`
-  folder and processes them in one go.
-- *Manual cut* - one video, your own exact cut points.
-- *Multi cut* - many files, each with its own times; apply times to several
-  files at once, flick through episodes with Up/Down.
-- Three run modes: **Cut** (remove the segments), **Inject keyframes** (keep
-  everything, just mark the boundaries) or **Add chapter markers** (no
-  re-encode; lets Plex/Jellyfin offer *Skip Intro*).
-- Codecs: H.264, H.265/HEVC, AV1, NVIDIA NVENC, plus *Auto (match source)* for
-  CPU or GPU; 8/10-bit or auto.
-- Keeps every audio track (codec untouched), with optional subtitle-language
-  filtering. A `[VERIFY]` line after each file confirms no track or resolution
-  was lost; finished sources can be moved to `videos\done`.
+### Cut / Edit
+- **Auto-detect batch** - match every episode in `Media\videos` against all
+  template variants and process the whole folder.
+- **Review first (detect only)** - dry run: every episode lands in the Multi cut
+  list with its detected times, weak matches flagged ⚠, so you can fix them
+  before hours of encoding.
+- **Manual cut** with **Auto-detect**: fills the boxes from the best template
+  match, a ▾ list offers the other candidates (other OP/ED variants), then
+  nudge to the exact frame with Set / Snap / arrow keys.
+- **Multi cut** - many files, each with its own times; Up/Down flicks between
+  episodes at the same timestamp.
+- Run modes: **Cut**, **Inject keyframes**, or **Add chapter markers**
+  (stream copy - no re-encode - Plex/Jellyfin offer *Skip Intro*).
+- Codecs: **Plex-ready HEVC / H.264** (near-lossless, bitrate capped below the
+  source so files never grow, Plex-friendly audio, MKV), H.264, H.265, AV1,
+  NVIDIA NVENC (automatic CPU fallback without an NVIDIA GPU), or *Auto*.
+- Seamless joins: audio is built in one pass over all kept pieces, so there is
+  no dropout at the cut points and sound stays in sync.
+- Every audio track kept (5.1 stays 5.1, DTS → E-AC3), subtitles kept with
+  their forced/default flags (optional language filter), a `[VERIFY]` check
+  after each file, finished sources moved to `videos\done`.
+- **Per-show presets** and **Add to queue** for overnight runs.
 
-**Extra tools**
-- **Theme Audio** - export just the intro's audio (e.g. `theme.mp3` for Plex).
-- **Audio Gain** - gain by dB, two-pass LUFS normalisation or peak matching,
-  for one file or a whole season (with a per-file LUFS / peak / gain table).
-  Keeps the source audio codec & channels (5.1 AC3 / DTS stay intact) or
-  converts to AAC / AC3 / E-AC3 / FLAC / Opus.
-- **Dual Player** - two synced previews side by side to compare original vs
-  cleaned, each with its own sound.
-- **Compare** - track-by-track comparison (flags dropped tracks/languages) and
-  visual quality scores (SSIM, PSNR, VMAF when available).
-- **Check** - quick or full-decode check of a file or a whole folder for
-  corrupt / truncated videos.
-- **Log** tab with a live combined log, auto-saved to `logs\`.
-- Drag & drop everywhere, keyboard shortcuts in every player, Light / Dark /
-  High Contrast themes, all settings remembered between runs.
-- **Clean up folders** moves working files to `temp\trash` - nothing is ever
-  deleted outright.
+### Audio
+- **Theme Audio** - export the intro as `theme.mp3` for Plex, with fades,
+  optional -16 LUFS normalisation and a preview.
+- **Audio Gain** - gain by dB, two-pass LUFS (per track, true-peak ceiling) or
+  peak, for one file or a whole season with a LUFS / peak / gain table,
+  per-language track picker and "only fix outliers".
 
-## Requirements
+### Inspect
+- **Dual Player** - original vs cleaned side by side, linked seeking.
+- **Compare** - tracks (dropped tracks/languages, flags, attachments) and
+  picture quality (SSIM, PSNR, VMAF) with auto-alignment.
+- **Check** - quick or full-decode check of files/folders for corruption.
 
-- Windows with [Python 3.9+](https://www.python.org/downloads/)
-  (tick *Add python.exe to PATH* during install)
-- [FFmpeg](https://ffmpeg.org/download.html) (`ffmpeg` and `ffprobe` on PATH)
-- Python packages: `pip install -r requirements.txt`
-
-`Install Requirements.bat` does all of this for you (it installs Python and
-FFmpeg with winget if they are missing).
-
-## Usage
-
-1. Run `Install Requirements.bat` once.
-2. Double-click `Start Toolkit.bat` (windowless). If it doesn't open, use
-   `Start Toolkit (debug console).bat` to see the error.
-3. Either cut templates on the **Template Cutter** tab, or let **Auto-detect**
-   find the intro/credits from a folder of episodes.
-4. Put the episodes to process in `videos\`, then press
-   **Start batch (auto-detect)** on the **Cut / Edit** tab. Cleaned files
-   appear in `output\` with the same file name as the source.
-
-The in-app **Info / Settings** tab explains every setting and lists
-recommended combinations for high quality at a small file size.
-
-### Keyboard (all players)
-
-| Key | Action |
-|---|---|
-| Space | play / pause |
-| Left / Right | step 1 frame (Shift: 10 frames) |
-| Home / End | first / last frame |
-| M | mute |
-| Up / Down | previous / next file (Multi cut) |
+### App
+- Job queue with status bar, Windows notifications when long jobs finish,
+  update check (GitHub releases), per-tab **?** help.
+- 13 themes incl. *Follow Windows*, Plex, Gold on Dark, Nord, Dracula,
+  Solarized; all pass WCAG 4.5:1 text contrast.
+- 19 languages: English, Svenska, Español, Deutsch, Français, Português (BR),
+  Italiano, Русский, 日本語, 简体中文, Norsk bokmål, Dansk, Suomi, Polski,
+  Nederlands, Türkçe, 한국어, हिन्दी, Bahasa Indonesia.
+- Nothing is ever deleted outright - "delete" means `Data\temp\trash`.
 
 ## Folders
 
+Created next to the app on first start:
+
 | Folder | Contents |
 |---|---|
-| `input\intro`, `input\credits`, `input\preintro`, `input\aftercredits` | template clips |
-| `videos\` | episodes to process (`videos\done` = finished sources) |
-| `output\` | cleaned episodes |
-| `Audio Gain\input`, `Audio Gain\output` | Audio Gain batch folders |
-| `logs\` | session logs |
-| `temp\` | work files and `temp\trash` |
+| `Media\videos` | episodes to process (`done\` = finished sources) |
+| `Media\output` | cleaned episodes |
+| `Media\templates\{intro,credits,preintro,aftercredits}` | template clips |
+| `Media\Audio Gain\{input,output}` | Audio Gain batch |
+| `Data\` | `settings.json`, `presets\`, `logs\`, `temp\` (+ `trash\`), `backups\` |
 
-These are created automatically and are ignored by git.
+Upgrading from 1.x: the old folders are moved into `Media\` / `Data\`
+automatically on first start (nothing is deleted).
 
-## Project layout
+## Running from source
+
+Requires Windows, [Python 3.10+](https://www.python.org/downloads/) and
+[FFmpeg](https://ffmpeg.org/download.html) on PATH.
+
+```bat
+Install Requirements.bat
+Start Toolkit.bat
+```
+
+`tools\Start Toolkit (debug console).bat` shows Python errors in a console.
+Build the exe with `python tools\build_exe.py` (PyInstaller).
+
+### Project layout
 
 ```
-intro_credits_toolkit.py   launcher (the .bat files run this)
+intro_credits_toolkit.py   launcher
 app/
-  config.py      settings, codec/audio maps, themes
-  media.py       ffmpeg/ffprobe helpers + detect and cut engines
-  player.py      frame-accurate preview player (with sound)
-  audio.py       ffmpeg + sounddevice audio playback
-  widgets.py     TimeEntry, ScrollFrame, Info/Recommended help tabs
-  tabs.py        Template Cutter and Cut / Edit tabs
-  audiotools.py  Theme Audio and Audio Gain tabs
-  compare.py     Compare tab          checktab.py  Check tab
-  dualplayer.py  Dual Player          cleanup.py   Clean up dialog
-  applog.py      session log          logtab.py    Log tab
-  app.py         main() - builds the window
-assets/          window icon
+  app.py  config.py  i18n.py  migrate.py  jobs.py  notify.py  updater.py
+  presets.py  helpdocs.py  applog.py  selftest.py
+  engine/   ffmpeg/ffprobe work, no UI: probe, process, files, encode,
+            detect, recurring, cut, chapters, subs, loudness, snap
+  ui/       widgets, player, playback, dual player, dialogs, themes, cleanup
+  tabs/     templates*, cut_*, theme_audio, audio_gain*, compare, check, log
+  locales/  one JSON catalog per language (tools/i18n_extract.py --check)
+  assets/   icon
+tools/      build script, PyInstaller spec, i18n extractor, debug launcher
 ```
 
-## How detection works
+### Translations
 
-- **With templates**: each template's audio is turned into MFCC features and
-  cross-correlated against the start/end of every episode; the best match
-  above the confidence threshold decides where to cut.
-- **Without templates (Auto-detect)**: the audio of several episodes is
-  fingerprinted and compared pairwise; a stretch of audio that recurs across
-  episodes near the start (intro) or end (credits) is taken as the segment.
+UI strings are English keys wrapped in `tr()`. Run
+`python tools\i18n_extract.py --check` to see missing keys per language;
+corrections to `app/locales/<lang>.json` are welcome.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE). The release build bundles FFmpeg (gyan.dev full
+build, GPLv3) - see `_internal\ffmpeg\README-ffmpeg.txt` in the release for
+its license and source links.

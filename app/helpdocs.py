@@ -1,0 +1,327 @@
+"""One source of help text for every tab and sub-tab.
+
+HELP[key] = (title, text). The "?" buttons (widgets.help_button(parent, key))
+and the Info tab's tab list both read from here, so they never drift apart.
+HELP_ORDER is the order the help index / Info tab lists them in.
+
+Titles and texts are marked with N_() and translated by get() / sections(),
+so each help page is ONE translation entry (a whole paragraph block)."""
+
+from .i18n import N_, tr
+
+PLAYER_KEYS = (
+    N_("Video player: click/drag the timeline to seek.  Space = play/pause, "
+    "Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last "
+    "frame, M = mute. Keys work anywhere on the tab except while typing in a "
+    "box (Dual Player: click a video first). 'Go to:' accepts 21:30, "
+    "0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can "
+    "be moved. A ▶ next to a section plays just that From→To range. "
+    "Time boxes are HH : MM : SS : mmm - an empty box counts as 0."))
+
+HELP = {
+    "overview": (N_("Tab layout"), (
+        N_("The main tabs follow the workflow, left to right:\n\n"
+        "Templates - cut intro / credits template clips from one episode "
+        "(sub-tabs Cut template, Auto-detect, Templates).\n"
+        "Cut / Edit - remove the templates from every episode (sub-tabs "
+        "Auto-detect, Manual cut, Multi cut).\n"
+        "Audio - Theme Audio (theme.mp3 for Plex) and Audio Gain (volume / "
+        "loudness).\n"
+        "Inspect - Dual Player, Compare (tracks + quality) and Check "
+        "(broken files).\n"
+        "Log - every tab's messages in one place.\n"
+        "Info - Info / Settings and Recommended encoding notes.\n\n"
+        "The app remembers the tab and sub-tab you were on. Every tab has a "
+        "'?' button (top-right) with its help; 'Help' in the status bar lists "
+        "all of them."))),
+    "template_cut": (N_("Templates – Cut template"), (
+        N_("Cut the intro / credits (and optional pre-intro / after-credits) of ONE "
+        "episode into template clips that Cut / Edit then searches for in every "
+        "episode.\n\n"
+        "1. Load a video (Browse, Enter or drag & drop).\n"
+        "2. Tick a section, find its start and press Set next to From, then its "
+        "end and Set next to To (Set also ticks the section). ▶ previews it.\n"
+        "   Snap moves a From / To to the nearest silence or black-frame edge "
+        "within ±1 s (of the box, or the player position if the box is empty).\n"
+        "3. Press 'Cut template(s)'.\n\n"
+        "Empty boxes: Pre-intro From = file start; Credits / After-credits To = "
+        "file end. Intro needs both times, Credits needs a From.\n\n"
+        "IMPORTANT: Cut / Edit uses the template LENGTH as the cut length, so "
+        "cut the WHOLE segment, not just a recognisable part.\n\n"
+        "Templates are saved as .mkv into Media\\templates\\intro, \\credits, "
+        "\\preintro or \\aftercredits, named '<Show - SxxEyy>_<section>"
+        ".mkv'. Only the audio matters (the track chosen in Auto-detect's "
+        "'Detect on audio'). If the name exists you are asked: Yes = overwrite, "
+        "No = keep both (_v2, _v3 ...), Cancel = skip. Stop takes effect after "
+        "the current section."))),
+    "template_detect": (N_("Templates – Auto-detect"), (
+        N_("Finds the intro / credits that repeat across a season automatically, "
+        "so you don't have to mark them by hand.\n\n"
+        "Pick the season folder (needs 2+ episodes of the same show) and press "
+        "'Detect intro / credits'. Pre-intro / After-credits are searched before "
+        "the found intro / after the found credits, so those must be found too.\n\n"
+        "Settings: 'Search first / last N sec' (default 420), minimum lengths, "
+        "'Scan at most (eps)' (0 = all, recommended), Sensitivity (Medium "
+        "default - loosen it if nothing is found), Episode length presets "
+        "(fill the window and minimums), and 'Detect on audio' (language track).\n\n"
+        "Results: one row per found segment (several openings = several rows). "
+        "Rows already covered by a template you cut are green '✔ (have)' and "
+        "skipped.\n"
+        "- 'Fill times from selected (review)' or double-click: loads the "
+        "example episode and fills the Cut template times so you can check them.\n"
+        "- Audition: plays the segment from up to 3 episodes spread over the "
+        "season, to confirm it really is the same intro / credits.\n"
+        "- 'Auto-cut all templates': cuts a template for every row not marked "
+        "'have' straight into the input folders (disabled after a stopped, "
+        "partial detect).\n\n"
+        "Nothing found? Lower the minimum length, loosen the sensitivity or "
+        "enlarge the search window - the Log suggests which."))),
+    "templates_manager": (N_("Templates – Templates"), (
+        N_("Lists every template clip in the four input folders with kind, length, "
+        "audio language, size and date - manage them without Explorer.\n\n"
+        "- Play (or double-click): load the template into the player and play it.\n"
+        "- Rename... (F2): give it a clearer name (the extension is kept).\n"
+        "- Reveal in Explorer: open its folder with the file selected.\n"
+        "- Move to trash (Delete): move it to Data\\temp\\trash (recoverable).\n"
+        "- Import... or drop videos on the list: COPY existing clips into the "
+        "folder chosen in 'Import into'.\n"
+        "- Refresh: re-read the folders.\n\n"
+        "Every template in a folder is used by Cut / Edit, so trash wrong or "
+        "duplicate ones - a bad template can cause false cuts."))),
+    "cut_auto": (N_("Cut / Edit – Auto-detect"), (
+        N_("Batch-processes every video in the Videos folder: finds each template "
+        "by its audio and removes (or marks) those parts.\n\n"
+        "Folders: Videos, the four template folders and Output (must differ "
+        "from the source folder). Output keeps the same file name.\n\n"
+        "Run mode:\n"
+        "- Cut: removes the found segments and stitches the rest together.\n"
+        "- Inject keyframes: keeps the whole video, only adds keyframes at the "
+        "boundaries.\n"
+        "- Add chapter markers: no cut, no re-encode - adds chapters for "
+        "Plex / Jellyfin skip buttons.\n\n"
+        "Detection: Min confidence (0.32 default; raise if it cuts wrong "
+        "things, lower if it misses), Segments to use, audio language to match. "
+        "Options: move finished sources to a 'done' subfolder, cut intro from "
+        "file start / credits to file end, skip an episode if an enabled "
+        "segment isn't found, trim to where the audio still matches, or anchor "
+        "the cut to the template's first/last N seconds.\n\n"
+        "Encoding (also used by Manual and Multi cut): codec, bit depth, "
+        "CRF/CQ and preset - see Info → Recommended. 'Keep only chosen "
+        "subtitle languages' filters subtitles; video and audio tracks stay.\n\n"
+        "Plex-ready presets ('Plex-ready HEVC' / 'Plex-ready H.264' in Codec): "
+        "near-lossless H.264 or HEVC in an MKV, with the video bitrate capped "
+        "under the source's so files don't grow. Audio is made Plex-friendly: "
+        "AAC, AC3, E-AC3 and MP3 are kept, DTS / TrueHD / FLAC / Opus become "
+        "E-AC3. They never use AV1, because many Plex clients can't direct-play "
+        "it.\n\n"
+        "'Review first (detect only)' is a dry run: nothing is cut - every "
+        "video is matched and loaded into Multi cut with its detected times "
+        "(weak or missing matches get a ⚠ and a note). Check / fix the rows "
+        "there (player, Set, Snap, or another match from a row's ▾ candidates "
+        "list), then 'Cut all files'.\n\n"
+        "Per-show presets: 'Save as...' stores the folders, encoding, "
+        "detection and mode options (and the Templates auto-detect settings) "
+        "under a name in the presets folder; 'Load' restores them; 'Delete' "
+        "moves the preset to Data\\temp\\trash (recoverable).\n\n"
+        "'Add to queue' queues the batch with the CURRENT folders and settings "
+        "- change the folders and add again to line up several seasons; it "
+        "starts when nothing else runs (Queue... in the status bar).\n\n"
+        "Stop kills the current ffmpeg step and discards its partial file; "
+        "finished files are kept."))),
+    "cut_manual": (N_("Cut / Edit – Manual cut"), (
+        N_("Cut ranges you mark yourself out of ONE file - no templates needed.\n\n"
+        "Load the video, then for each section use Set (take the current "
+        "frame) and Go (jump to the time) for From and To; ▶ previews it. "
+        "Snap moves a From / To to the nearest silence or black-frame edge "
+        "within ±1 s. Empty sections are skipped; an empty Pre-intro / Intro "
+        "From means file start, an empty Credits / After-credits To means file "
+        "end.\n\n"
+        "'Auto-detect' (next to Load) matches THIS episode against every "
+        "template variant in the template folders - useful when a show has "
+        "several openings - and fills the boxes with the best match per "
+        "section (no confident match = left empty). A row's ▾ Candidates list "
+        "picks another variant; then nudge with Set / Snap / the frame keys.\n\n"
+        "'Cut previewed video (manual)' removes the marked ranges and keeps the "
+        "rest, using the Encoding settings on Cut / Edit → Auto-detect (run "
+        "mode and confidence are ignored). Output goes to the Output folder "
+        "with the same name; the subtitle filter works here too.\n\n"
+        "The Show preset row above the sub-tabs (Save as... / Load / Delete) "
+        "also covers the encoding and subtitle settings used here. To cut many "
+        "files - or to queue the job - use Multi cut (it has 'Add to queue'); "
+        "to detect a whole folder first, use 'Review first' on Cut / Edit → "
+        "Auto-detect."))),
+    "cut_multi": (N_("Cut / Edit – Multi cut"), (
+        N_("Manual cutting for many files at once, each with its own ranges.\n\n"
+        "Add files (button or drag files/folders onto the list) - or let "
+        "'Review first (detect only)' on Cut / Edit → Auto-detect fill the list "
+        "with detected times (rows with a weak / missing match get a ⚠ and a "
+        "note) - select one, mark its sections with Set / Go / Snap (nearest "
+        "silence or black edge within ±1 s) or pick another detected match from "
+        "a row's ▾ candidates list - edits are saved to that file "
+        "automatically. Up/Down arrows switch file; 'Keep player time when "
+        "switching files' reopens the next file at the same timestamp.\n\n"
+        "'Apply to selected' / 'Apply to ALL files' copy the current times to "
+        "other files (handy when every episode has the intro at the same spot). "
+        "Cells show from-to, 0:00 / end for implied ends, or ? when incomplete "
+        "(that section is skipped).\n\n"
+        "'Cut all files' cuts each file with its own ranges; files without "
+        "sections are skipped, and two files with the same name are refused "
+        "(they would overwrite each other). 'Add to queue' queues cutting the "
+        "list as it is now (times and encoding captured) - it starts when "
+        "nothing else runs (Queue... in the status bar). Encoding comes from "
+        "Cut / Edit → Auto-detect, so a Show preset (Load) applies here too. "
+        "The list is restored next session."))),
+    "theme": (N_("Audio → Theme Audio"), (
+        N_("Exports a stretch of a file's FIRST audio track as an audio file - "
+        "e.g. the intro as theme.mp3 for Plex.\n\n"
+        "Load a video or audio file, set 'Intro from' / 'Intro to' with Set "
+        "(or type them), pick a format (MP3, M4A/AAC, FLAC, WAV), the output "
+        "folder and a file name WITHOUT extension ('theme'), optional fade "
+        "in/out, then 'Export theme audio'.\n\n"
+        "The range must lie inside the file; clips under 3 s get a warning. An "
+        "existing file with the same name is overwritten.\n\n"
+        "Plex tip: name it 'theme', choose MP3 and put it in the show's folder."))),
+    "gain_single": (N_("Audio → Audio Gain – Single file"), (
+        N_("Changes the volume of one file.\n\n"
+        "'Analyze loudness' shows LUFS, true peak, mean and max volume. Then "
+        "choose:\n"
+        "- Change gain by N dB (+ louder / - quieter; above +12 dB it may clip),\n"
+        "- Normalize to a LUFS target (default -16, two-pass loudnorm). The "
+        "true-peak ceiling (default -1.5 dBTP) caps peaks - if the target would "
+        "pass it, loud parts are compressed instead of a clean gain,\n"
+        "- Set peak to N dB (sample peak).\n\n"
+        "'Apply to this file' writes NEXT TO the input as "
+        "<name><tag>_<target>.<ext> (e.g. _-16LUFS, _+3dB, _-1dBpeak). Video "
+        "is copied untouched; 'Output audio' keeps the source codec by default. "
+        "A container that can't hold the chosen codec becomes .mkv."))),
+    "gain_batch": (N_("Audio → Audio Gain – Batch (season)"), (
+        N_("Makes a whole folder equally loud.\n\n"
+        "Pick the input folder (default Media\\Audio Gain\\input) and output folder, "
+        "choose how to match: Loudness (LUFS, recommended for a season), Peak, "
+        "or the same flat Gain for every file.\n\n"
+        "'Analyze all (loudness)' measures the ticked files; the table shows "
+        "LUFS, peak, mean, the difference to the median and the gain that will "
+        "be applied. Files off by more than the tolerance (1.0 LUFS) are "
+        "highlighted and the Log says CONSISTENT or CHECK. A * in Gain means "
+        "loudnorm will compress that file.\n\n"
+        "Click ✓ cells to tick/untick (header = all); Delete removes rows "
+        "from the list only. 'Normalize folder' writes the ticked files to the "
+        "output folder; 'Add to queue' queues it with the ticked files and "
+        "settings as they are now.\n\n"
+        "Tip: afterwards point Input at the output folder and Analyze all again "
+        "to confirm the files now match."))),
+    "dual": (N_("Inspect → Dual Player"), (
+        N_("Two players side by side - e.g. original vs. cleaned file.\n\n"
+        "Load Video A and Video B (Browse or drag & drop). The 'both' buttons "
+        "below play, pause, step and jump both together. With Link ticked a "
+        "seek, step or Go in one player moves the other to the same TIME, so "
+        "files with different frame rates stay aligned.\n\n"
+        "Mute one side to A/B the audio. Keyboard shortcuts work after you "
+        "click a video."))),
+    "compare_tracks": (N_("Inspect → Compare – Tracks"), (
+        N_("Checks that a processed file kept all its tracks.\n\n"
+        "Pick the original and the new file and press Compare. The table lists "
+        "duration, size, video, cover art, audio (codec, language, channels, "
+        "default/forced), subtitles and attachments (fonts) side by side.\n\n"
+        "Tracks are paired by language first; reordering shows as '(new #N)'. "
+        "Red X = missing track or changed language / channels / flags, or a new "
+        "file more than 2 s LONGER. A shorter new file (after a cut) and codec "
+        "changes are expected and not flagged."))),
+    "compare_quality": (N_("Inspect → Compare – Quality"), (
+        N_("Measures how close a re-encode looks to the original: SSIM, PSNR and "
+        "VMAF (only if your ffmpeg has libvmaf).\n\n"
+        "Pick original and re-encoded file ('Use files from Tracks' copies "
+        "them), optional start offsets / duration. By default N sample windows "
+        "of N seconds are compared; 'Full scan' compares every frame (slow - "
+        "'Add to queue' runs it after the other jobs).\n\n"
+        "Auto-align (on) finds each window in the original by its audio and "
+        "refines to the frame, so CUT files compare correctly (needs numpy, "
+        "scipy, librosa; not with Full scan).\n\n"
+        "Guide: SSIM 0.98+ or VMAF 90+ = no visible difference. Different "
+        "resolutions are scaled to the original's size and flagged."))),
+    "check": (N_("Inspect → Check"), (
+        N_("Finds broken video files. Read-only - files are never changed.\n\n"
+        "Depth: Quick = the file opens and has valid streams (fast). Full = "
+        "decodes the whole file and reports errors (slow); a full check that "
+        "times out shows UNKNOWN, which is not proof of damage.\n\n"
+        "Check a single file, or pick a folder (sub-folders included) / drop "
+        "files, tick rows and press 'Check ticked files' (or 'Add to queue' to "
+        "check them after the running jobs). Results: OK (green), "
+        "BROKEN (red), UNKNOWN (amber). Delete removes rows from the list only."))),
+    "log": (N_("Log"), (
+        N_("Every tab's messages in one place, also auto-saved to "
+        "Data\\logs\\session_YYYYMMDD.log - so overnight batches are captured.\n\n"
+        "'Save log...' writes it to a file, 'Clear' empties the view, 'Open "
+        "logs folder' shows the files. The view keeps the last 20,000 lines; "
+        "session logs older than the retention period (Settings, default 30 "
+        "days) are moved to Data\\temp\\trash at startup. Each tool tab also has its "
+        "own Log sub-tab."))),
+    "cleanup": (N_("Clean up folders"), (
+        N_("Empties working folders by MOVING their contents to "
+        "Data\\temp\\trash\\<date-time> - recoverable, nothing is deleted.\n\n"
+        "Tick the folders (Media\\templates, Media\\videos, Media\\output, "
+        "Media\\Audio Gain in/out, Data\\temp); each shows its file count and "
+        "size. 'Clean up selected' asks first.\n\n"
+        "'Empty trash older than N days' (default 14) is the ONLY permanent "
+        "delete in the app - it shows how much will go and asks first. Both "
+        "are blocked while any job is running."))),
+    "queue": (N_("Status bar, queue & notifications"), (
+        N_("The status bar at the bottom shows what is running ('Idle' or "
+        "'▶ Running: ...') and how many jobs are queued.\n\n"
+        "Queue...: jobs added to the queue run one after another - e.g. several "
+        "batches overnight. A queued job starts only when nothing else is "
+        "running. 'Add to queue' buttons: Cut / Edit (Auto-detect batch, Multi "
+        "cut), Audio → Audio Gain (Normalize folder), Inspect → Compare "
+        "(Quality) and Inspect → Check; each entry keeps the files and settings "
+        "from the moment it was added. In the dialog you can reorder or remove waiting jobs, clear "
+        "the queue, pause/resume it and 'Stop all' (stops running jobs and "
+        "pauses the queue).\n\n"
+        "When a job that ran longer than the set minimum (default 1 minute) "
+        "finishes, you get a Windows notification (or a small popup in the "
+        "bottom-right corner), an optional sound, and the taskbar button "
+        "flashes if the window is in the background.\n\n"
+        "Settings... (top bar): theme, notifications on/off, toast, sound, "
+        "minimum job length, the daily update check ('Check now') and how many "
+        "days session logs are kept."))),
+    "folders": (N_("Folders & themes"), (
+        N_("Everything the toolkit works with lives in two folders next to the "
+        "app (they are created on first start):\n\n"
+        "Media\\videos - episodes to process (finished sources go to "
+        "videos\\done)\n"
+        "Media\\output - cleaned episodes\n"
+        "Media\\templates\\intro, \\credits, \\preintro, \\aftercredits - the "
+        "template clips\n"
+        "Media\\Audio Gain\\input, \\output - the Audio Gain batch folders\n\n"
+        "Data\\settings.json - your settings (incl. the theme)\n"
+        "Data\\presets - per-show Cut / Edit presets\n"
+        "Data\\logs - the session logs\n"
+        "Data\\temp - temporary files; Data\\temp\\trash holds everything the "
+        "app 'deletes' (recoverable)\n"
+        "Data\\backups - copies kept just in case\n\n"
+        "An older install (videos\\, input\\, logs\\, toolkit_settings.json ... "
+        "next to the app) is moved into these folders automatically at "
+        "startup - nothing is deleted, and the Log tab lists every move.\n\n"
+        "Theme (top bar or Settings): Light, Dark, High Contrast, Plex, Gold "
+        "on Dark, Midnight Blue, Nord, Dracula, Solarized Light / Dark, Forest, "
+        "Sepia - or Follow Windows, which switches Light / Dark together with "
+        "the Windows app mode. A change applies to every open window at once "
+        "and is remembered."))),
+}
+
+HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager",
+              "cut_auto", "cut_manual", "cut_multi", "theme",
+              "gain_single", "gain_batch", "dual", "compare_tracks",
+              "compare_quality", "check", "log", "cleanup", "queue", "folders")
+
+
+def get(key):
+    """(title, text) for key, translated; unknown keys get a harmless placeholder."""
+    title, body = HELP.get(key, (N_("Help"), N_("No help is available for this page yet.")))
+    return tr(title), tr(body)
+
+
+def sections():
+    """[(title, text)] for every tab, in HELP_ORDER (+ the player keys)."""
+    out = [get(k) for k in HELP_ORDER if k in HELP]
+    out.append((tr("Video player controls"), tr(PLAYER_KEYS)))
+    return out
