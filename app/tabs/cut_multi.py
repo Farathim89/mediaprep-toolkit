@@ -4,6 +4,7 @@ import time
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 from ..config import BIT_DEPTHS, CODECS
 from ..engine.cut import keep_from_drops, run_manual
@@ -16,7 +17,7 @@ from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, bind_sta
 from .common import _VIDEO_TYPES
 from .cut_common import _SEGS, _TO_END, _ZERO_FROM, _resolve_rng, tr_key
 from .. import jobs as jobreg
-from ..ui import icons
+from ..ui import icons, themes
 
 
 class MultiCutMixin:
@@ -88,9 +89,18 @@ class MultiCutMixin:
         self.multi_tree = ttk.Treeview(tvf, columns=cols, show="headings", height=4)
         self.multi_tree.heading("file", text=tr("File"))
         self.multi_tree.column("file", width=300, anchor="w", stretch=True)
+        # size each section column to its (translated) heading so e.g.
+        # "After-credits" / "Nachspann" isn't clipped
+        try:
+            hfont = tkfont.nametofont(ttk.Style().lookup("Treeview.Heading", "font")
+                                      or "TkHeadingFont")
+        except tk.TclError:
+            hfont = tkfont.nametofont("TkDefaultFont")
         for k, txt in self.MULTI_SEGS:
-            self.multi_tree.heading(k, text=tr_key(txt))
-            self.multi_tree.column(k, width=100, anchor="center", stretch=False)
+            label = tr_key(txt)
+            self.multi_tree.heading(k, text=label)
+            w = max(100, hfont.measure(label) + themes.px(28))
+            self.multi_tree.column(k, width=w, minwidth=w, anchor="center", stretch=False)
         self.multi_tree.heading("notes", text=tr("Notes"))
         self.multi_tree.column("notes", width=220, anchor="w", stretch=False)
         # rows 'Review first' couldn't fill confidently: ⚠ + warning colour

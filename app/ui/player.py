@@ -382,8 +382,9 @@ class VideoPlayer(ttk.Frame):
         gb.pack(side="left", padx=themes.px(4))
         add_tooltip(gb, tr("Jump to the typed time"))
         if self._icons:
-            ub = icons.decorate(ttk.Button(info, text="", style="Subtle.TButton",
-                                           command=self.unload), "eject")
+            # icon + label like Go - a bare eject glyph was easy to miss
+            ub = icons.decorate(ttk.Button(info, text=tr("Unload"), command=self.unload),
+                                "eject")
         else:
             ub = ttk.Button(info, text="⏏ " + tr("Unload"), command=self.unload)
         ub.pack(side="right")
