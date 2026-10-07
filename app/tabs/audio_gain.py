@@ -84,7 +84,7 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
     _MEDIA_EXTS = (".mp4", ".mkv", ".mov", ".avi", ".webm",
                    ".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus")
 
-    def __init__(self, master, saved=None):
+    def __init__(self, master, saved=None, bottom=None):
         super().__init__(master, padding=8)
         saved = saved or {}
         self.stop_event = threading.Event()
@@ -196,10 +196,19 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         self._build_batch_tab(batch, saved)
 
         # ===================== shared status + progress + log =====================
+        # status + progress + Stop: in the window's fixed footer when `bottom`
+        # is given (always visible), else under the content
         self.status_var = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.status_var, style="Hint.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        prog = ttk.Frame(self)
-        prog.grid(row=2, column=0, sticky="we", pady=(2, 2))
+        if bottom is not None:
+            ttk.Label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
+                anchor="w", padx=10, pady=(4, 0))
+            prog = ttk.Frame(bottom)
+            prog.pack(fill="x", padx=10, pady=(2, 6))
+        else:
+            ttk.Label(self, textvariable=self.status_var, style="Hint.TLabel").grid(
+                row=1, column=0, sticky="w", pady=(6, 0))
+            prog = ttk.Frame(self)
+            prog.grid(row=2, column=0, sticky="we", pady=(2, 2))
         prog.columnconfigure(0, weight=1)
         self.bar = ttk.Progressbar(prog, mode="determinate", maximum=1000)
         self.bar.grid(row=0, column=0, sticky="we")

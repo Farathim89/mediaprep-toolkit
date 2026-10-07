@@ -9,8 +9,8 @@ from ..config import (AUDIO_RECODE_MAP, AUTO_CODEC_MAP, AUTO_GPU_CODEC_MAP,
                       DEFAULT_AUDIO_RECODE, NVENC_PRESET_MAP, POPEN_FLAGS,
                       SVT_PRESET_MAP)
 from .formatting import format_ffmpeg_timestamp, format_size
-from .probe import (_probe_json, probe_source_video_bitrate, probe_streams,
-                    probe_video_info)
+from .probe import (_probe_json, count_frames_between, probe_source_video_bitrate,
+                    probe_streams, probe_video_info)
 from .process import run_ffmpeg_with_progress
 
 
@@ -328,6 +328,15 @@ def build_stream_maps(input_file, subs_lang=None):
     return maps
 
 
+# cut points are frame times rounded to the millisecond (detectors, the UI),
+# while a container's frame timestamps may be rational (mp4 1/24000: 4.170833
+# shows as 4.171). -ss / -t keep frames with start <= pts < end, so a point
+# rounded UP would drop the segment's first frame / keep the frame at the
+# end. Both points are moved this much earlier: well inside the gap before
+# the intended frame (half a frame is >= 8 ms), far below a sync error.
+CUT_EPS = 0.0006
+
+
 def build_ffmpeg_cut(input_file, output_file, start_sec, end_sec, audio_streams,
                      crf, preset, kf_interval, seg_name=None, fps=None,
                      encoder="libx264", bit_depth=8, subs_lang=None, plex=None,
@@ -344,12 +353,24 @@ def build_ffmpeg_cut(input_file, output_file, start_sec, end_sec, audio_streams,
     audio=False (non-Plex only): leave the audio out - a multi-piece cut
     encodes it in one seamless pass instead (build_audio_pass).
     """
+    if start_sec > CUT_EPS:
+        start_sec -= CUT_EPS
+    end_sec -= CUT_EPS
     seg_duration = end_sec - start_sec
     seek1 = max(0.0, start_sec - 10.0)
     maps = _plex_maps(input_file, subs_lang) if plex else build_stream_maps(input_file, subs_lang)
     cmd = ["ffmpeg", "-y", "-ss", f"{seek1:.6f}", "-copyts", "-i", input_file,
            "-ss", f"{start_sec:.6f}", "-t", f"{seg_duration:.6f}",
            "-output_ts_offset", f"{-start_sec:.6f}"] + maps
+    # -t is checked on the ENCODER's frame-grid timestamps, which can let the
+    # frame at the end point slip in: the video is limited by its real frame
+    # count (start <= pts < end) as well
+    try:
+        n_frames = count_frames_between(input_file, start_sec, end_sec)
+    except Exception:
+        n_frames = None
+    if n_frames:
+        cmd += ["-frames:v", str(n_frames)]
     cmd += (list(plex["video_args"]) if plex else
             build_video_codec_args(encoder, crf, preset, output_file, bit_depth))
     # dense keyframes only for SHORT cold-open / post-credits pieces (so they

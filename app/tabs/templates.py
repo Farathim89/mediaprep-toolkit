@@ -13,13 +13,14 @@ from ..config import (AFTERCREDITS_DIR, AUDIO_LANG_CHOICES, CREDITS_DIR, INTRO_D
 from ..engine.files import move_to_trash
 from ..engine.formatting import fmt_time
 from ..engine.probe import audio_track_for_lang
+from ..ui.frametime import file_fps
 from ..ui.player import VideoPlayer
 from ..ui.widgets import (ScrollFrame, TimeEntry, add_tooltip, build_log_tab, info_icon,
                           enable_file_drop, enable_file_drop_deep, help_button,
                           trim_text_lines)
 from .common import (_KIND_NAMES, _MEDIA_EXTS, _VIDEO_TYPES, _existing_template,
                      _snap_in_thread, _template_stem)
-from .cut_common import _src_label
+from .cut_common import _ask_choice, _src_label
 from .cut_common import mode_combobox
 from .templates_autodetect import TemplateAutoMixin
 from .templates_detect import TemplateDetectMixin
@@ -171,12 +172,13 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                                "silence / black frame within ±1 s (uses the From box, or the "
                                "player position if the box is empty)", section=desc))
             ttk.Label(sect, text=tr("To:")).grid(row=r1, column=1, sticky="e", padx=(0, 4), pady=1)
-            et = TimeEntry(sect)
+            et = TimeEntry(sect, end=True, fps=self._tpl_fps)
             et.grid(row=r1, column=2, sticky="w", padx=2, pady=1)
             bt = ttk.Button(sect, text=tr("Set"), width=-5,
                             command=lambda k=key: self._mark(k, "to"))
             bt.grid(row=r1, column=3, sticky="we", padx=2)
-            add_tooltip(bt, tr("Set the END of the {section} to the frame shown in the player",
+            add_tooltip(bt, tr("Set the END of the {section} to the frame shown in the player "
+                               "- the To frame is the last frame of the clip (inclusive)",
                                section=desc))
             st = ttk.Button(sect, text=tr("Snap"), width=-5,
                             command=lambda k=key: self._snap(k, "to"))
@@ -195,9 +197,11 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                                                   pady=(top_pad, 0))
             self.sections[key] = (on, ef, et)
             if ss:                       # restore last session's times
+                # saved as engine values (To = exclusive end); the To box
+                # shows the frame before it once the video's fps is known
                 for te, val in ((ef, ss[1]), (et, ss[2])):
                     if isinstance(val, (int, float)):
-                        te.set_seconds(float(val))
+                        te.set_value(float(val))
             for v in ef.vars + et.vars:
                 v.trace_add("write", lambda *a: self._refresh_markers())
 
@@ -208,7 +212,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                                                  command=self.start_cut), "cut")
         self.cut_btn.pack(side="left", fill="x", expand=True)
         info_icon(crow, tr("Cut the WHOLE segment - Cut / Edit uses the template "
-                           "length as the cut length. Credits / After-credits 'To' "
+                           "length as the cut length. From and To are both in the clip: "
+                           "To = the last frame (inclusive). Credits / After-credits 'To' "
                            "empty = end of file; Pre-intro 'From' empty = start of "
                            "file. Pre-intro & after-credits are optional "
                            "(recaps / teasers).")).pack(side="left", padx=(6, 0))
@@ -221,14 +226,21 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         self.player = VideoPlayer(left, width=480, height=270, log_fn=self.log)
         self.player.pack()
         self.player.enable_tab_shortcuts()   # arrows/space work anywhere on the tab
+        self.player.auto_fit(body)           # 16:9 video as large as the page allows
 
         # ---- shared status + progress (anchored to the window bottom when a
         # non-scrolling `bottom` strip is provided, so they stay visible) ----
         self.status_var = tk.StringVar(value="")
+        self._bottom = bottom
+        self._cut_foot = None
         if bottom is not None:
-            ttk.Label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
+            # the window's fixed footer: this row on Cut template / Templates,
+            # the Auto-detect row (built in _build_detect_tab) on Auto-detect
+            self._cut_foot = foot = ttk.Frame(bottom)
+            foot.pack(fill="x")
+            ttk.Label(foot, textvariable=self.status_var, style="Hint.TLabel").pack(
                 anchor="w", padx=10, pady=(4, 0))
-            prow = ttk.Frame(bottom)
+            prow = ttk.Frame(foot)
             prow.pack(fill="x", padx=10, pady=(2, 6))
         else:
             ttk.Label(main, textvariable=self.status_var, style="Hint.TLabel").grid(
@@ -252,11 +264,32 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         self._audition = None               # open Audition window, if any
         self._build_templates_tab(tm_sc.interior)
         nb.bind("<<NotebookTabChanged>>", self._on_subtab_changed, add="+")
+        nb.bind("<<NotebookTabChanged>>", self._footer_row, add="+")
 
         self.logbox = build_log_tab(nb)
 
         enable_file_drop_deep(self.player, self._drop_load)       # drop anywhere in the player
         enable_file_drop(ent, self._drop_load)
+
+    def _footer_row(self, _e=None):
+        """Footer: the Auto-detect progress row on the Auto-detect sub-tab,
+        the template-cut row everywhere else."""
+        det = getattr(self, "_detect_foot", None)
+        if self._cut_foot is None or det is None:
+            return
+        try:
+            on_detect = self._nb.index("current") == 1
+        except tk.TclError:
+            return
+        show, hide = (det, self._cut_foot) if on_detect else (self._cut_foot, det)
+        hide.pack_forget()
+        if not show.winfo_ismapped():
+            show.pack(fill="x")
+
+    def _tpl_fps(self):
+        """fps of the Cut template video (the To boxes step one frame on it)."""
+        path = getattr(getattr(self, "player", None), "_path", None)             or self.file_var.get().strip().strip('"')
+        return file_fps(path, getattr(self, "player", None))
 
     # ---------------- markers ----------------
     def _refresh_markers(self):
@@ -265,8 +298,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         dur = self.player.timeline.duration
         marks = []
         for key, (on, ef, et) in self.sections.items():
-            s, s_ok = ef.get_seconds()
-            e, e_ok = et.get_seconds()
+            s, s_ok = ef.get_value()
+            e, e_ok = et.get_value()
             if s is None or not s_ok or not e_ok:
                 continue     # an invalid To is NOT "to end" - draw nothing
             end = e if e is not None else dur
@@ -279,8 +312,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             messagebox.showinfo(tr("No video"), tr("Load a video first."))
             return
         _on, ef, et = self.sections[key]
-        s, s_ok = ef.get_seconds()
-        e, e_ok = et.get_seconds()
+        s, s_ok = ef.get_value()
+        e, e_ok = et.get_value()
         if s is None and s_ok and key == "preintro":
             s = 0.0            # empty pre-intro From = start of file
         if s is None or not s_ok:
@@ -295,7 +328,7 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             return
         self.status_var.set(tr("Previewing {section} section {start} -> {end}",
                                section=tr_key(_KIND_NAMES[key]), start=fmt_time(s),
-                               end=fmt_time(end)))
+                               end=fmt_time(et.shown(end))))
         self.player.play_range(s, end)
 
     def _mark(self, key, which):
@@ -367,9 +400,21 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                 a_idx = None
         if a_idx is None:
             a_idx = 0
-        cmd = ["ffmpeg", "-y", "-ss", f"{s:.3f}", "-i", video, "-ss", "0"]
+        # s = the first frame of the clip, e = the frame AFTER its last one
+        # (the To box shows the last frame, inclusive). Both cut points sit
+        # half a frame early, between two frames, so millisecond rounding of
+        # the times / the file's timestamps can never add or drop a frame.
+        half = 0.5 / fps if (fps := file_fps(video)) else 0.0
+        ss = max(0.0, s - half)
+        cmd = ["ffmpeg", "-y", "-ss", f"{ss:.4f}", "-i", video, "-ss", "0"]
         if e is not None:
-            cmd += ["-t", f"{e - s:.3f}"]
+            if fps:
+                # a frame COUNT is exact; a -t duration lost the last frame to
+                # timestamp rounding on real HEVC files (2159 instead of 2160)
+                n = max(1, int(round((e - s) * fps)))
+                cmd += ["-frames:v", str(n), "-t", f"{n / fps + half:.4f}"]
+            else:
+                cmd += ["-t", f"{max(0.001, e - half - ss):.4f}"]
         cmd += ["-map", "0:v:0", "-map", f"0:a:{a_idx}?",
                 "-c:v", "libx264", "-crf", "18", "-preset", "superfast", "-c:a", "copy", out]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -399,11 +444,16 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             names = [os.path.basename(p) for p in clash]
             if len(names) > 12:
                 names = names[:12] + [tr("... and {n} more", n=len(names) - 12)]
-            choice = messagebox.askyesnocancel(
-                tr("Template already exists"),
+            # real Overwrite / Keep both / Skip buttons (it was Yes / No /
+            # Cancel with a legend to decode)
+            pick = _ask_choice(
+                self, tr("Template already exists"),
                 tr("These templates already exist:") + "\n\n" + "\n".join(names) + "\n\n"
-                + tr("Yes = Overwrite them\nNo = Keep both (save the new one as _v2, _v3...)"
-                     "\nCancel = Skip those sections"))
+                + tr("Overwrite them, keep both (the new one is saved as _v2, _v3...) "
+                     "or skip those sections?"),
+                [("overwrite", tr("Overwrite")), ("keep", tr("Keep both")),
+                 ("skip", tr("Skip"))])
+            choice = {"overwrite": True, "keep": False}.get(pick)    # None = skip
         plan, taken = {}, set()
         for tag, folder, base, existing in rows:
             name, replace = base, []
@@ -484,8 +534,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             if not on.get():
                 continue
             sec = tr_key(_KIND_NAMES[key])
-            s, s_ok = ef.get_seconds()
-            e, e_ok = et.get_seconds()
+            s, s_ok = ef.get_value()
+            e, e_ok = et.get_value()      # exclusive end: the frame after the To frame
             if s is None and s_ok and key == "preintro":
                 s = 0.0        # pre-intro starts at the very beginning by definition
             if not s_ok or s is None:
@@ -582,20 +632,21 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             return
         on, ef, et = self.sections[key]
         entry = ef if which == "from" else et
-        t, ok = entry.get_seconds()
+        # engine values (a To box: the exclusive end, one frame after it shows)
+        t, ok = entry.get_value()
         if not ok:
             self.status_var.set(tr("That time box is invalid - fix it or clear it to snap "
                                    "from the player position."))
             return
         if t is None:
-            t = self.player.current_seconds()
+            t = entry.engine(self.player.current_seconds())
         if t is None:
             return
         btn = self._snap_btns[(key, which)]
         btn.configure(state="disabled")
         self.status_var.set(tr("Snapping {section} {which} near {time}...",
                                section=tr_key(_KIND_NAMES[key]), which=tr_key(_WHICH[which]),
-                               time=fmt_time(t)))
+                               time=fmt_time(entry.shown(t))))
         edge = "start" if which == "from" else "end"
 
         def done(new_t, reason):
@@ -609,17 +660,18 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                 self.status_var.set(tr("Snap: {reason}", reason=reason))
                 return
             on.set(True)
-            entry.set_seconds(new_t)
+            entry.set_value(new_t)
             entry.flash()
             self._refresh_markers()
             if self.player.has_video():
-                self.player.seek_seconds(new_t, play=False)
+                self.player.seek_seconds(entry.shown(new_t), play=False)
                 self.player.canvas.focus_set()
-            msg = f"snapped {fmt_time(t)} → {fmt_time(new_t)} ({reason})"
+            old_s, new_s = fmt_time(entry.shown(t)), fmt_time(entry.shown(new_t))
+            msg = f"snapped {old_s} → {new_s} ({reason})"
             self.log(f"{tag} {msg}")
             self.status_var.set(tr("{section} {which} snapped {old} → {new} ({reason})",
                                    section=tr_key(_KIND_NAMES[key]), which=tr_key(_WHICH[which]),
-                                   old=fmt_time(t), new=fmt_time(new_t), reason=reason))
+                                   old=old_s, new=new_s, reason=reason))
 
         _snap_in_thread(self, video, t, edge, self._det_lang(), done)
 
@@ -640,6 +692,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             "det_eplen": self.det_eplen.get(),
             "det_lang": AUDIO_LANG_CHOICES.get(self.det_lang_var.get()),
             "det_mode": self.det_mode_var.get(),
+            **{("det_margin" if k == "margin_frames" else "det_tpl_margin"): v
+               for k, v in self._det_margins().items()},
             "tpl_sections": self._sections_snapshot(),
         }
 
@@ -648,7 +702,7 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         (an unreadable time is saved as None)."""
         out = {}
         for key, (on, ef, et) in self.sections.items():
-            s, s_ok = ef.get_seconds()
-            e, e_ok = et.get_seconds()
+            s, s_ok = ef.get_value()
+            e, e_ok = et.get_value()      # engine value (exclusive end), as before
             out[key] = [bool(on.get()), s if s_ok else None, e if e_ok else None]
         return out

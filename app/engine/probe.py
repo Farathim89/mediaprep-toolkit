@@ -501,7 +501,7 @@ def probe_first_frame_at(path, t, tries=3):
     end = None
     for _ in range(tries):
         pts = [p for p, _ in _video_packet_times(path, f"{lo:.3f}%{hi:.3f}")]
-        after = [p for p in pts if p >= t - 1e-4]
+        after = [p for p in pts if p >= t - 6e-4]       # encode.CUT_EPS: ms-rounded t
         if not after:
             continue
         need = t + 1.0                     # complete = reaches well past t
@@ -511,6 +511,25 @@ def probe_first_frame_at(path, t, tries=3):
             need = min(need, end - 0.5)
         if max(pts) >= need:
             return min(after)
+    return None
+
+
+def count_frames_between(path, t0, t1, tries=3):
+    """How many video frames have t0 <= pts < t1 (the file's own timeline,
+    as ffmpeg -copyts sees it) - from the packets, no decoding. None when
+    the packet list can't be read completely."""
+    end = None
+    for _ in range(tries):
+        pts = [p for p, _ in _video_packet_times(path, f"{max(0.0, t0 - 2.0):.3f}%{t1 + 2.0:.3f}")]
+        if not pts:
+            continue
+        need = t1 + 0.5                    # complete = reaches past t1 ...
+        if max(pts) < need:                # ... or the file ends there
+            if end is None:
+                end = probe_duration(path) or 0.0
+            need = min(need, end - 0.5)
+        if max(pts) >= need and (t0 < 2.0 or min(pts) <= t0 - 0.2):
+            return sum(1 for p in pts if t0 <= p < t1)
     return None
 
 

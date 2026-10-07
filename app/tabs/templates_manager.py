@@ -6,10 +6,11 @@ import shutil
 import threading
 import subprocess
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from ..engine.files import move_to_trash
 from ..engine.probe import probe_audio_streams, probe_duration
+from ..ui.dialogs import ask_string
 from ..ui.player import VideoPlayer
 from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, bind_status_colors,
                           enable_paths_drop, help_button)
@@ -249,10 +250,10 @@ class TemplatesManagerMixin:
         if not p:
             return
         stem, ext = os.path.splitext(os.path.basename(p))
-        new = simpledialog.askstring(tr("Rename template"),
-                                     tr("New name for {name}:\n(the {ext} extension is kept)",
-                                        name=stem + ext, ext=ext),
-                                     initialvalue=stem, parent=self)
+        new = ask_string(self, tr("Rename template"),
+                         tr("New name for {name}:\n(the {ext} extension is kept)",
+                            name=stem + ext, ext=ext),
+                         initialvalue=stem)
         if new is None:
             return
         new = new.strip()

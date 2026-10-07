@@ -14,7 +14,7 @@ from tkinter import ttk
 from .playback import AudioPlayer
 from ..engine.formatting import fmt_time, parse_time
 from ..engine.probe import probe_duration
-from .widgets import add_tooltip
+from .widgets import add_tooltip, fixed_label
 from ..i18n import tr
 from . import icons, themes
 
@@ -22,6 +22,31 @@ from . import icons, themes
 # Pass the KIND ("intro", ...) to set_markers so the bands follow theme
 # changes; MARKER_COLORS (kind -> current colour) is kept for old callers.
 MARKER_KINDS = ("preintro", "intro", "credits", "aftercredits")
+
+# The video area is always a standard 16:9 box: 16k x 9k pixels at 100 %
+# scaling (k=30 -> 480x270, 40 -> 640x360, 48 -> 768x432, 60 -> 960x540,
+# 80 -> 1280x720), k scaled with the display DPI so it stays exactly 16:9.
+# The frame is letter- / pillarboxed inside it (never stretched).
+VIDEO_K = (20, 24, 25, 28, 30, 32, 36, 40, 44, 48, 52, 56, 60, 64, 72, 80, 90, 100, 120)
+
+
+def video_size(k):
+    """A 16:9 size for ladder step k (100 % units) at the current DPI."""
+    k = max(1, int(round(k * themes.scale())))
+    return 16 * k, 9 * k
+
+
+def fit_16x9(avail_w, avail_h, min_k=None, max_k=None):
+    """The largest ladder size that fits avail_w x avail_h (DPI-scaled),
+    clamped to [min_k, max_k] (100 % ladder steps). Returns (w, h)."""
+    best = None
+    for k in VIDEO_K:
+        if (min_k is not None and k < min_k) or (max_k is not None and k > max_k):
+            continue
+        w, h = video_size(k)
+        if best is None or (w <= avail_w and h <= avail_h):
+            best = (w, h)
+    return best
 MARKER_COLORS = {}
 
 
@@ -251,7 +276,12 @@ class VideoPlayer(ttk.Frame):
 
     def __init__(self, master, width=480, height=270, log_fn=None, resizable=False):
         super().__init__(master)
-        self.VW, self.VH = width, height
+        # width/height are 100 % sizes: snapped to the 16:9 ladder, DPI-scaled
+        base_k = max(k for k in VIDEO_K if k <= max(VIDEO_K[0], min(width / 16, height / 9)))
+        self._base_k = base_k
+        self.VW, self.VH = video_size(base_k)
+        self._af = None                # auto_fit() settings
+        self._af_job = None
         self._log = log_fn or (lambda m: None)
         self.cap = None
         self.fps = 25.0
@@ -287,7 +317,14 @@ class VideoPlayer(ttk.Frame):
         self._resize_job = None
         self._canvas_size_seen = None
         if resizable:
-            self.canvas.pack(fill="both", expand=True)
+            # a resizable player (Dual Player) keeps a 16:9 canvas centred in
+            # the room it gets; the room around it is plain background
+            self._holder = ttk.Frame(self, width=self.VW, height=self.VH)
+            self._holder.pack(fill="both", expand=True)
+            self.canvas.place(in_=self._holder, relx=0.5, rely=0.5, anchor="center",
+                              width=self.VW, height=self.VH)
+            self.tk.call("raise", self.canvas._w, self._holder._w)   # above its holder
+            self._holder.bind("<Configure>", self._on_holder_configure)
             self.canvas.bind("<Configure>", self._on_canvas_configure)
         else:
             self.canvas.pack()
@@ -360,17 +397,29 @@ class VideoPlayer(ttk.Frame):
                         length=themes.px(84), command=self._on_volume)
         vol.pack(side="left", padx=themes.pad(2, 1))
         add_tooltip(vol, tr("Volume (moving the slider also unmutes)"))
-        self.vol_lbl = ttk.Label(ctr, text=f"{int(self.audio.volume * 100)}%", width=4,
+        self.vol_lbl = ttk.Label(ctr, text=f"{int(self.audio.volume * 100)}%", width=5,
                                  style="Pill.Hint.TLabel")
         self.vol_lbl.pack(side="left", padx=themes.pad(2, 4))
 
-        # time (Segoe UI digits are tabular - the text doesn't jitter while
-        # playing) + Go to + Unload
+        # time + Go to + Unload. The time sits in a FIXED-size box (the widest
+        # possible text in the current font): its digits change every frame
+        # while playing, and a label that resized with them made the whole
+        # page jitter (Segoe UI Variable's "1" is narrower than the others,
+        # the frame number grows a digit now and then).
         info = ttk.Frame(self)
         info.pack(fill="x", pady=themes.pad(6, 0))
         self.time_var = tk.StringVar(value=self._time_text(None, None, 0))
-        ttk.Label(info, textvariable=self.time_var, style="Hint.TLabel").pack(
-            side="left", padx=themes.pad(2, 12))
+        def time_samples():
+            # frame numbers up to 6 digits (4.6 h at 60 fps), more for a
+            # longer file - re-measured when one is loaded
+            frame = int("8" * max(6, len(str(self.total_frames))))
+            return [self._time_text(None, None, frame),
+                    tr("{cur}  /  {total}   (frame {frame})", cur="88:88:88:888",
+                       total="88:88:88:888", frame=frame)]
+        tbox, self.time_lbl = fixed_label(info, time_samples, style="Hint.TLabel",
+                                          textvariable=self.time_var)
+        self._time_box = tbox
+        tbox.pack(side="left", padx=themes.pad(2, 12))
         ttk.Label(info, text=tr("Go to:")).pack(side="left", padx=themes.pad(0, 4))
         self.jump_var = tk.StringVar()
         je = ttk.Entry(info, textvariable=self.jump_var, width=11)
@@ -383,10 +432,12 @@ class VideoPlayer(ttk.Frame):
         add_tooltip(gb, tr("Jump to the typed time"))
         if self._icons:
             # icon + label like Go - a bare eject glyph was easy to miss
-            ub = icons.decorate(ttk.Button(info, text=tr("Unload"), command=self.unload),
+            ub = icons.decorate(ttk.Button(bar, text=tr("Unload"), command=self.unload),
                                 "eject")
         else:
-            ub = ttk.Button(info, text="⏏ " + tr("Unload"), command=self.unload)
+            ub = ttk.Button(bar, text="⏏ " + tr("Unload"), command=self.unload)
+        # at the right end of the transport row (the time row below is wide
+        # enough with the fixed-size time box)
         ub.pack(side="right")
         add_tooltip(ub, tr("Unload") + " - " + tr(
             "Close the video and free the file so it can be moved or deleted "
@@ -507,15 +558,17 @@ class VideoPlayer(ttk.Frame):
         self._step(n, notify=notify)
 
     def play_range(self, start_sec, end_sec):
-        """Seek to start_sec, play, and auto-pause at end_sec (section preview).
+        """Seek to start_sec, play, and auto-pause on the last frame BEFORE
+        end_sec (section preview; end_sec is the exclusive end = the first
+        frame kept, so the preview plays through the last removed frame).
         Any manual transport action (pause, seek, step, jump) cancels the stop
         point, so the player behaves normally again afterwards."""
         if self.cap is None or not self.fps:
             return
-        end_frame = int(end_sec * self.fps)
+        end_frame = int(round(end_sec * self.fps)) - 1
         if self.total_frames > 0:
             end_frame = min(end_frame, self.total_frames - 1)
-        start_frame = max(0, int(start_sec * self.fps))
+        start_frame = max(0, int(round(start_sec * self.fps)))
         if end_frame <= start_frame:
             return
         self._stop_play()
@@ -640,6 +693,8 @@ class VideoPlayer(ttk.Frame):
             dur = probe_duration(path)
             frames = int(dur * self.fps) if dur else 0
         self.total_frames = max(frames, 0)
+        if len(str(self.total_frames)) > 6:
+            self._time_box.remeasure()
         self.cur_frame = 0
         self.timeline.set_duration(self.total_frames / self.fps if self.fps else 0.0)
         self._seek_show(0)
@@ -661,6 +716,102 @@ class VideoPlayer(ttk.Frame):
             return True
         except ImportError:
             return False
+
+    # ---- video size (always 16:9) ----
+    def set_video_size(self, w, h):
+        """Give the video area a new fixed size (a 16:9 ladder size) and
+        redraw the current frame / placeholder in it."""
+        w, h = int(w), int(h)
+        if (w, h) == (self.VW, self.VH):
+            return False
+        self.VW, self.VH = w, h
+        if self._resizable:
+            self.canvas.place_configure(width=w, height=h)
+        else:
+            self.canvas.configure(width=w, height=h)
+        if self._cur_bgr is not None:
+            self._show(self._cur_bgr)
+        else:
+            self._placeholder(getattr(self, "_placeholder_msg", None))
+        return True
+
+    def _on_holder_configure(self, e):
+        """Resizable player: once the room settles, take the largest 16:9
+        ladder size that fits in it."""
+        self._holder_size = (e.width, e.height)
+        if self._af_job is not None:
+            self.after_cancel(self._af_job)
+        self._af_job = self.after(120, self._fit_holder)
+
+    def _fit_holder(self):
+        self._af_job = None
+        w, h = getattr(self, "_holder_size", (0, 0))
+        if w > 1 and h > 1:
+            self.set_video_size(*fit_16x9(w, h, min_k=VIDEO_K[0]))
+
+    def auto_fit(self, row, min_k=None, max_k=80):
+        """Size the video from the page it lives in: the largest 16:9 ladder
+        size whose width fits next to the other columns of `row` (the frame
+        holding this player and e.g. the section column) inside the visible
+        page area, and whose height keeps the player (video + controls) on
+        screen. Never below min_k (default: the size it was built with).
+        Re-evaluated when the player is shown and after a window resize has
+        settled - between those the video size stays fixed."""
+        self._af = {"row": row, "min_k": self._base_k if min_k is None else min_k,
+                    "max_k": max_k}
+        top = self.winfo_toplevel()
+        top.bind("<Configure>", lambda e: e.widget is top and self._af_schedule(350),
+                 add="+")
+        self.bind("<Map>", lambda e: self._af_schedule(60), add="+")
+
+    def _af_schedule(self, delay):
+        if self._af is None:
+            return
+        if self._af_job is not None:
+            try:
+                self.after_cancel(self._af_job)
+            except tk.TclError:
+                pass
+        self._af_job = self.after(delay, self._af_eval)
+
+    def _page_view(self):
+        w = self.master
+        while w is not None:
+            if type(w).__name__ == "PageView":
+                return w
+            w = w.master
+        return None
+
+    def _af_eval(self):
+        self._af_job = None
+        af = self._af
+        try:
+            if af is None or not self.winfo_viewable():
+                return
+            pv = self._page_view()
+            page = pv.current() if pv is not None else None
+            if page is None:
+                return
+            vw, vh = pv._view_total()
+            if vw <= 1 or vh <= 1:
+                return
+            ix, iy = pv.inset
+            sb = pv._sbw()
+            row = af["row"]
+            # width: what the row needs besides this player's video
+            x_row = row.winfo_rootx() - page.winfo_rootx()
+            other = row.winfo_reqwidth() - self.winfo_reqwidth()
+            avail_w = vw - sb - 2 * ix - x_row - other - themes.px(8)
+            # height: the whole player (video + timeline + controls) on screen
+            y_can = self.canvas.winfo_rooty() - page.winfo_rooty()
+            below = self.winfo_reqheight() - (self.canvas.winfo_rooty() - self.winfo_rooty())                 - self.canvas.winfo_reqheight()
+            avail_h = vh - 2 * iy - y_can - below - themes.px(8)
+            hl = 2 * int(self.canvas.cget("highlightthickness") or 0)
+            w, h = fit_16x9(avail_w - hl, avail_h - hl, af["min_k"], af["max_k"])
+            if self.set_video_size(w, h):
+                pv.refit(page)
+        except tk.TclError:
+            return
 
     def _canvas_size(self):
         if self._resizable:

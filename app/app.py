@@ -18,12 +18,13 @@ from .config import (APP_NAME, APP_VERSION, LOGS_DIR, PREFS, WORK_DIRS, load_pre
 from .tabs.audio_gain import AudioGainTab
 from .tabs.check import CheckTab
 from .tabs.compare import CompareTab
+from .tabs.convert import ConvertTab
 from .tabs.cut_edit import RemoverTab
 from .tabs.log import LogTab
 from .tabs.templates import TemplateTab
 from .tabs.theme_audio import ThemeAudioTab
 from .ui.cleanup import CleanupDialog
-from .ui.dialogs import QueueDialog, SettingsDialog, _fmt_elapsed
+from .ui.dialogs import QueueDialog, SettingsDialog, _fmt_elapsed, install_default_parent
 from .ui import themes
 from .ui.dualplayer import DualPlayerTab
 from .ui.icons import decorate
@@ -134,6 +135,8 @@ _PAGES = (
      N_("Mark the intro and credits of an episode and cut them into reusable templates.")),
     ("cut", "cut", N_("Cut / Edit"),
      N_("Find and remove intros and credits in whole seasons, or cut files by hand.")),
+    ("convert", "convert", N_("Convert"),
+     N_("Re-encode videos: codec, quality, size, crop, filters, audio and subtitle tracks.")),
     ("audio", "audio", N_("Audio"),
      N_("Export theme songs and even out the loudness of your episodes.")),
     ("inspect", "inspect", N_("Inspect"),
@@ -235,6 +238,9 @@ def main():
     # themes + fonts first: everything below is built with them
     theme_var = themes.init(root, saved.get("theme", themes.DEFAULT_THEME))
     px = themes.px
+    # message boxes / file dialogs without parent= open over the active
+    # window (e.g. over Clean up), not behind it
+    install_default_parent(root)
 
     # Tk-thread dispatcher for the job registry / notifications / updater
     jobs.set_dispatcher(_call_tk)
@@ -286,6 +292,17 @@ def main():
     page_view.pack(fill="both", expand=True)
     _late["page_view"] = page_view
     page_host = page_view.canvas
+    # the fixed footer of the content area (the "tracker"): each page's
+    # status text + progress bar + Stop are built here, outside the
+    # scrolling page, and the footer shows the visible page's strip - so a
+    # running job's progress is on screen from any scroll position. Its
+    # size is set by _footer_sync only (pack_propagate off): a status text
+    # that changes many times a second can't resize anything around it.
+    footer_line = tk.Frame(content, height=1, borderwidth=0)
+    themes.on_palette(footer_line, lambda p: footer_line.configure(bg=p["stroke"]))
+    footer = ttk.Frame(content)
+    footer.pack_propagate(False)
+    _footer = {"strip": None, "h": 0}
 
     def _banner(text, kind, **kw):
         bar = InfoBar(banners, text, kind, **kw)
@@ -327,7 +344,7 @@ def main():
         `bottom` is a non-scrolling strip pinned to the window bottom (used
         for progress bars that must stay visible). book = the notebook to add
         it to (default: a main page of its own). Returns the tab instance."""
-        holder = ScrollFrame(book or page_host)
+        holder = ScrollFrame(book or page_host, bottom_master=footer)
         tab = factory(holder.interior, holder.bottom)
         tab.pack(fill="both", expand=True)
         if book is not None:
@@ -355,18 +372,23 @@ def main():
     remover_tab = scrolled(lambda m, b: RemoverTab(m, saved=saved, bottom=b),
                            N_("Cut / Edit"))
     _last_page("cut")
+    convert_tab = scrolled(lambda m, b: ConvertTab(m, saved=saved, bottom=b), N_("Convert"))
+    _last_page("convert")
     audio_nb = group("audio", N_("Audio"))
-    theme_tab = scrolled(lambda m, b: ThemeAudioTab(m, saved=saved), N_("Theme Audio"),
-                         audio_nb)
-    gain_tab = scrolled(lambda m, b: AudioGainTab(m, saved=saved), N_("Audio Gain"),
+    theme_tab = scrolled(lambda m, b: ThemeAudioTab(m, saved=saved, bottom=b),
+                         N_("Theme Audio"), audio_nb)
+    gain_tab = scrolled(lambda m, b: AudioGainTab(m, saved=saved, bottom=b), N_("Audio Gain"),
                         audio_nb)
     inspect_nb = group("inspect", N_("Inspect"))
     dual_tab = scrolled(lambda m, b: DualPlayerTab(m), N_("Dual Player"), inspect_nb)
-    compare_tab = scrolled(lambda m, b: CompareTab(m), N_("Compare"), inspect_nb)
-    check_tab = scrolled(lambda m, b: CheckTab(m, saved=saved), N_("Check"), inspect_nb)
+    _dual_holder = len(_holders) - 1
+    compare_tab = scrolled(lambda m, b: CompareTab(m, bottom=b), N_("Compare"), inspect_nb)
+    check_tab = scrolled(lambda m, b: CheckTab(m, saved=saved, bottom=b), N_("Check"),
+                         inspect_nb)
     scrolled(lambda m, b: LogTab(m, LOGS_DIR), N_("Log"))
     _last_page("log")
     _tab_titles = {template_tab: tr("Templates"), remover_tab: tr("Cut / Edit"),
+                   convert_tab: tr("Convert"),
                    theme_tab: tr("Theme Audio"), gain_tab: tr("Audio Gain"),
                    dual_tab: tr("Dual Player"), compare_tab: tr("Compare"),
                    check_tab: tr("Check")}
@@ -391,6 +413,50 @@ def main():
         title_var.set(tr(title))
         desc_var.set(tr(desc))
         sidebar.select(key)
+        _footer_sync()
+
+    def _visible_holder():
+        """The ScrollFrame of the page on screen (a group's selected sub-tab)."""
+        page = _main_pages.get(_cur["page"])
+        if page is not None and page in _sub_books.values():
+            try:
+                page = page.nametowidget(page.select())
+            except (tk.TclError, KeyError):
+                return None
+        return page if page in _holders else None
+
+    def _footer_sync():
+        """Show the visible page's strip in the footer (hide the footer when
+        the page has none) and size the footer to the strip's height."""
+        holder = _visible_holder()
+        strip = getattr(holder, "bottom", None)
+        try:
+            if strip is not None and not strip.winfo_children():
+                strip = None
+            if strip is not _footer["strip"]:
+                if _footer["strip"] is not None:
+                    _footer["strip"].pack_forget()
+                _footer["strip"] = strip
+                if strip is not None:
+                    strip.pack(fill="x", padx=(px(12), px(12)))
+            h = (strip.winfo_reqheight() + px(4)) if strip is not None else 0
+            if h != _footer["h"]:
+                _footer["h"] = h
+                if h:
+                    footer.configure(height=h)
+                    footer_line.pack(side="bottom", fill="x", before=page_view)
+                    footer.pack(side="bottom", fill="x", before=footer_line)
+                else:
+                    footer.pack_forget()
+                    footer_line.pack_forget()
+        except tk.TclError:
+            pass
+
+    def _footer_tick():
+        # a page can change its strip's rows (e.g. Templates shows the
+        # Auto-detect row on that sub-tab) - follow its height
+        _footer_sync()
+        root.after(300, _footer_tick)
 
     def _toggle_sidebar(collapsed):
         _sb_state["pref"] = collapsed
@@ -431,15 +497,21 @@ def main():
     def _design():
         """The page area the default window (WINDOW_SIZE, expanded sidebar)
         would have, derived from the current window and view sizes."""
+        root.update_idletasks()      # the footer may have just been packed
         dw, dh = (int(v) * themes.scale() for v in WINDOW_SIZE.lower().split("x"))
         side = sidebar.winfo_width() - sidebar.expanded_width()
         vw = page_view.winfo_width() + int(dw) - root.winfo_width() + side
         vh = page_view.winfo_height() + int(dh) - root.winfo_height()
+        # leave room for the tallest footer strip (pages with a shorter one,
+        # or none, just get a little air below - never a needless scrollbar)
+        fmax = max((h.bottom.winfo_reqheight() + px(4) + 1 for h in _holders
+                    if h.bottom.winfo_children()), default=0)
+        vh -= max(0, fmax - (_footer["h"] + 1 if _footer["h"] else 0))
         # (minus one scrollbar width, so a tall page scrolls only vertically)
         return (max(vw - 2 * px(12) - px(12), px(600)), max(vh - 2 * px(4), px(380)))
     page_view.design_fn = _design
 
-    # Ctrl+1..6 jump to the pages
+    # Ctrl+1..7 jump to the pages
     for n, (key, *_rest) in enumerate(_PAGES, 1):
         root.bind(f"<Control-Key-{n}>", lambda e, k=key: (show_page(k), "break")[1])
 
@@ -470,6 +542,9 @@ def main():
         return d
 
     _restore_tabs()
+    for _book in _sub_books.values():
+        _book.bind("<<NotebookTabChanged>>", lambda e: _footer_sync(), add="+")
+    root.after(300, _footer_tick)
 
     # let the batch free any video a preview player is holding open, so its
     # 'move finished to done' can move the source (Windows locks open files)
@@ -495,9 +570,19 @@ def main():
                     pass
 
     remover_tab.unload_players_hook = _unload_all_players
+    convert_tab.unload_players_hook = _unload_all_players
+
+    def _open_dual(path_a, path_b):
+        """Convert -> Preview: source segment (A) and sample (B) side by side."""
+        show_page("inspect")
+        for i, tab_id in enumerate(inspect_nb.tabs()):
+            if inspect_nb.nametowidget(tab_id) is _holders[_dual_holder]:
+                inspect_nb.select(i)
+        dual_tab.load_pair(path_a, path_b)
+    convert_tab.open_dual = _open_dual
     remover_tab.template_tab = template_tab   # presets read its detect settings
 
-    _top_tabs = [template_tab, remover_tab, theme_tab, gain_tab, dual_tab,
+    _top_tabs = [template_tab, remover_tab, convert_tab, theme_tab, gain_tab, dual_tab,
                  compare_tab, check_tab]
     # jobs can also live on sub-tab objects (Compare's Quality pane is
     # compare_tab.quality) - include every widget attribute of a tab that has
@@ -618,6 +703,7 @@ def main():
         d.update(theme_tab.snapshot())      # Theme Audio format/name/fade/output
         d.update(gain_tab.snapshot())       # Audio Gain batch + single settings
         d.update(check_tab.snapshot())      # Check depth
+        d.update(convert_tab.snapshot())    # Convert settings / preset / sub-tab
         d.update(_tabs_snapshot())          # selected main tab + sub-tabs
         d["theme"] = themes.current_name()
         d["last_video"] = (template_tab.file_var.get().strip()
@@ -643,6 +729,7 @@ def main():
 
     remover_tab.save_hook = persist   # persist whenever Start is pressed
     template_tab.save_hook = persist  # persist whenever Detect is pressed
+    convert_tab.save_hook = persist   # ... and whenever Convert -> Start is pressed
 
     def on_close():
         try:
@@ -681,8 +768,9 @@ def main():
     root._mp_app = dict(show_page=show_page, sidebar=sidebar, pages=_main_pages,
                         sub_books=_sub_books, persist=persist, restart=_restart,
                         show_update=show_update, stop_all=_stop_all_jobs, is_busy=_any_busy,
-                        page_view=page_view,
-                        tabs=dict(templates=template_tab, cut=remover_tab, theme=theme_tab,
+                        page_view=page_view, footer=footer,
+                        tabs=dict(templates=template_tab, cut=remover_tab, convert=convert_tab,
+                                  theme=theme_tab,
                                   gain=gain_tab, dual=dual_tab, compare=compare_tab,
                                   check=check_tab))
     root.protocol("WM_DELETE_WINDOW", on_close)

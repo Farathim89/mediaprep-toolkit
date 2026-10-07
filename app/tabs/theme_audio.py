@@ -10,6 +10,7 @@ from ..config import OUTPUT_DIR, TEMP_DIR
 from ..engine.formatting import fmt_time
 from ..engine.loudness import export_audio_clip
 from ..engine.probe import probe_duration
+from ..ui.frametime import file_fps
 from ..ui.playback import AudioPlayer
 from ..i18n import N_, tr
 from ..ui.player import VideoPlayer
@@ -55,7 +56,7 @@ class ThemeAudioTab(ttk.Frame):
         "WAV": ("pcm_s16le", [], ".wav"),
     }
 
-    def __init__(self, master, saved=None):
+    def __init__(self, master, saved=None, bottom=None):
         super().__init__(master, padding=8)
         saved = saved or {}
         self.stop_event = threading.Event()
@@ -108,11 +109,13 @@ class ThemeAudioTab(ttk.Frame):
         ttk.Label(right, text=tr("Intro to:")).grid(row=1, column=0, sticky="e", padx=4, pady=3)
         trow = ttk.Frame(right)
         trow.grid(row=1, column=1, sticky="w", padx=4, pady=3)
-        self.f_to = TimeEntry(trow)
+        self.f_to = TimeEntry(trow, end=True, fps=lambda: file_fps(
+            self.file_var.get().strip().strip('"'), getattr(self, "player", None)))
         self.f_to.pack(side="left")
         btf = ttk.Button(trow, text=tr("Set"), command=lambda: self._mark(self.f_to))
         btf.pack(side="left", padx=(4, 0))
-        add_tooltip(btf, tr("Set the intro END to the frame shown in the player"))
+        add_tooltip(btf, tr("Set the intro END to the frame shown in the player - the "
+                            "To frame is the last frame exported (inclusive)"))
         gtf = ttk.Button(trow, text=tr("Go"), command=lambda: self._goto(self.f_to))
         gtf.pack(side="left", padx=(4, 0))
         add_tooltip(gtf, tr("Jump the player to the time typed in this box"))
@@ -192,11 +195,21 @@ class ThemeAudioTab(ttk.Frame):
         self.player = VideoPlayer(left, width=480, height=270, log_fn=self.log)
         self.player.pack()
         self.player.enable_tab_shortcuts()   # arrows/space work anywhere on the tab
+        self.player.auto_fit(body)           # 16:9 video as large as the page allows
 
+        # status + progress + Stop: in the window's fixed footer when `bottom`
+        # is given (always visible), else under the content
         self.status_var = tk.StringVar(value="")
-        ttk.Label(main, textvariable=self.status_var, style="Hint.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        prog = ttk.Frame(main)
-        prog.grid(row=3, column=0, sticky="we", pady=(2, 2))
+        if bottom is not None:
+            ttk.Label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
+                anchor="w", padx=10, pady=(4, 0))
+            prog = ttk.Frame(bottom)
+            prog.pack(fill="x", padx=10, pady=(2, 6))
+        else:
+            ttk.Label(main, textvariable=self.status_var, style="Hint.TLabel").grid(
+                row=2, column=0, sticky="w", pady=(6, 0))
+            prog = ttk.Frame(main)
+            prog.grid(row=3, column=0, sticky="we", pady=(2, 2))
         prog.columnconfigure(0, weight=1)
         self.bar = ttk.Progressbar(prog, mode="determinate", maximum=1000)
         self.bar.grid(row=0, column=0, sticky="we")
@@ -216,8 +229,8 @@ class ThemeAudioTab(ttk.Frame):
     def _refresh_markers(self):
         if not hasattr(self, "player"):
             return
-        s, _ = self.f_from.get_seconds()
-        e, _ = self.f_to.get_seconds()
+        s, _ = self.f_from.get_value()
+        e, _ = self.f_to.get_value()       # exclusive: the band ends after the To frame
         dur = self.player.timeline.duration
         end = e if e is not None else dur
         marks = [(s, end, "intro")] if (s is not None and end and end > s) else []
@@ -290,8 +303,8 @@ class ThemeAudioTab(ttk.Frame):
         if not video or not os.path.isfile(video):
             messagebox.showerror(tr("Error"), tr("Please select a valid file."))
             return None
-        s, s_ok = self.f_from.get_seconds()
-        e, e_ok = self.f_to.get_seconds()
+        s, s_ok = self.f_from.get_value()
+        e, e_ok = self.f_to.get_value()     # end of the To frame (it is included)
         if not s_ok or not e_ok or s is None or e is None or e <= s:
             messagebox.showerror(tr("Error"), tr("Set a valid Intro From and To (To after From)."))
             return None
@@ -325,7 +338,8 @@ class ThemeAudioTab(ttk.Frame):
         if dur and (s >= dur or e > dur + 0.05):
             messagebox.showerror(tr("Error"), tr("The range {start} -> {end} goes past the end "
                                                  "of the file ({dur}).", start=fmt_time(s),
-                                                 end=fmt_time(e), dur=fmt_time(dur)))
+                                                 end=fmt_time(self.f_to.shown(e)),
+                                                 dur=fmt_time(dur)))
             return None
         return video, s, e, fin, fout, norm
 

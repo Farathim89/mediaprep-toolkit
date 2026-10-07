@@ -31,7 +31,7 @@ GLYPHS = {
     "eject": "\uf847", "go": "\ue72a", "up": "\ue70e", "down": "\ue70d",
     "chevron_down": "\ue70d", "list": "\ue8fd", "copy": "\ue8c8", "link": "\ue71b",
     "filter": "\ue71c", "edit": "\ue70f", "import": "\ue8b5", "open": "\ue8e5",
-    "headphones": "\ue7f6", "pin": "\ue718", "run": "\ue768", "flag": "\ue7c1",
+    "headphones": "\ue7f6", "convert": "\ue895", "pin": "\ue718", "run": "\ue768", "flag": "\ue7c1",
 }
 
 _FONT_FILES = ("SegoeIcons.ttf", "segmdl2.ttf")

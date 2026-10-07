@@ -32,7 +32,7 @@ HELP = {
            "place.\nInfo - Info / Settings and Recommended encoding notes."),
         N_("The app remembers the page and sub-tab you were on. Every page has a "
            "'?' button (top-right) with its help; 'Help' at the bottom of the "
-           "sidebar lists all of them. Ctrl+1 ... Ctrl+6 jump to the pages, and ☰ "
+           "sidebar lists all of them. Ctrl+1 ... Ctrl+7 jump to the pages, and ☰ "
            "folds the sidebar to icons."),
         N_("Finding intros / credits: with templates (clips you cut once - "
            "Templates → Cut template / Auto-detect) Cut / Edit matches them by "
@@ -231,6 +231,52 @@ HELP = {
            "opening, a single file only gets visual credits.\n\n"
            "Both ask once before changing files that already have times: Overwrite, "
            "Only fill empty (sections that are still blank) or Cancel."))),
+    "convert": (N_("Convert"), (
+        N_("Re-encode videos, HandBrake-style: change the codec, quality, size, frame "
+           "rate, crop, filters and the audio / subtitle tracks.\n\n"
+           "Queue: add files or folders ('Include sub-folders'), or drop them onto the "
+           "list. Each file keeps its OWN settings: select a file and the Video, Audio & "
+           "subtitles and Output sub-tabs show and change its settings (several selected "
+           "= all of them change; nothing selected = the settings new files start "
+           "from). 'Apply to all files' copies the settings shown to every file. Start "
+           "converts the waiting files one after another; 'Add to queue' runs them after "
+           "the jobs already running. The list shows each file's status, size before → "
+           "after and the time / ETA; progress and Stop are in the bar at the bottom."),
+        N_("Presets: Plex-ready HEVC / H.264 (NVENC if usable, near-lossless, bitrate "
+           "capped below the source, Plex-friendly audio), High quality HEVC (x265 CRF 18 "
+           "slow), Small file HEVC (CRF 24), AV1 (SVT-AV1 CRF 30), Archive (x265 CRF 16 "
+           "10-bit) and Fast GPU (NVENC). Apply sets everything except the output folder "
+           "and file name; 'Save as...' stores your own in Data\\presets\\convert, "
+           "Delete moves one to Data\\temp\\trash.\n\n"
+           "Video: codec (x264 / x265 / SVT-AV1, the NVENC GPU encoders - with a CPU "
+           "fallback on a PC without one - or Copy), constant quality (CRF / CQ) or an "
+           "average bitrate, encoder preset, bit depth and 'Never bigger than the source' "
+           "(caps the bitrate at 95% of the source's). Frame rate: same as source or a "
+           "fixed rate, constant or variable. Resize keeps the aspect ratio (Lanczos, "
+           "optionally never upscaling). Crop Auto measures the black bars at 10 points "
+           "across the file (majority vote); 'Detect now' shows the result, e.g. "
+           "1920x800 (letterbox removed), and fills the manual boxes. Filters: "
+           "deinterlace (Auto = idet detection, then bwdif), denoise (hqdn3d or the "
+           "slower nlmeans), deblock and HDR → SDR tone-mapping for HDR10 / HLG "
+           "sources."),
+        N_("Audio & subtitles: one row per source track. Audio: Keep, codec (Copy, "
+           "AAC, AC3, E-AC3, Opus, FLAC, MP3), bitrate, mixdown (stereo / 5.1 - never "
+           "up-mixed), Default and Title; 'Keep only <language>' and 'Copy all' are "
+           "quick actions. Subtitles: Keep, Default, Forced and Burn in (one track: ASS "
+           "/ SRT drawn with the file's own fonts, PGS as an overlay). 'For newly added "
+           "files' sets the codec / languages new files start with.\n\n"
+           "Output: MKV or MP4 (MP4 can't hold ASS / PGS subtitles or fonts - text "
+           "subtitles become mov_text, the rest is dropped, each with a log line), the "
+           "output folder (default Media\\convert\\output) and the file name ({name}, "
+           "{codec}, {res}). If outputs exist, Start asks once: Overwrite, Keep both or "
+           "Skip. Every file is written as .part first and only then renamed, so Stop or "
+           "a failure never leaves a broken file; afterwards the tracks, resolution and "
+           "duration are verified and the log shows the size before → after.\n\n"
+           "Preview encodes 10 s (from the middle, or 'Sample from') with the current "
+           "settings plus a few short pieces spread over the file, shows the estimated "
+           "size and encoding time (and the SSIM of the sample when the picture isn't "
+           "cropped or retimed) and opens source and sample side by side in Inspect → "
+           "Dual Player."))),
     "theme": (N_("Audio → Theme Audio"), (
         N_("Exports a stretch of a file's FIRST audio track as an audio file - "
         "e.g. the intro as theme.mp3 for Plex.\n\n"
@@ -364,8 +410,36 @@ HELP = {
            "window at once and is remembered."))),
 }
 
+# later additions, appended to their pages as their own blocks
+TO_INCLUSIVE = N_(
+    "From and To are both included: To = the last frame to cut (inclusive). Park "
+    "the player on the last frame of the intro / credits and press Set next to To - "
+    "that frame is removed too (for a template: it is the clip's last frame). Go "
+    "jumps to that frame, ▶ plays through it and the timeline band ends after it.")
+SAFETY_MARGIN = N_(
+    "Safety margin (0-5 frames, default 1): extra frames cut before and after a "
+    "detected intro / credits so no single intro frame flashes at the join. 'With "
+    "templates' sets where a template match ends: Follow the template's own edges "
+    "(default - where the template's first / last frames land), Exact content edges, "
+    "or Exact + safety margin. Both are saved in Show presets; the Plex-style scan "
+    "uses the same safety margin.")
+
+
+def _add_block(key, block):
+    title, body = HELP[key]
+    HELP[key] = (title, (tuple(body) if isinstance(body, tuple) else (body,)) + (block,))
+
+
+_add_block("overview", N_(
+    "Convert (between Cut / Edit and Audio) re-encodes videos: codec, quality, size, "
+    "crop, filters, audio and subtitle tracks, with presets and a preview."))
+for _k in ("template_cut", "cut_manual", "cut_multi", "theme"):
+    _add_block(_k, TO_INCLUSIVE)
+for _k in ("template_detect", "cut_auto", "cut_multi"):
+    _add_block(_k, SAFETY_MARGIN)
+
 HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager",
-              "cut_auto", "cut_manual", "cut_multi", "theme",
+              "cut_auto", "cut_manual", "cut_multi", "convert", "theme",
               "gain_single", "gain_batch", "dual", "compare_tracks",
               "compare_quality", "check", "log", "cleanup", "queue", "folders")
 

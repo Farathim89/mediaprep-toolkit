@@ -17,6 +17,7 @@ from .. import applog
 from ..i18n import tr, ntr
 from .widgets import help_button
 from ..engine.files import TRASH_DIR, move_into_trash
+from ..engine.recode import CONVERT_INPUT, CONVERT_OUTPUT
 from . import icons
 
 # (English label, shown label, path) - the English label names the trash
@@ -28,6 +29,8 @@ FOLDERS = [
     ("After-credits templates", tr("After-credits templates"), AFTERCREDITS_DIR),
     ("Episodes (videos folder)", tr("Episodes (videos folder)"), VIDEO_DIR),
     ("Output (cleaned episodes)", tr("Output (cleaned episodes)"), OUTPUT_DIR),
+    ("Convert input", tr("Convert input"), CONVERT_INPUT),
+    ("Convert output", tr("Convert output"), CONVERT_OUTPUT),
     ("Audio Gain input", tr("Audio Gain input"), AUDIOGAIN_INPUT),
     ("Audio Gain output", tr("Audio Gain output"), AUDIOGAIN_OUTPUT),
     ("Temp files", tr("Temp files"), TEMP_DIR),
@@ -185,12 +188,12 @@ class CleanupDialog(tk.Toplevel):
         self.clean_btn.pack(side="right", padx=6)
 
         self._refresh()
-        # centre over the main window
-        self.update_idletasks()
-        x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
-        y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
-        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", lambda e: self.destroy())
+        # themed, centred over the main window, focused; the grab is taken
+        # once the window is on screen (a grab before that fails)
+        from .dialogs import place_dialog
+        place_dialog(self, master, modal=True)
 
     def _refresh(self):
         for _v, _label, path, lbl in self._rows:

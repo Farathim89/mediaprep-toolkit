@@ -1,11 +1,10 @@
 """Helpers shared by the Cut / Edit sub-tabs (Auto-detect, Manual, Multi cut)."""
 import os
-import tkinter as tk
 from tkinter import ttk
 
 from ..config import CODECS
 from ..i18n import N_, tr
-from ..ui.widgets import KeyedCombobox
+from ..ui.widgets import KeyedCombobox, add_tooltip, info_icon
 from .common import _KIND_NAMES
 
 # tr() for a variable key whose literals are marked with N_() / tr() elsewhere
@@ -33,6 +32,61 @@ def mode_combobox(parent, var, width=16):
     return KeyedCombobox(parent, textvariable=var, values=list(_MODE_KEYS),
                          labels=[tr_key(_MODE_LABELS[k]) for k in _MODE_KEYS],
                          state="readonly", width=width)
+
+
+# safety margin (engine cfg 'margin_frames', 0-5) and what a template match's
+# edges follow (engine cfg 'template_margin')
+MARGIN_MAX = 5
+MARGIN_DEFAULT = 1
+_TPL_MARGIN_LABELS = {"follow": N_("Follow the template's own edges"),
+                      "exact": N_("Exact content edges"),
+                      "exact+margin": N_("Exact + safety margin")}
+_TPL_MARGIN_KEYS = ("follow", "exact", "exact+margin")
+
+
+def norm_margin(v, default=MARGIN_DEFAULT):
+    """Saved / typed safety margin -> int 0..MARGIN_MAX."""
+    try:
+        v = int(float(v))
+    except (TypeError, ValueError):
+        v = default
+    return max(0, min(MARGIN_MAX, v))
+
+
+def norm_tpl_margin(v):
+    return v if v in _TPL_MARGIN_KEYS else "follow"
+
+
+def margin_widgets(parent, margin_var, tpl_var=None):
+    """'Safety margin: [1] frames ⓘ' (+ 'With templates: [...]' when tpl_var
+    is given) packed into a new frame; returns that frame."""
+    fr = ttk.Frame(parent)
+    r1 = ttk.Frame(fr)
+    r1.pack(anchor="w")
+    ttk.Label(r1, text=tr("Safety margin:")).pack(side="left")
+    sp = ttk.Spinbox(r1, from_=0, to=MARGIN_MAX, increment=1, width=3,
+                     textvariable=margin_var, state="readonly")
+    sp.pack(side="left", padx=(6, 4))
+    ttk.Label(r1, text=tr("frames")).pack(side="left")
+    tip = tr("Extra frames cut before and after a detected intro/credits so no single "
+             "intro frame flashes at the join")
+    add_tooltip(sp, tip)
+    info_icon(r1, tip).pack(side="left", padx=(6, 0))
+    if tpl_var is not None:
+        r2 = ttk.Frame(fr)
+        r2.pack(anchor="w", pady=(4, 0))
+        ttk.Label(r2, text=tr("With templates:")).pack(side="left")
+        cb = KeyedCombobox(r2, textvariable=tpl_var, values=list(_TPL_MARGIN_KEYS),
+                           labels=[tr_key(_TPL_MARGIN_LABELS[k]) for k in _TPL_MARGIN_KEYS],
+                           state="readonly", width=28)
+        cb.pack(side="left", padx=(6, 0))
+        add_tooltip(cb, tr(
+            "Where a template match starts and ends. Follow the template's own edges = "
+            "exactly where the template's first / last frames land in the episode (a "
+            "template cut with a frame or two of margin keeps it). Exact content edges = "
+            "the intro / credits content itself. Exact + safety margin = the content "
+            "edges plus the safety margin above."))
+    return fr
 
 
 def _src_label(src, ui=True):
@@ -147,33 +201,9 @@ def _detect_notes(res, use, have=None, ui=False):
 
 def _ask_choice(parent, title, message, choices):
     """Small modal dialog with one button per choice; returns the chosen
-    key, or None if closed. choices = [("replace", tr("Replace")), ...]
-    (key, button text) pairs."""
-    dlg = tk.Toplevel(parent)
-    dlg.title(title)
-    dlg.transient(parent.winfo_toplevel())
-    dlg.resizable(False, False)
-    out = {"v": None}
-    body = ttk.Frame(dlg, padding=12)
-    body.pack(fill="both", expand=True)
-    ttk.Label(body, text=message, wraplength=380, justify="left").pack(anchor="w")
-    row = ttk.Frame(body)
-    row.pack(anchor="e", pady=(12, 0))
-
-    def pick(v):
-        out["v"] = v
-        dlg.destroy()
-    for key, text in choices:
-        ttk.Button(row, text=text, command=lambda k=key: pick(k)).pack(side="left", padx=(6, 0))
-    dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
-    dlg.bind("<Escape>", lambda e: dlg.destroy())
-    dlg.update_idletasks()
-    x = max(0, (dlg.winfo_screenwidth() - dlg.winfo_width()) // 2)
-    y = max(0, (dlg.winfo_screenheight() - dlg.winfo_height()) // 2)
-    dlg.geometry(f"+{x}+{y}")
-    try:
-        dlg.grab_set()
-    except tk.TclError:
-        pass
-    parent.wait_window(dlg)
-    return out["v"]
+    key, or None if closed / Escape. choices = [("replace", tr("Replace")),
+    ...] (key, button text) pairs; Enter = the first (default) choice.
+    See ui.dialogs.ask_choice (themed, centred on the main window, focused,
+    grabs the input once it is on screen)."""
+    from ..ui.dialogs import ask_choice
+    return ask_choice(parent, title, message, choices)

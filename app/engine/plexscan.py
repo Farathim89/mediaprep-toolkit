@@ -25,7 +25,13 @@ How it works (the same idea Plex uses):
                   "audio+visual" | None, "intro_conflict": bool (audio and
                   video disagreed), "notes": [English, for the log],
                   "cands": {"intro": [...], "credits": [...]} each
-                  {"start", "end", "score", "source"}, chosen first}
+                  {"start", "end", "score", "source"}, chosen first,
+                  "intro_edge_src" / "credits_edge_src": {"start", "end"}
+                  how each edge was placed - 'visual' (frame-exact), 'fade' /
+                  'audio' (approximate: check it), 'snap' (silence / black
+                  snap), 'coarse' (not refined)}
+    opts["margin_frames"] (default 1, 0-5): every result is widened by that
+    many frames each side (real frame times, never into the other segment).
 """
 import os
 import subprocess
@@ -47,6 +53,7 @@ DEFAULTS = {
     "intro": True,           # find intros
     "credits": True,         # find credits
     "refine": True,          # frame-exact edges (engine.refine) - before snapping
+    "margin_frames": 1,      # safety margin: widen every result by N frames each side (0-5)
 }
 
 # visual detector tuning (gray 0-255 at 160 px width)
@@ -138,12 +145,14 @@ def _runs(mask):
 
 
 def detect_credits_visual(path, search_secs=420, fps=2, log=None, stop_event=None,
-                          duration=None):
+                          duration=None, margin_frames=1):
     """Find credits-like pictures in the last `search_secs` of `path`: mostly
     dark frames with bright text edges, or text rolling upwards. Returns
     (start, end, score) in file seconds for the longest such run (>= 15 s,
     gaps <= 3 s bridged), or None. Decodes only that tail, at `fps` frames per
-    second, 160 px wide, as raw gray frames piped from ffmpeg."""
+    second, 160 px wide, as raw gray frames piped from ffmpeg. margin_frames
+    (0-5): the run is widened by that many frames each side (an end at the
+    file end stays there)."""
     import numpy as np
     log = log or (lambda m: None)
     dur = duration or probe_video_duration(path) or probe_duration(path)
@@ -243,6 +252,9 @@ def detect_credits_visual(path, search_secs=420, fps=2, log=None, stop_event=Non
     end = min(end, float(dur))
     log(f"   [visual] credits-like {start:.1f}s -> {end:.1f}s "
         f"({b - a} of {n} frames, score {score:.2f})")
+    if margin_frames:
+        from .refine import add_margin, norm_margin
+        start, end = add_margin(path, (start, end), norm_margin(margin_frames), dur=float(dur))
     return round(start, 3), round(end, 3), round(float(score), 3)
 
 
@@ -312,7 +324,9 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
 
     files = [f for f in dict.fromkeys(files or []) if f and os.path.isfile(f)]
     out = {f: {"intro": None, "credits": None, "intro_src": None, "credits_src": None,
-               "intro_conflict": False, "notes": [], "cands": {"intro": [], "credits": []}} for f in files}
+               "intro_conflict": False, "notes": [], "cands": {"intro": [], "credits": []},
+               "intro_edge_src": {"start": "coarse", "end": "coarse"},
+               "credits_edge_src": {"start": "coarse", "end": "coarse"}} for f in files}
     if not files:
         return out
     durs = {f: float(probe_video_duration(f) or probe_duration(f) or 0.0) for f in files}
@@ -383,6 +397,21 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
         cred_by = per_episode(cl)
         log(f"[SCAN] credits (audio): {len(cl)} recurring ending(s) covering "
             f"{len(cred_by)}/{len(good)} file(s)")
+    # visual-only: the ending's recurring PICTURES (the same video
+    # fingerprints as the intro) - credits that aren't white-on-black text
+    # are found too; the credits-pictures detector below adds to them
+    rec_src = "audio"
+    if o["credits"] and multi and cmode == "visual":
+        log(f"[SCAN] credits (video): fingerprinting the last {cw:.0f}s of {len(good)} file(s)")
+        cl = recurring_video(good, cw, kind="credits", min_len=o["min_credits"],
+                             progress=lambda f, t="": prog(0.4 + 0.2 * f, t),
+                             stop_event=stop_event, log=log)
+        if cl is None or stopped():
+            return out
+        cred_by = per_episode(cl)
+        rec_src = "visual"
+        log(f"[SCAN] credits (video): {len(cl)} recurring ending(s) covering "
+            f"{len(cred_by)}/{len(good)} file(s)")
     # a single file has nothing to compare with: its credits come from the
     # pictures even when the mode is audio-only
     cvis = o["credits"] and (cmode in ("visual", "both") or not multi)
@@ -421,13 +450,13 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
             audio = cred_by.get(f)
             if audio:
                 r["cands"]["credits"].append({"start": audio[0], "end": audio[1],
-                                              "score": audio[2], "source": "audio"})
+                                              "score": audio[2], "source": rec_src})
             visual = None
             if cvis:
                 prog(0.6 + 0.35 * i / n, f"Looking for credits pictures in {name}")
                 vcw = min(float(o["credits_secs"]), max(10.0, 0.5 * dur))
                 visual = detect_credits_visual(f, vcw, log=log, stop_event=stop_event,
-                                               duration=dur)
+                                               duration=dur, margin_frames=0)
                 if stopped():
                     return out
                 if visual:
@@ -442,6 +471,8 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
             elif rng:
                 # the chosen source first in the candidate list
                 r["cands"]["credits"].sort(key=lambda c: c["source"] != src)
+            if rec_src == "visual" and src:
+                src = "visual"                  # recurring pictures + credits pictures
             r["credits"], r["credits_src"] = rng, src
             if not rng:
                 r["notes"].append("no credits found")
@@ -462,9 +493,11 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
             if len(rngs) < 2 or stopped():
                 continue
             prog(0.95 + 0.02 * j, f"Refining {key} boundaries")
-            done = {}
+            done, kinds = {}, {}
             new = refine_ranges(rngs, log=log, label=f"{key} ", track_for=track_for,
-                                done_out=done)
+                                done_out=done, src_out=kinds)
+            for f, k in kinds.items():
+                out[f][key + "_edge_src"] = {"start": k[0], "end": k[1]}
             for f, rng in new.items():
                 old = out[f][key]
                 out[f][key] = rng
@@ -476,6 +509,9 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
         if stopped():
             return out
 
+    from .refine import margin_segments, norm_margin
+    margin = norm_margin(o.get("margin_frames"))
+    mcache = {}
     for i, f in enumerate(good):
         if stopped():
             return out
@@ -493,7 +529,24 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
                                             "silence" if vis else None, dur, skip[key])
                     if how:
                         log(f"   [snap] {name} {key}: {how}")
+                    es = r[key + "_edge_src"]
+                    if not skip[key][0] and s != r[key][0]:
+                        es["start"] = "snap"
+                    if not skip[key][1] and e != r[key][1]:
+                        es["end"] = "snap"
                     r[key] = (s, e)
+        if margin and (r["intro"] or r["credits"]) and not stopped():
+            # safety margin: N frames more each side (real frame times, never
+            # into the other segment), so no intro / credits frame is left
+            # at a join
+            segs = {k: r[k] for k in ("intro", "credits") if r[k]}
+            margin_segments({f: segs}, margin, {f: dur}, mcache)
+            for k, rng in segs.items():
+                for c in r["cands"][k]:             # the chosen candidate follows
+                    if (c["start"], c["end"]) == tuple(r[k]):
+                        c["start"], c["end"] = rng
+                        break
+                r[k] = rng
         for key in ("intro", "credits"):
             if r[key]:
                 r[key] = (round(max(0.0, r[key][0]), 3), round(min(dur, r[key][1]), 3))

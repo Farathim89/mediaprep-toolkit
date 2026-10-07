@@ -11,6 +11,7 @@ from ..engine.cut import keep_from_drops, run_manual
 from ..engine.formatting import fmt_time, format_seconds
 from ..engine.probe import probe_duration
 from ..i18n import ntr, tr
+from ..ui.frametime import cached_fps, excl_to_shown, file_fps, prefetch_fps, shown_to_excl
 from ..ui.player import VideoPlayer
 from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, bind_status_colors,
                           enable_file_drop_deep, enable_paths_drop, help_button)
@@ -129,6 +130,7 @@ class MultiCutMixin:
 
         self.multi_player = VideoPlayer(mleft, width=480, height=270, log_fn=self.log)
         self.multi_player.pack()
+        self.multi_player.auto_fit(mbody)    # 16:9 video as large as the page allows
         self.multi_player.enable_tab_shortcuts()   # arrows/space work anywhere on the sub-tab
         enable_file_drop_deep(self.multi_player, self._multi_drop)
 
@@ -147,7 +149,7 @@ class MultiCutMixin:
         # From and To on their own lines, so the rows fit beside the player even
         # with longer (translated) button texts
         for i, (key, label) in enumerate(self.MULTI_SEGS):
-            ef, et = TimeEntry(seg), TimeEntry(seg)
+            ef, et = TimeEntry(seg), TimeEntry(seg, end=True, fps=self._multi_fps)
             self._multi_entries[key] = (ef, et)
             name = tr_key(label)
             r = i * 2
@@ -184,7 +186,8 @@ class MultiCutMixin:
                                        "start of a silence / black frame within ±1 s (uses the "
                                        "To box, or the player position if the box is empty)",
                                        seg=name))
-                    add_tooltip(sb_, tr("Set the {seg} END to the player's current frame",
+                    add_tooltip(sb_, tr("Set the {seg} END to the player's current frame - "
+                                        "the To frame is the last frame cut (inclusive)",
                                         seg=name))
                     add_tooltip(gb, tr("Jump the player to the {seg} END time typed in the box",
                                        seg=name))
@@ -243,6 +246,7 @@ class MultiCutMixin:
         info_icon(encrow, tr(
             "Each file has its filled sections removed and the rest kept, using the "
             "Encoding settings from Cut / Edit → Auto-detect and the subtitle choice above. "
+            "From and To are both cut: To = the last frame to cut (inclusive). "
             "Files with no sections set are skipped. Empty Pre-intro/Intro From = start "
             "of file; empty Credits/After-credits To = end of file ('?' = incomplete, "
             "skipped)."),
@@ -252,6 +256,13 @@ class MultiCutMixin:
                                                                   expand=True)
         self._upd_subs_label()      # fill in the new label now that it exists
         self._multi_restore(saved.get("multi_files"))
+
+    def _multi_fps(self, iid=None):
+        """fps of a row's file (default: the selected one) - the To boxes and
+        the list cells step one frame on it."""
+        iid = self._multi_sel if iid is None else iid
+        path = self._multi_paths.get(iid) if iid else None
+        return file_fps(path, getattr(self, "multi_player", None)) if path else None
 
     def _multi_restore(self, items):
         """Re-add last session's Multi cut list with its per-file times
@@ -314,9 +325,10 @@ class MultiCutMixin:
             pass
 
     @staticmethod
-    def _short_rng(key, fr, to):
+    def _short_rng(key, fr, to, fps=None):
         """List-cell text; follows the same rules as the cut (_resolve_rng):
-        '?' marks a half-filled section that will be skipped."""
+        '?' marks a half-filled section that will be skipped. `to` is the
+        engine end; the cell shows the last removed frame (fps grid)."""
         if fr is None and to is None:
             return "-"
         if fr is not None:
@@ -324,7 +336,7 @@ class MultiCutMixin:
         else:
             a = "0:00" if key in _ZERO_FROM else "?"
         if to is not None:
-            b = format_seconds(to)
+            b = format_seconds(excl_to_shown(to, fps))
         else:
             b = tr("end") if key in _TO_END else "?"
         if fr is not None and to is not None and to <= fr:
@@ -346,6 +358,7 @@ class MultiCutMixin:
             self._multi_paths[iid] = p
             self._multi_seg[iid] = {k: [None, None] for k, _ in self.MULTI_SEGS}
             added = iid
+        prefetch_fps([p for p in self._multi_paths.values()])   # for the To boxes / cells
         if added:
             self.multi_tree.selection_set(added)
             self.multi_tree.see(added)
@@ -436,8 +449,8 @@ class MultiCutMixin:
         ranges = self._multi_seg.get(iid, {})
         for key, (ef, et) in self._multi_entries.items():
             fr, to = ranges.get(key, [None, None])
-            ef.set_seconds(fr) if fr is not None else self._multi_clear_entry(ef)
-            et.set_seconds(to) if to is not None else self._multi_clear_entry(et)
+            ef.set_value(fr) if fr is not None else self._multi_clear_entry(ef)
+            et.set_value(to) if to is not None else self._multi_clear_entry(et)
         self._multi_loading = False
         self._multi_markers()
 
@@ -447,19 +460,29 @@ class MultiCutMixin:
             v.set("")
 
     def _multi_read_entries(self):
-        """Current section times from the boxes: {key: [from, to]}."""
+        """Current section times from the boxes: {key: [from, to]} (engine
+        values: To = the exclusive end, one frame after the shown To)."""
         out = {}
         for key, (ef, et) in self._multi_entries.items():
-            fr, _ = ef.get_seconds()
-            to, _ = et.get_seconds()
+            fr, _ = ef.get_value()
+            to, _ = et.get_value()
             out[key] = [fr, to]
         return out
 
     def _multi_write_row(self, iid):
         ranges = self._multi_seg.get(iid, {})
+        fps = None
+        path = self._multi_paths.get(iid)
+        if path and any(to is not None for _fr, to in ranges.values()):
+            known, fps = cached_fps(path, getattr(self, "multi_player", None))
+            if not known:
+                # probe in the background (a restored list may hold many files),
+                # then redraw this row with the exact frame step
+                prefetch_fps([path], lambda _p, i=iid: self.after(
+                    0, lambda: self._multi_paths.get(i) and self._multi_write_row(i)))
         for key, _ in self.MULTI_SEGS:
             fr, to = ranges.get(key, [None, None])
-            self.multi_tree.set(iid, key, self._short_rng(key, fr, to))
+            self.multi_tree.set(iid, key, self._short_rng(key, fr, to, fps))
 
     def _multi_sync(self):
         if self._multi_loading or not self._multi_sel:
@@ -475,8 +498,18 @@ class MultiCutMixin:
         if all(fr is None and to is None for fr, to in times.values()):
             messagebox.showinfo(tr("Nothing set"), tr("Set at least one section's times first."))
             return
+        # the To boxes show the LAST frame cut: on a file with another frame
+        # rate that same shown frame time gets that file's own exclusive end
+        src_fps = self._multi_fps() if self._multi_sel else None
+        shown = {k: et.get_seconds()[0] for k, (_ef, et) in self._multi_entries.items()}
         for iid in iids:
-            self._multi_seg[iid] = {k: list(v) for k, v in times.items()}
+            seg = {k: list(v) for k, v in times.items()}
+            fps = self._multi_fps(iid)
+            if fps and src_fps and abs(fps - src_fps) > 1e-6:
+                for k, v in seg.items():
+                    if v[1] is not None and shown.get(k) is not None:
+                        v[1] = round(shown_to_excl(shown[k], fps), 6)
+            self._multi_seg[iid] = seg
             self._multi_write_row(iid)
         if selected:
             msg = ntr("Applied the section times to {n} selected file.",
@@ -505,8 +538,8 @@ class MultiCutMixin:
         dur = self.multi_player.timeline.duration
         marks = []
         for key, (ef, et) in self._multi_entries.items():
-            fr, _ = ef.get_seconds()
-            to, _ = et.get_seconds()
+            fr, _ = ef.get_value()
+            to, _ = et.get_value()
             fr, end, err = _resolve_rng(key, fr, to, dur)
             if fr is None or err or not end:
                 continue
@@ -540,8 +573,8 @@ class MultiCutMixin:
         if not self.multi_player.has_video():
             return
         ef, et = self._multi_entries[key]
-        fr, _ = ef.get_seconds()
-        to, _ = et.get_seconds()
+        fr, _ = ef.get_value()
+        to, _ = et.get_value()
         fr, end, err = _resolve_rng(key, fr, to, self.multi_player.timeline.duration)
         if err:
             self.status_var.set(tr("That section: {problem}.", problem=tr_key(err)))

@@ -162,12 +162,17 @@ def _window(t, radius):
 # ----------------------------------------------------------------- visual
 def _match_vec(E, i, R, j, np):
     """Does episode frame i look like reference frame j (or one within
-    +-TOL - held animation frames)? Returns True / False."""
+    +-TOL - held animation frames)? Black / flat frames only match the
+    aligned frame itself (a black frame next to a black frame would let
+    the walk run into an episode's own fade / black gap). Returns True /
+    False."""
     lo, hi = max(0, j - TOL), min(len(R.t), j + TOL + 1)
     if lo >= hi:
         return False
     for jj in range(lo, hi):
         if E.flat[i] or R.flat[jj]:
+            if jj != j:
+                continue
             if (abs(E.mean[i] - R.mean[jj]) < FLAT_MEAN_TOL
                     and abs(E.std[i] - R.std[jj]) < 4.0):
                 return True
@@ -196,7 +201,7 @@ def _best_offset(E, R, k0, kmax, np):
     return best[0], best[1]
 
 
-def _visual_edge(E, R, te, tr, edge, kmax, inside_t, np):
+def _visual_edge(E, R, te, tr, edge, kmax, inside_t, np, hold=False):
     """Exact boundary frame in E for the boundary at te (episode) / tr
     (reference); inside_t = an episode time inside the segment (where the
     walk starts). Returns (index, info) - index of the first frame of the
@@ -238,6 +243,17 @@ def _visual_edge(E, R, te, tr, edge, kmax, inside_t, np):
                 break
     if stop is None:
         return None, {"beyond": True, "te": float(E.t[last]), "tr": float(R.t[last - k])}
+    if hold and stop == "reference edge":
+        # the template ends here, but this episode may hold its edge picture
+        # a frame or two longer (its segment is a frame longer): those
+        # frames are the segment too (never a black / flat frame)
+        je = 0 if step < 0 else len(R.t) - 1
+        i = last + step
+        for _ in range(2):
+            if not 0 <= i < len(E.t) or E.flat[i] or R.flat[je] or not _match_vec(E, i, R, je, np):
+                break
+            last = i
+            i += step
     # flat run at the edge (fade through black): ambiguous span
     span = None
     if edge == "start":
@@ -254,9 +270,53 @@ def _visual_edge(E, R, te, tr, edge, kmax, inside_t, np):
         if last - b > MAX_FLAT_EDGE:
             span = (b + 1, last + 1)               # first flat .. first after
         idx = last + 1
-    return idx, {"offset": k, "pairs": n, "stop": stop, "span": span,
-                 "dt": float(E.t[anchor] - R.t[anchor - k])}
+    # the edge between two black / flat frames of the same brightness: no
+    # picture cut shows where it is (the alignment placed it) - approximate
+    a, b = (idx - 1, idx)
+    black = (0 <= a and b < len(E.t) and E.flat[a] and E.flat[b]
+             and abs(E.mean[a] - E.mean[b]) < FLAT_MEAN_TOL)
+    return idx, {"offset": k, "pairs": n, "stop": stop, "span": span, "last": last,
+                 "black": bool(black), "dt": float(E.t[anchor] - R.t[anchor - k])}
 
+
+
+def _template_margin(R, edge, np):
+    """Follow mode: the template maker's margin at a template clip's edge -
+    the outermost frames before the first hard picture cut within
+    MARGIN_MAX + 1 frames of the edge (a frame or two of the source episode
+    kept around the intro / credits). 0 when there is no cut there (the
+    template starts / ends on the segment itself) or the clip's edge isn't
+    in the window."""
+    n = len(R.t)
+    if n < MARGIN_MAX + 3:
+        return 0
+    if edge == "start":
+        if not R.at_start:
+            return 0
+        for j in range(1, MARGIN_MAX + 1):
+            if float(np.abs(R.raw[j].astype(np.int16) - R.raw[j - 1]).mean()) >= CUT_MIN:
+                return j
+        return 0
+    if not R.at_end:
+        return 0
+    for m in range(1, MARGIN_MAX + 1):
+        j = n - m                          # cut between frame j-1 and j -> m frames margin
+        if float(np.abs(R.raw[j].astype(np.int16) - R.raw[j - 1]).mean()) >= CUT_MIN:
+            return m
+    return 0
+
+
+def _trim(R, edge, m):
+    """R without its m edge frames (the template's margin); the cut-off
+    edge counts as the reference's edge."""
+    f = _Frames()
+    sl = slice(m, None) if edge == "start" else slice(0, len(R.t) - m)
+    for a in ("t", "raw", "X", "flat", "mean", "std"):
+        setattr(f, a, getattr(R, a)[sl])
+    f.fdur, f.t0, f.t1 = R.fdur, R.t0, R.t1
+    f.at_start = R.at_start or edge == "start"
+    f.at_end = R.at_end or edge == "end"
+    return f
 
 def _frame_time(E, idx):
     """Time of frame idx of E; one past the last frame = its end."""
@@ -411,7 +471,7 @@ def _audio_edge(xe, ae0, xr, ar0, te, tr, edge, ref_exact, radius, np, cont=Fals
 # ----------------------------------------------------------------- public
 def refine_boundary(path, t, edge, ref, ref_t, ref_exact=False, radius=SEARCH,
                     track=None, ref_track=None, cache=None, video=True, audio=True,
-                    ref_cache=None):
+                    ref_cache=None, follow=False):
     """Refine one boundary of `path` near time `t` against the same boundary
     in `ref` at `ref_t`. edge 'start' (t = first frame of the segment) or
     'end' (t = first frame after it). ref_exact: the reference's segment
@@ -420,7 +480,9 @@ def refine_boundary(path, t, edge, ref, ref_t, ref_exact=False, radius=SEARCH,
     / 'audio' / 'audio+cut'), "frames" (shift in frames), "fdur", "why"} or
     None (keep the coarse value). cache / ref_cache: dicts that keep decoded
     windows of the episode / the reference for the next call (a template's
-    windows can be reused for a whole batch)."""
+    windows can be reused for a whole batch). follow (with ref_exact): a
+    template's margin frames (_template_margin) are cut off for the walk
+    and added back beyond the content edge (res['margin'] = how many)."""
     import numpy as np
     t, ref_t = float(t), float(ref_t)
     if ref_cache is None:
@@ -449,25 +511,50 @@ def refine_boundary(path, t, edge, ref, ref_t, ref_exact=False, radius=SEARCH,
             else:
                 R.at_end = True
         kmax = int(round((rad if ref_exact or cur_t != t else 2 * rad) / max(E.fdur, 1e-3)))
-        idx, info = _visual_edge(E, R, cur_t, cur_r, edge, kmax, inside, np)
+        tm = _template_margin(R, edge, np) if follow and ref_exact else 0
+        Rw = _trim(R, edge, tm) if tm else R
+        idx, info = _visual_edge(E, Rw, cur_t, cur_r, edge, kmax, inside, np,
+                                 hold=follow and ref_exact)
         if idx is not None:
             span = info["span"]
             res = {"t": _frame_time(E, idx), "src": "visual", "fdur": E.fdur,
                    "why": info["stop"]}
+            if info.get("black") and span is None:
+                res["fade"] = True
+                res["why"] += ", black on both sides (approximate)"
+            if tm and span is None:
+                # the template's margin frames beyond the content edge
+                fi = idx - tm if edge == "start" else idx + tm
+                if 0 <= fi <= len(E.t):
+                    res["t"] = _frame_time(E, fi)
+                    res["why"] += f", template margin {tm} frame(s)"
+                    res["margin"] = tm
             if span is None:
                 return _finish(res, t)
             # fade through black: let the audio pick inside the flat span
             lo_t, hi_t = _frame_time(E, span[0]), _frame_time(E, span[1])
             at = _audio_refine(path, res["t"], edge, ref, res["t"] - info["dt"], ref_exact,
                                radius, track, ref_track, cache, ref_cache, np) if audio else None
+            nb = hi_t if edge == "start" else lo_t     # first non-black / first black frame
             if (at is not None and not at[1].get("span")
                     and lo_t - E.fdur <= at[0] <= hi_t + E.fdur):
-                res["t"] = _frame_time(E, _snap_index(E, at[0], np))
-                res["src"] = "visual+audio"
+                ta = _frame_time(E, _snap_index(E, at[0], np))
+                if abs(ta - nb) <= 1.01 * E.fdur:
+                    # the sound starts / stops right at the non-black edge:
+                    # the picture's edge, confirmed
+                    res["t"] = nb
+                    res["why"] += ", fade: non-black edge (sound agrees)"
+                else:
+                    # the picture can't tell where in the black the cut is:
+                    # the sound placed it (approximate - edge_kind 'audio')
+                    res["t"] = ta
+                    res["src"] = "visual+audio"
             else:
-                # first non-black frame (start) / first black frame (end)
-                res["t"] = hi_t if edge == "start" else lo_t
+                # first non-black frame (start) / first black frame (end) -
+                # approximate (edge_kind 'fade')
+                res["t"] = nb
                 res["why"] += ", fade: non-black edge"
+                res["fade"] = True
             return _finish(res, t)
         if isinstance(info, dict):
             # still the same pictures at the window's edge: follow them (the
@@ -608,47 +695,262 @@ def pair_offset(p, rng_p, q, rng_q, track_p=None, track_q=None, cache=None, marg
     return None
 
 
+# ----------------------------------------------------------------- edge kinds
+EDGE_KINDS = ("visual", "fade", "audio", "coarse")
+
+
+def edge_kind(r):
+    """How a refine result placed its boundary: 'visual' (frame-exact picture
+    match or a picture cut), 'fade' (a black / flat stretch with no picture
+    cut: the first / last non-black frame - approximate), 'audio' (the
+    sound placed it - no usable pictures, or inside a black stretch -
+    approximate), 'coarse' (not refined). Anything but 'visual' deserves a
+    'check this edge' warning."""
+    if not r:
+        return "coarse"
+    src = r.get("src") or ""
+    if src == "visual":
+        return "fade" if r.get("fade") else "visual"
+    if src == "audio+cut":
+        return "visual"
+    return "audio"
+
+
+def _edge_note(kind):
+    return {"audio": " - audio-placed (approximate)",
+            "fade": " - black stretch, no picture cut (approximate)"}.get(kind, "")
+
+
+# ----------------------------------------------------------------- template edges / margins
+TEMPLATE_MODES = ("follow", "exact", "exact+margin")
+MARGIN_MAX = 5               # cfg['margin_frames'] range 0..MARGIN_MAX
+
+
+def norm_margin(n, default=1):
+    """cfg['margin_frames'] -> int in [0, MARGIN_MAX]."""
+    try:
+        n = int(n if n is not None else default)
+    except (TypeError, ValueError):
+        n = default
+    return max(0, min(MARGIN_MAX, n))
+
+
+def norm_template_mode(m):
+    """cfg['template_margin'] -> 'follow' (default) / 'exact' / 'exact+margin'."""
+    m = str(m or "follow").strip().lower()
+    return m if m in TEMPLATE_MODES else "follow"
+
+
+def _audio_offset(path, t, edge, ref, ref_t, radius, track, ref_track, cache, ref_cache, np):
+    """Sample-exact offset (episode time - reference time) of a 3 s chunk of
+    the reference just inside its edge ref_t, searched around t. None when
+    there is no clear peak."""
+    c0, c1 = (ref_t + 0.6, ref_t + 3.6) if edge == "start" else (ref_t - 3.6, ref_t - 0.6)
+    if c0 < 0:
+        c0, c1 = 0.0, 3.0
+    span = 2 * radius + PAD + 4.0
+    ea = max(0.0, t - span)
+    eb = t + span
+    xr = _cached(ref_cache, ("a", ref, ref_track, round(c0, 3), round(c1, 3)),
+                 lambda: decode_audio(ref, c0, c1, ref_track))
+    xe = _cached(cache, ("a", path, track, round(ea, 3), round(eb, 3)),
+                 lambda: decode_audio(path, ea, eb, track))
+    if xr is None or xe is None or len(xr) < SR:
+        return None
+    if float(np.sqrt((xr ** 2).mean())) < A_SILENT:
+        return None
+    c = _xcorr_norm(xe, xr, np)
+    want = (c0 + (t - ref_t)) - ea
+    lo = max(0, int((want - 2 * radius) * SR))
+    hi = min(c.size, int((want + 2 * radius) * SR) + 1)
+    if hi - lo < 3:
+        return None
+    seg = c[lo:hi]
+    p = int(np.argmax(seg))
+    peak = float(seg[p])
+    g = int(0.05 * SR)
+    rest = np.concatenate([seg[:max(0, p - g)], seg[p + g:]])
+    if peak < A_MIN_PEAK or (rest.size and float(rest.max()) > 0.9 * peak):
+        return None
+    return (ea + (lo + p) / SR) - c0
+
+
+def follow_template_edge(path, t, edge, ref, ref_t, radius=SEARCH, track=None, ref_track=None,
+                         cache=None, ref_cache=None, video=True, audio=True):
+    """Where the template's own edge lands in the episode - the template is
+    followed exactly, including the safety-margin frames its maker left
+    around the intro / credits (they show source-episode content that
+    matches nothing elsewhere; the alignment comes from the content next to
+    them). edge 'start': ref_t = 0 (the template's first frame); 'end':
+    ref_t = the template's end (-> the frame after its last one). Pictures:
+    the template's margin (the frames outside the first hard cut at its
+    edge) is set aside, the content-edge walk runs near THAT edge (the two
+    edges' offsets can differ by a frame between episodes; a picture this
+    episode holds a frame longer still counts) and the margin's frame count
+    is added beyond the content edge. Without pictures:
+    the template edge mapped by the sound's sample-exact offset, snapped to
+    the nearest frame. Returns the refine_boundary result dict or None."""
+    import numpy as np
+    t, ref_t = float(t), float(ref_t)
+    if video:
+        r = refine_boundary(path, t, edge, ref, ref_t, ref_exact=True, radius=radius,
+                            track=track, ref_track=ref_track, cache=cache, video=True,
+                            audio=audio, ref_cache=ref_cache, follow=True)
+        if r is not None and (r["src"].startswith("visual") or r["src"] == "audio+cut"):
+            return r
+    if not audio:
+        return None
+    best = None
+    for tk in (track if isinstance(track, (list, tuple)) else [track]):
+        off = _audio_offset(path, t, edge, ref, ref_t, radius, tk, ref_track, cache,
+                            ref_cache, np)
+        if off is not None:
+            best = off
+            break
+    if best is None:
+        return None
+    ta = ref_t + best
+    res = {"t": ta, "src": "audio", "fdur": None, "why": "template edge (audio offset)"}
+    if video:
+        wa, wb = round(max(0.0, ta - 1.0), 3), round(ta + 1.0, 3)
+        E = _cached(cache, ("v", path, wa, wb), lambda: decode_frames(path, wa, wb))
+        if E is not None:
+            res["t"] = _frame_time(E, _snap_index(E, ta, np))
+            res["fdur"] = E.fdur
+    return _finish(res, t)
+
+
+def frame_step(path, t, n, cache=None):
+    """The real frame time n frames away from the frame at t (n < 0 =
+    earlier), stepped on the file's own frame timestamps. Clamped to the
+    file start. None if nothing could be decoded."""
+    import numpy as np
+    t = float(t)
+    if n == 0:
+        return t
+    pad = 0.5 + abs(n) * 0.25
+    a, b = round(max(0.0, t - pad), 3), round(t + pad, 3)
+    E = _cached(cache, ("m", path, a, b), lambda: decode_frames(path, a, b, w=16, h=9))
+    if E is None:
+        return None
+    i = _snap_index(E, t, np) + int(n)
+    if i < 0:
+        return 0.0 if E.at_start else float(E.t[0])
+    if i >= len(E.t):
+        return float(E.t[-1] + E.fdur * (i - len(E.t) + 1))
+    return float(E.t[i])
+
+
+def add_margin(path, rng, n, dur=None, lo=0.0, hi=None, cache=None, edges=(True, True)):
+    """(s, e) widened by n frames each side (start - n frames, end(excl) + n
+    frames) on the file's real frame times, clamped to [lo, hi] (the file /
+    the neighbouring segments). An end at the file end stays there. edges:
+    which side(s) to widen. Returns (s, e)."""
+    s, e = float(rng[0]), float(rng[1])
+    n = int(n or 0)
+    if n <= 0:
+        return s, e
+    if dur:
+        hi = dur if hi is None else min(hi, dur)
+    lo = max(0.0, lo or 0.0)
+    try:
+        if edges[0] and s > lo + 1e-3:
+            ns = frame_step(path, s, -n, cache)
+            if ns is not None:
+                s = max(lo, min(s, ns))
+        if edges[1] and not (dur and e >= dur - 1e-3) and (hi is None or e < hi - 1e-3):
+            ne = frame_step(path, e, n, cache)
+            if ne is not None:
+                e = max(e, ne)
+                if hi is not None:
+                    e = min(e, hi)
+    except Exception:
+        pass                                  # never break a detection
+    return round(s, 3), round(e, 3)
+
+
+def margin_segments(per_file, n, durs=None, cache=None, fixed=None):
+    """add_margin for every segment of every file without overlapping a
+    neighbouring segment of the same file. per_file: {path: {key: (s, e) |
+    None}} (changed in place); durs: {path: duration}; fixed(key) -> True =
+    that segment only bounds the others (kept as is). Returns per_file."""
+    if int(n or 0) <= 0:
+        return per_file
+    for p, segs in per_file.items():
+        dur = (durs or {}).get(p)
+        orig = {k: tuple(v[:2]) for k, v in segs.items() if v}
+        for k, (s, e) in orig.items():
+            if fixed is not None and fixed(k):
+                continue
+            lo = max([v[1] for kk, v in orig.items() if kk != k and v[1] <= s + 1e-3] or [0.0])
+            his = [v[0] for kk, v in orig.items() if kk != k and v[0] >= e - 1e-3]
+            hi = min(his) if his else dur
+            segs[k] = add_margin(p, (s, e), n, dur, lo, hi, cache)
+    return per_file
+
+
 def refine_range(path, rng, ref, ref_rng, ref_exact=False, log=None, label="",
                  track=None, ref_track=None, cache=None, video=True, audio=True,
-                 ref_cache=None):
+                 ref_cache=None, template_mode="exact", src_out=None):
     """Refine both edges of `rng` (s, e) in `path` against `ref_rng` in
     `ref`, independently. ref_exact: bool or a (start, end) pair of bools.
-    Returns (s, e, (start_refined, end_refined)). Logs one line per moved
-    edge ('refined start 92.340 -> 92.426 (visual, +2 frames)')."""
+    template_mode 'follow': an exact reference edge (a template clip's own
+    start / end) is mapped into the episode as is (follow_template_edge -
+    the template's margin frames included) instead of walking to the
+    content edge; 'exact' / 'exact+margin': the content edge (the caller
+    adds the margin). src_out (a list) gets [start kind, end kind]
+    (edge_kind). Returns (s, e, (start_refined, end_refined)). Logs one line
+    per moved edge ('refined start 92.340 -> 92.426 (visual, +2 frames)')."""
     log = log or (lambda m: None)
     s, e = float(rng[0]), float(rng[1])
     exact = tuple(ref_exact) if isinstance(ref_exact, (tuple, list)) else (ref_exact,) * 2
+    follow = norm_template_mode(template_mode) == "follow"
     out = [s, e]
     done = [False, False]
+    kinds = ["coarse", "coarse"]
     for n, edge in enumerate(("start", "end")):
         try:
-            r = refine_boundary(path, out[n], edge, ref, ref_rng[n], ref_exact=exact[n],
-                                track=track, ref_track=ref_track, cache=cache,
-                                video=video, audio=audio, ref_cache=ref_cache)
+            r = None
+            if follow and exact[n]:
+                r = follow_template_edge(path, out[n], edge, ref, ref_rng[n], track=track,
+                                         ref_track=ref_track, cache=cache,
+                                         ref_cache=ref_cache, video=video, audio=audio)
+            if r is None:
+                r = refine_boundary(path, out[n], edge, ref, ref_rng[n], ref_exact=exact[n],
+                                    track=track, ref_track=ref_track, cache=cache,
+                                    video=video, audio=audio, ref_cache=ref_cache)
         except Exception as exc:                  # never break a detection
             r = None
             log(f"   [refine] {label}{edge}: failed ({exc})")
         if r is None:
             continue
         done[n] = True
-        if abs(r["t"] - out[n]) >= 0.0005:
+        kinds[n] = edge_kind(r)
+        if abs(r["t"] - out[n]) >= 0.0005 or kinds[n] != "visual":
             log(f"   [refine] {label}refined {edge} {out[n]:.3f} -> {r['t']:.3f} "
-                f"({r['src']}, {r['frames']:+d} frames)")
+                f"({r['src']}, {r['frames']:+d} frames){_edge_note(kinds[n])}")
         out[n] = r["t"]
     if out[1] <= out[0]:                           # nonsense: keep the coarse range
+        if src_out is not None:
+            src_out[:] = ["coarse", "coarse"]
         return s, e, (False, False)
+    if src_out is not None:
+        src_out[:] = kinds
     return out[0], out[1], tuple(done)
 
 
 def refine_ranges(ranges, log=None, label="", track_for=None, cache=None, video=True,
-                  audio=True, known_ref=None, done_out=None):
+                  audio=True, known_ref=None, done_out=None, template_mode="exact",
+                  src_out=None):
     """Refine every member of a recurring segment {path: (s, e)} against
     another member (the one whose length is the median); an edge the
     pictures can't settle is also tried against a second member (closest in
     length) and takes the outermost result (pictures preferred).
     known_ref=(template_path, duration): refine against that template clip
-    instead (its edges are exact). track_for(path) -> audio track index or
-    None. done_out (dict) gets {path: (start_refined, end_refined)}.
+    instead (its edges are exact; template_mode as in refine_range).
+    track_for(path) -> audio track index or
+    None. done_out (dict) gets {path: (start_refined, end_refined)}; src_out
+    (dict) gets {path: (start kind, end kind)} (edge_kind).
     Returns {path: (s, e)} (unrefined edges keep their coarse value)."""
     import os
     log = log or (lambda m: None)
@@ -659,10 +961,14 @@ def refine_ranges(ranges, log=None, label="", track_for=None, cache=None, video=
     if known_ref is not None:
         tpl, tdur = known_ref
         for p in paths:
+            ks = []
             s, e, done = refine_range(p, ranges[p], tpl, (0.0, tdur), ref_exact=True, log=log,
                                       label=f"{label}{os.path.basename(p)}: ", track=tf(p),
-                                      cache=cache, video=video, audio=audio)
+                                      cache=cache, video=video, audio=audio,
+                                      template_mode=template_mode, src_out=ks)
             out[p] = (s, e)
+            if src_out is not None:
+                src_out[p] = tuple(ks)
             if done_out is not None:
                 done_out[p] = done
         return out
@@ -678,6 +984,7 @@ def refine_ranges(ranges, log=None, label="", track_for=None, cache=None, video=
         partners += others[:1]
         new = list(ranges[p])
         done = [False, False]
+        kinds = ["coarse", "coarse"]
         found = ([], [])                # per edge: results, one per partner
         for q in partners:
             off = None                 # p - q offset, measured only when needed
@@ -725,14 +1032,19 @@ def refine_ranges(ranges, log=None, label="", track_for=None, cache=None, video=
             r = (min(pool, key=lambda x: x["t"]) if edge == "start"
                  else max(pool, key=lambda x: x["t"]))
             done[n] = True
-            if abs(r["t"] - ranges[p][n]) >= 0.0005:
+            kinds[n] = edge_kind(r)
+            if abs(r["t"] - ranges[p][n]) >= 0.0005 or kinds[n] != "visual":
                 log(f"   [refine] {label}{os.path.basename(p)}: refined {edge} "
-                    f"{ranges[p][n]:.3f} -> {r['t']:.3f} ({r['src']}, {r['frames']:+d} frames)")
+                    f"{ranges[p][n]:.3f} -> {r['t']:.3f} ({r['src']}, {r['frames']:+d} frames)"
+                    f"{_edge_note(kinds[n])}")
             new[n] = r["t"]
         if new[1] > new[0]:
             out[p] = (new[0], new[1])
         else:
             done = [False, False]
+            kinds = ["coarse", "coarse"]
+        if src_out is not None:
+            src_out[p] = tuple(kinds)
         if done_out is not None:
             done_out[p] = tuple(done)
     return out

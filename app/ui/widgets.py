@@ -11,17 +11,30 @@ class TimeEntry(ttk.Frame):
     """Four boxes (HH : MM : SS : mmm) so times are easy to type.
     Empty box counts as 0; the last box is milliseconds (a decimal seconds
     value like 30.5 in the seconds box still works too).
-    All boxes empty = no time given (used for 'to end of file')."""
+    All boxes empty = no time given (used for 'to end of file').
 
-    def __init__(self, master, on_focus=None):
+    end=True makes it an inclusive "To" box: it SHOWS the last frame a
+    section removes, while get_value() / set_value() speak the engine's
+    exclusive end (the first frame kept) - one frame later on the grid of
+    `fps` (a number or a callable returning the file's fps, None = unknown).
+    A value put in with set_value() comes back exactly (no rounding drift)
+    as long as the boxes weren't edited. For a From box (end=False)
+    get_value() / set_value() are get_seconds() / set_seconds()."""
+
+    def __init__(self, master, on_focus=None, end=False, fps=None):
         # one field box (border, accent on focus) with the four border-less
         # boxes and their ':' separators inside
         super().__init__(master, style="TimeBox.TFrame", padding=themes.pad(4, 2))
         self._on_focus = on_focus          # called with self when a box is focused
+        self.is_end = bool(end)
+        self._fps = fps
+        self._raw_end = None               # (box texts, engine end) of the last set_value
         self.h, self.m = tk.StringVar(), tk.StringVar()
         self.s, self.ms = tk.StringVar(), tk.StringVar()
         self.vars = (self.h, self.m, self.s, self.ms)
         self._entries = []
+        # widths count '0' digits of the box font (so they follow the DPI and
+        # the font): 2 / 2 / 2 / 3 digits + one spare for the cursor
         for i, (var, w) in enumerate(((self.h, 3), (self.m, 3), (self.s, 3), (self.ms, 4))):
             e = ttk.Entry(self, textvariable=var, width=w, justify="center", style="Bare.TEntry")
             e.grid(row=0, column=i * 2)
@@ -48,8 +61,16 @@ class TimeEntry(ttk.Frame):
         try:
             if self.focus_get() not in self._entries:
                 self._state("focus", False)
+                self._normalize()
         except (tk.TclError, KeyError):
             self._state("focus", False)
+
+    def _normalize(self):
+        """Once the box loses focus, show a typed value zero-padded
+        (4 -> 04, 30.5 s -> 30 : 500); an invalid entry is left as typed."""
+        sec, ok = self.get_seconds()
+        if ok and sec is not None:
+            self.set_seconds(sec)
 
     def _focused(self):
         self._state("focus", True)
@@ -62,17 +83,69 @@ class TimeEntry(ttk.Frame):
             self._entries[i + 1].icursor("end")
 
     def set_seconds(self, sec):
-        """Fill the H:M:S:ms boxes from a float second count (frame-precise)."""
+        """Fill the H:M:S:ms boxes from a float second count (frame-precise),
+        always zero-padded: 124.958 -> 00 : 02 : 04 : 958."""
         if sec is None or sec < 0:
             sec = 0.0
         ms = int(round(sec * 1000))
         h, ms = divmod(ms, 3600_000)
         m, ms = divmod(ms, 60_000)
         s, ms = divmod(ms, 1000)
-        self.h.set(str(h) if h else "")
-        self.m.set(f"{m:02d}" if (h or m) else "")
-        self.s.set(str(s))
-        self.ms.set(f"{ms:03d}" if ms else "")
+        for var, text in ((self.h, f"{h:02d}"), (self.m, f"{m:02d}"),
+                          (self.s, f"{s:02d}"), (self.ms, f"{ms:03d}")):
+            if var.get() != text:
+                var.set(text)
+
+    # ---- engine values (exclusive end for a To box) ----
+    def fps(self):
+        f = self._fps() if callable(self._fps) else self._fps
+        try:
+            f = float(f) if f else None
+        except (TypeError, ValueError):
+            f = None
+        return f if f and f > 0 else None
+
+    def _texts(self):
+        return tuple(v.get() for v in self.vars)
+
+    def shown(self, t):
+        """Engine time -> the time this box shows for it."""
+        if not self.is_end or t is None:
+            return t
+        from .frametime import excl_to_shown
+        return excl_to_shown(t, self.fps())
+
+    def engine(self, t):
+        """A shown time (e.g. the player frame) -> this box's engine value."""
+        if not self.is_end or t is None:
+            return t
+        from .frametime import shown_to_excl
+        return shown_to_excl(t, self.fps())
+
+    def set_value(self, t):
+        """Fill the box from an engine time (None = empty)."""
+        if t is None:
+            self.clear()
+            return
+        self.set_seconds(self.shown(t))
+        self._raw_end = (self._texts(), float(t)) if self.is_end else None
+
+    def get_value(self):
+        """(engine seconds | None, ok) - like get_seconds(), but a To box
+        returns the exclusive end (the frame after the one shown)."""
+        sec, ok = self.get_seconds()
+        if not self.is_end or sec is None or not ok:
+            return sec, ok
+        raw = self._raw_end
+        if raw is not None and raw[0] == self._texts():
+            return raw[1], True
+        return self.engine(sec), True
+
+    def clear(self):
+        """Empty all four boxes (= no time given)."""
+        for var in self.vars:
+            if var.get():
+                var.set("")
 
     def nudge(self, delta):
         """Shift the current time by delta seconds (can be negative), clamped at
@@ -616,12 +689,59 @@ class ScrollFrame(ttk.Frame):
     so this frame no longer scrolls by itself; it just passes its content's
     natural size up. (The name and attributes are kept for the tabs.)"""
 
-    def __init__(self, master, canvas_width=None, **kw):
+    def __init__(self, master, canvas_width=None, bottom_master=None, **kw):
         super().__init__(master, **kw)
-        self.bottom = ttk.Frame(self)
-        self.bottom.pack(side="bottom", fill="x")
+        # bottom_master = the window's fixed footer (app.py): the strip is
+        # built there - outside the scrolling page - and app.py shows the
+        # strip of the visible page only. Without it the strip sits below
+        # the content (scrolls with the page).
+        if bottom_master is not None:
+            self.bottom = ttk.Frame(bottom_master)
+        else:
+            self.bottom = ttk.Frame(self)
+            self.bottom.pack(side="bottom", fill="x")
         self.interior = ttk.Frame(self)
         self.interior.pack(side="top", fill="both", expand=True)
+
+
+def fixed_label(parent, samples, style="TLabel", anchor="w", **kw):
+    """A ttk.Label inside a frame of FIXED size - the widest of `samples`
+    (texts) in the label's font, measured with every digit 0-9 - so a text
+    that changes many times a second (a time / frame counter, a percentage)
+    never changes the label's size and never makes the layout around it
+    shift. `samples` may be a callable returning the texts. Re-measured
+    when the theme (fonts) changes, or by holder.remeasure() (e.g. once a
+    longer value becomes possible). Returns (holder_frame, label); place
+    the holder."""
+    import tkinter.font as tkfont
+    holder = ttk.Frame(parent)
+    holder.pack_propagate(False)
+    lbl = ttk.Label(holder, style=style, anchor=anchor, **kw)
+    lbl.pack(fill="both", expand=True)
+
+    def measure(_p=None):
+        try:
+            font = lbl.cget("font") or ttk.Style(lbl).lookup(style, "font") or "TkDefaultFont"
+            f = tkfont.Font(root=lbl, font=font)
+            pad = ttk.Style(lbl).lookup(style, "padding") or 0
+            try:
+                extra = sum(int(float(v)) for v in str(pad).split()[:1]) * 2
+            except ValueError:
+                extra = 0
+            w = 0
+            for s in (samples() if callable(samples) else samples):
+                w = max(w, max(f.measure("".join(d if ch.isdigit() else ch for ch in s))
+                               for d in "0123456789"))
+            lbl.update_idletasks()
+            holder.configure(width=w + extra + themes.px(4),
+                             height=max(f.metrics("linespace") + themes.px(2),
+                                        lbl.winfo_reqheight()))
+        except tk.TclError:
+            pass
+    measure()
+    themes.on_palette(holder, measure)
+    holder.remeasure = measure
+    return holder, lbl
 
 
 # ======================= drag-and-drop (optional) =======================
@@ -790,7 +910,8 @@ def _open_help_window(parent, wkey, title, sections, index=False):
         lb = tk.Listbox(body, exportselection=False, activestyle="none",
                         bg=bg, fg=tfg, selectbackground=p0["select_bg"],
                         selectforeground=p0["select_fg"], relief="flat", borderwidth=0,
-                        highlightthickness=0, font="TkDefaultFont", width=28)
+                        highlightthickness=0, font="TkDefaultFont",
+                        width=max(28, max((len(h) for h, _t in sections), default=0) + 1))
         lb.pack(side="left", fill="y", padx=themes.pad(0, 12))
     sb.pack(side="right", fill="y")
     text.pack(side="left", fill="both", expand=True)
@@ -839,7 +960,10 @@ def _open_help_window(parent, wkey, title, sections, index=False):
             _HELP_WINDOWS.pop(wkey, None)
     win.bind("<Destroy>", gone, add="+")
     _HELP_WINDOWS[wkey] = win
-    win.focus_set()
+    themes.recolor(win)
+    win.lift()
+    # focus_set on a window that isn't mapped yet doesn't activate it
+    win.after(50, lambda: win.winfo_exists() and win.focus_force())
     return win
 
 

@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ..engine.formatting import fmt_time
+from ..ui.dialogs import place_dialog
 from ..ui.player import VideoPlayer
 from ..ui.widgets import add_tooltip
 from .common import _same_file
@@ -48,6 +49,9 @@ class _AuditionWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.bind("<Escape>", lambda e: self.close())
         self.start(title, clips)
+        # themed, centred on the main window and focused (not wherever
+        # Windows cascades a new window)
+        place_dialog(self, master)
 
     def start(self, title, clips):
         self.title(title)

@@ -7,7 +7,7 @@ cut_multi.py."""
 import os
 import threading
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 
 from ..config import (AUDIO_LANG_CHOICES, BIT_DEPTHS, CODECS, LEGACY_CODEC_LABELS,
                       VALID_PRESETS)
@@ -15,11 +15,12 @@ from ..engine import detect as detect_engine
 from ..engine.formatting import fmt_time
 from ..engine.probe import probe_subtitle_inventory
 from ..i18n import ntr, tr
+from ..ui.dialogs import ask_string, place_dialog
 from ..ui.player import VideoPlayer
 from ..ui.widgets import ScrollFrame, add_tooltip, build_log_tab, trim_text_lines
 from .common import _KIND_NAMES, _same_dir, _same_file, _snap_in_thread
 from .cut_auto import AutoCutMixin
-from .cut_common import _cand_label, _is_plex, tr_key
+from .cut_common import _cand_label, _is_plex, norm_margin, norm_tpl_margin, tr_key
 from .cut_manual import ManualCutMixin
 from .cut_multi import MultiCutMixin
 from .cut_scan import ScanMixin
@@ -155,12 +156,10 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         if hasattr(self, "manual_subs_lbl"):     # ... and the Manual cut tab
             self.manual_subs_lbl.set(txt)
 
-    def _centre_dialog(self, dlg):
-        dlg.update_idletasks()
-        w, h = dlg.winfo_width(), dlg.winfo_height()
-        x = max(0, (dlg.winfo_screenwidth() - w) // 2)
-        y = max(0, (dlg.winfo_screenheight() - h) // 2)
-        dlg.geometry(f"+{x}+{y}")
+    def _centre_dialog(self, dlg, modal=False):
+        """Show / re-centre a dialog on the main window (themed, focused;
+        modal = grab the input once it is on screen)."""
+        place_dialog(dlg, self, modal=modal)
 
     def _open_subs_dialog(self, files):
         # open the dialog right away with a progress bar; it fills in when done
@@ -178,8 +177,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         _cancel = lambda: (scan_stop.set(), dlg.destroy())
         ttk.Button(body, text=tr("Cancel"), command=_cancel).pack(anchor="e")
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
-        self._centre_dialog(dlg)
-        dlg.grab_set()
+        dlg.bind("<Escape>", lambda e: _cancel())
+        self._centre_dialog(dlg, modal=True)
 
         def prog(done, total):
             def _u():
@@ -239,10 +238,12 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
                    "skip_incomplete", "trim_to_match", "anchor_cut", "anchor_secs",
                    "intro_from_start", "credits_to_end", "match_lang", "subs_filter",
                    "subs_langs", "use_preintro", "use_intro", "use_credits",
-                   "use_aftercredits", "detect_mode", "review_method", "plex_scan")
+                   "use_aftercredits", "detect_mode", "review_method", "plex_scan",
+                   "margin_frames", "template_margin")
     # ... plus these TemplateTab.snapshot() keys (its Auto-detect settings)
     PRESET_TPL_KEYS = ("det_window", "det_minlen_intro", "det_minlen_credits",
-                       "det_minlen_pa", "det_sens", "det_eplen", "det_lang", "det_mode")
+                       "det_minlen_pa", "det_sens", "det_eplen", "det_lang", "det_mode",
+                       "det_margin", "det_tpl_margin")
     _DIR_KEYS = {"video_dir": "Videos folder:", "intro_dir": "Intro templates:",
                  "credits_dir": "Credits templates:", "preintro_dir": "Pre-intro templates:",
                  "aftercredits_dir": "After-credits templates:",
@@ -359,6 +360,10 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
                 self.match_lang_var.set(lbl)
         if d.get("detect_mode") in ("audio", "visual", "both"):
             self.detect_mode_var.set(d["detect_mode"])
+        if "margin_frames" in d:
+            self.margin_frames_var.set(str(norm_margin(d["margin_frames"])))
+        if "template_margin" in d:
+            self.template_margin_var.set(norm_tpl_margin(d["template_margin"]))
         if d.get("review_method") in ("templates", "plex"):
             self.review_method_var.set(d["review_method"])
         if isinstance(d.get("plex_scan"), dict):
@@ -377,6 +382,10 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
                     var.set(str(tpl[key]))
             if tpl.get("det_mode") in ("audio", "visual", "both") and hasattr(tt, "det_mode_var"):
                 tt.det_mode_var.set(tpl["det_mode"])
+            if "det_margin" in tpl and hasattr(tt, "det_margin_var"):
+                tt.det_margin_var.set(str(norm_margin(tpl["det_margin"])))
+            if "det_tpl_margin" in tpl and hasattr(tt, "det_tpl_margin_var"):
+                tt.det_tpl_margin_var.set(norm_tpl_margin(tpl["det_tpl_margin"]))
             if "det_lang" in tpl and hasattr(tt, "det_lang_var"):
                 lbl = next((k for k, v in AUDIO_LANG_CHOICES.items()
                             if v == tpl["det_lang"]), None)
@@ -388,8 +397,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         if not cur:
             cur = os.path.basename(os.path.normpath(
                 self.dirs["Videos folder:"].get().strip() or "")) or ""
-        name = simpledialog.askstring(tr("Save preset"), tr("Preset name (e.g. the show):"),
-                                      initialvalue=cur, parent=self)
+        name = ask_string(self, tr("Save preset"), tr("Preset name (e.g. the show):"),
+                          initialvalue=cur)
         if name is None:
             return
         clean = presets.sanitize(name)
@@ -466,20 +475,22 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         if not player.has_video() or not video or not os.path.isfile(video):
             messagebox.showinfo(tr("No video"), tr("Load a video in the player first."))
             return
-        t, ok = entry.get_seconds()
+        # engine values: a To box gives / takes the exclusive end (the frame
+        # after the one it shows); the snap engine returns such a boundary too
+        t, ok = entry.get_value()
         if not ok:
             self.status_var.set(tr("That time box is invalid - fix it or clear it to snap "
                                    "from the player position."))
             return
         if t is None:
-            t = player.current_seconds()
+            t = entry.engine(player.current_seconds())
         if t is None:
             return
         btn.configure(state="disabled")
         seg = tr_key(_KIND_NAMES.get(key, key))
         box = tr("From") if which == "from" else tr("To")
         self.status_var.set(tr("Snapping {seg} {box} near {time}...", seg=seg, box=box,
-                               time=fmt_time(t)))
+                               time=fmt_time(entry.shown(t))))
 
         def done(new_t, reason):
             try:
@@ -496,16 +507,16 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             if not _same_file(getattr(player, "_path", None), video):
                 self.log(f"{tag} discarded - another file is loaded now")
                 return
-            entry.set_seconds(new_t)
+            entry.set_value(new_t)
             entry.flash()
             if player.has_video():
-                player.seek_seconds(new_t, play=False)
+                player.seek_seconds(entry.shown(new_t), play=False)
                 player.canvas.focus_set()
-            msg = f"snapped {fmt_time(t)} → {fmt_time(new_t)} ({reason})"
+            old_s, new_s = fmt_time(entry.shown(t)), fmt_time(entry.shown(new_t))
+            msg = f"snapped {old_s} → {new_s} ({reason})"
             self.log(f"{tag} {msg}")
             self.status_var.set(tr("{seg} {box} snapped {old} → {new} ({reason})", seg=seg,
-                                   box=box, old=fmt_time(t), new=fmt_time(new_t),
-                                   reason=reason))
+                                   box=box, old=old_s, new=new_s, reason=reason))
 
         _snap_in_thread(self, video, t, "start" if which == "from" else "end",
                         AUDIO_LANG_CHOICES.get(self.match_lang_var.get()), done)
@@ -559,8 +570,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
                 return
             ef, et = self._multi_entries[key]
             player = self.multi_player
-        ef.set_seconds(a)
-        et.set_seconds(b)
+        ef.set_value(a)
+        et.set_value(b)
         ef.flash()
         et.flash()
         if where == "manual":
@@ -650,6 +661,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             "credits_to_end": self.credits_to_end_var.get(),
             "match_lang": AUDIO_LANG_CHOICES.get(self.match_lang_var.get()),
             "detect_mode": self.detect_mode_var.get(),
+            "margin_frames": norm_margin(self.margin_frames_var.get()),
+            "template_margin": norm_tpl_margin(self.template_margin_var.get()),
             "review_method": self.review_method_var.get(),
             "plex_scan": dict(self._plex_saved or {}),
             "subs_filter": self.subs_filter_var.get(),

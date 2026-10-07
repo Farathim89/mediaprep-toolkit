@@ -77,8 +77,8 @@ class TemplateAutoMixin:
     def _tpl_pick(self, key, c, idx=1, seek=True):
         on, ef, et = self.sections[key]
         on.set(True)
-        ef.set_seconds(float(c["start"]))
-        et.set_seconds(float(c["end"]))
+        ef.set_value(float(c["start"]))
+        et.set_value(float(c["end"]))      # shows the last frame of the range
         ef.flash()
         et.flash()
         self._refresh_markers()
@@ -115,7 +115,7 @@ class TemplateAutoMixin:
         opts = {"mode": self.det_mode_var.get(), "lang": self._det_lang(), "window": window,
                 "minlens": minlens, "thresh": _SENS.get(self.det_sens.get(), 0.8),
                 "neighbours": max_eps - 1 if max_eps > 1 else _DEFAULT_NEIGHBOURS,
-                "kinds": kinds}
+                "kinds": kinds, **self._det_margins()}
         if not self.player.has_video() or not _same_file(getattr(self.player, "_path", None),
                                                          video):
             self.player.load(video)
@@ -155,6 +155,8 @@ class TemplateAutoMixin:
                    "aftercredits_dir": self.DIRMAP["aftercredits"],
                    "confidence": _CONFIDENCE, "match_lang": opts["lang"],
                    "detect_mode": mode,
+                   "margin_frames": opts["margin_frames"],
+                   "template_margin": opts["template_margin"],
                    "use": {k: k in opts["kinds"] for k in _KINDS}}
             self._tpl_progress(0.02, tr("Loading templates..."))
             tpls = load_templates_for(cfg, stop_event=stop)
@@ -189,7 +191,9 @@ class TemplateAutoMixin:
                     files, mode=mode, kinds=opts["kinds"], window=opts["window"],
                     min_lens=opts["minlens"], thresh=opts["thresh"],
                     progress=lambda f, t="": self._tpl_progress(0.2 + 0.8 * f, t),
-                    stop_event=stop, lang=opts["lang"], log=self.log)
+                    stop_event=stop, lang=opts["lang"], log=self.log,
+                    margin_frames=opts["margin_frames"],
+                    template_margin=opts["template_margin"])
                 if stop.is_set():
                     return
                 key = os.path.normcase(os.path.abspath(video))
@@ -213,7 +217,8 @@ class TemplateAutoMixin:
                 self.log("[AUTO] this is the only episode in its folder - the intro needs at "
                          "least 2 episodes; looking for credits pictures only")
                 self._tpl_progress(0.5, tr("Looking for credits pictures..."))
-                v = detect_credits_visual(video, opts["window"], log=self.log, stop_event=stop)
+                v = detect_credits_visual(video, opts["window"], log=self.log, stop_event=stop,
+                                          margin_frames=opts["margin_frames"])
                 if v and not stop.is_set():
                     cands["credits"].insert(0, {
                         "start": v[0], "end": v[1], "score": v[2],

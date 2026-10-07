@@ -27,6 +27,7 @@ from .. import jobs
 from ..i18n import tr, ntr
 from ..ui.widgets import add_tooltip, bind_status_colors, enable_file_drop, help_button
 from ..ui import icons
+from ..ui.tkthread import _call_tk
 
 _MEDIA_TYPES = [(tr("Video / audio"),
                  "*.mp4 *.mkv *.mov *.avi *.webm *.mp3 *.m4a *.aac *.flac *.wav"),
@@ -135,7 +136,7 @@ def _nb_help(nb, keys, default):
 
 
 class CompareTab(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, bottom=None):
         super().__init__(master, padding=(6, 6))
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
@@ -143,7 +144,7 @@ class CompareTab(ttk.Frame):
         nb.grid(row=0, column=0, sticky="nsew")
         tracks = ttk.Frame(nb, padding=10)
         nb.add(tracks, text="  " + tr("Tracks") + "  ")
-        self.quality = _QualityPane(nb)
+        self.quality = _QualityPane(nb, bottom=bottom)
         nb.add(self.quality, text="  " + tr("Quality") + "  ")
         self._build_tracks(tracks)
         # let the Quality tab copy the picked files with one click
@@ -418,7 +419,7 @@ def _verdict_vmaf(v):
 
 
 class _QualityPane(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, bottom=None):
         super().__init__(master, padding=10)
         self.columnconfigure(1, weight=1)
         self.stop_event = threading.Event()
@@ -500,10 +501,23 @@ class _QualityPane(ttk.Frame):
                                        "now) to run after the jobs already running / queued - "
                                        "handy for a slow Full scan. See Queue... in the status "
                                        "bar."))
-        self.stop_btn = icons.decorate(ttk.Button(rrow, text=tr("Stop"), command=self.stop, state="disabled"), "stop")
-        self.stop_btn.pack(side="left", padx=(6, 0))
-        self.bar = ttk.Progressbar(rrow, mode="determinate", maximum=100)
-        self.bar.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        # progress + Stop: in the window's fixed footer when `bottom` is given
+        # (always visible), else beside the buttons
+        if bottom is not None:
+            prog = ttk.Frame(bottom)
+            prog.pack(fill="x", padx=10, pady=(6, 6))
+            prog.columnconfigure(0, weight=1)
+            self.bar = ttk.Progressbar(prog, mode="determinate", maximum=100)
+            self.bar.grid(row=0, column=0, sticky="we")
+            self.stop_btn = icons.decorate(ttk.Button(prog, text=tr("Stop"), command=self.stop,
+                                                      state="disabled"), "stop")
+            self.stop_btn.grid(row=0, column=1, padx=(6, 0))
+        else:
+            self.stop_btn = icons.decorate(ttk.Button(rrow, text=tr("Stop"), command=self.stop,
+                                                      state="disabled"), "stop")
+            self.stop_btn.pack(side="left", padx=(6, 0))
+            self.bar = ttk.Progressbar(rrow, mode="determinate", maximum=100)
+            self.bar.pack(side="left", fill="x", expand=True, padx=(10, 0))
 
         self.rowconfigure(5, weight=1)
         self.out = tk.Text(self, height=10, font="MPMono", wrap="word", state="disabled",
@@ -555,7 +569,10 @@ class _QualityPane(ttk.Frame):
             else:
                 self.vmaf_chk.configure(text=tr("VMAF (not in this ffmpeg build)"),
                                         state="disabled")
-        self.after(0, apply)
+        # via the Tk-thread queue: self.after() from this thread raises
+        # "main thread is not in main loop" when the check finishes before
+        # the window's main loop runs (or after it ended)
+        _call_tk(lambda: self.vmaf_chk.winfo_exists() and apply())
 
     def _print(self, txt, clear=True):
         self.out.configure(state="normal")

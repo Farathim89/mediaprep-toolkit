@@ -65,7 +65,7 @@ def _run_check(path, depth, stop_event):
 
 
 class CheckTab(ttk.Frame):
-    def __init__(self, master, saved=None):
+    def __init__(self, master, saved=None, bottom=None):
         super().__init__(master, padding=8)
         saved = saved or {}
         self.stop_event = threading.Event()
@@ -149,20 +149,35 @@ class CheckTab(ttk.Frame):
         add_tooltip(self.queue_btn, tr("Queue a check of the ticked files (with the chosen "
                                        "depth) to run after the jobs already running / queued "
                                        "- see Queue... in the status bar"))
-        self.stop_btn = icons.decorate(ttk.Button(rrow, text=tr("Stop"), command=self.stop, state="disabled"), "stop")
-        self.stop_btn.pack(side="left", padx=(6, 0))
+        self.stop_btn = icons.decorate(ttk.Button(rrow if bottom is None else bottom,
+                                                  text=tr("Stop"), command=self.stop,
+                                                  state="disabled"), "stop")
+        if bottom is None:
+            self.stop_btn.pack(side="left", padx=(6, 0))
         info_icon(rrow, tr("select rows · Del = remove · Ctrl+A = all")).pack(
             side="left", padx=(4, 0))
 
+        # status + progress + Stop: in the window's fixed footer when `bottom`
+        # is given (always visible), else under the content
         self.status_var = tk.StringVar(value="")
-        ttk.Label(files_tab, textvariable=self.status_var, style="Hint.TLabel").grid(row=5, column=0, sticky="w")
-        prog = ttk.Frame(files_tab)
-        prog.grid(row=6, column=0, sticky="we", pady=(2, 2))
+        if bottom is not None:
+            ttk.Label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
+                anchor="w", padx=10, pady=(4, 0))
+            prog = ttk.Frame(bottom)
+            prog.pack(fill="x", padx=10, pady=(2, 6))
+        else:
+            ttk.Label(files_tab, textvariable=self.status_var, style="Hint.TLabel").grid(
+                row=5, column=0, sticky="w")
+            prog = ttk.Frame(files_tab)
+            prog.grid(row=6, column=0, sticky="we", pady=(2, 2))
         prog.columnconfigure(0, weight=1)
         self.bar = ttk.Progressbar(prog, mode="determinate", maximum=1000)
         self.bar.grid(row=0, column=0, sticky="we")
         self.pct_var = tk.StringVar(value="")
         ttk.Label(prog, textvariable=self.pct_var, width=12).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        if bottom is not None:
+            self.stop_btn.lift(prog)
+            self.stop_btn.grid(in_=prog, row=0, column=2, padx=(6, 0))
         log_tab.columnconfigure(0, weight=1)
         log_tab.rowconfigure(0, weight=1)
         self.logbox = tk.Text(log_tab, state="disabled", font="MPMono", wrap="none", padx=8, pady=6)

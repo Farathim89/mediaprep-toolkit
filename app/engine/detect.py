@@ -346,6 +346,34 @@ def _episode_tracks_idx(video, cfg, stop_event, librosa):
     return tracks, sr, used
 
 
+# a release converted 23.976 <-> 25 fps (PAL speed-up / slow-down) plays
+# every frame ~4 % faster / slower: a template that doesn't match at its own
+# speed is also tried at these (the frames stay 1:1, so the frame-exact
+# refinement works as is)
+_FILM = 24000 / 1001
+SPEEDS = (25.0 / _FILM, _FILM / 25.0)
+
+
+def _speed_audio(tpl, sp, sr, librosa, np):
+    """The template's match audio played `sp` times faster - pitch kept
+    (atempo-style conversion) and pitch shifted (plain speed-up) - cached."""
+    key = "_y_speed"
+    cache = tpl.setdefault(key, {})
+    if sp not in cache:
+        y = tpl['y_match']
+        out = []
+        try:
+            out.append(librosa.effects.time_stretch(y, rate=sp))
+        except Exception:
+            pass
+        try:
+            out.append(librosa.resample(y, orig_sr=int(round(sr * sp)), target_sr=sr))
+        except Exception:
+            pass
+        cache[sp] = out
+    return cache[sp]
+
+
 def _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log, np, librosa, fftconvolve):
     """One raw candidate per template (its best position), in template order,
     times in file seconds. Logs the per-template score lines."""
@@ -376,11 +404,21 @@ def _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log, np, librosa, fftco
             log(f"     {lname} {tpl['name']:{width}} -> {score:.3f} (anchored {en - st:.0f}s)")
         else:
             s, score = best_match_over(slices, tpl['y_match'], sr, librosa, np, fftconvolve)
-            st, en = s - tpl['lead'], s - tpl['lead'] + tpl['duration']
-            log(f"     {lname} {tpl['name']:{width}} -> {score:.3f}")
+            sp_used = 1.0
+            if score < cfg["confidence"] and not _is_stopped(stop_event):
+                # maybe a 25 fps (PAL) release of a 23.976 fps template or v.v.
+                for sp in SPEEDS:
+                    for y2 in _speed_audio(tpl, sp, sr, librosa, np):
+                        s2, sc2 = best_match_over(slices, y2, sr, librosa, np, fftconvolve)
+                        if sc2 >= cfg["confidence"] and sc2 > 1.25 * score:
+                            s, score, sp_used = s2, sc2, sp
+            st = s - tpl['lead'] / sp_used
+            en = st + tpl['duration'] / sp_used
+            log(f"     {lname} {tpl['name']:{width}} -> {score:.3f}"
+                + (f" (at {sp_used:.3f}x speed)" if sp_used != 1.0 else ""))
         cands.append({"start": st + offset, "end": en + offset, "score": float(score),
                       "template": tpl['name'], "anchored": am is not None, "_tpl": tpl,
-                      "src": "audio"})
+                      "src": "audio", "speed": sp_used if am is None else 1.0})
     return cands
 
 
@@ -388,12 +426,12 @@ _VIS_MIN = 0.5          # a picture match needs >= this share of matching frames
 _AGREE = 2.0            # audio and picture starts this close = the same match
 
 
-def _match_kind_visual(kind, tpls, total, video, stop_event, log, cache):
+def _match_kind_visual(kind, tpls, total, video, stop_event, log, cache, conf=0.0):
     """Picture candidates: each template's frame hashes slid over the
     episode's start (intro / pre-intro) or end (credits / after-credits)
     region (decoded once per episode, kept in `cache`). One candidate per
     template that has pictures."""
-    from .vfp import match_template, video_hashes
+    from .vfp import Hashes, match_template, video_hashes
     side = "start" if kind in ("intro", "preintro") else "end"
     if side not in cache:
         if side == "start":
@@ -415,10 +453,23 @@ def _match_kind_visual(kind, tpls, total, video, stop_event, log, cache):
         if r is None:
             continue
         st, score = r
-        log(f"     {lname} {tpl['name']:{width}} -> {score:.3f} (video)")
-        cands.append({"start": st, "end": st + tpl['duration'], "score": float(score),
+        sp_used = 1.0
+        if score < max(conf, _VIS_MIN):
+            # maybe a 25 fps (PAL) release of a 23.976 fps template or v.v.:
+            # the template's samples at the episode's pace
+            import numpy as np
+            h = tpl['vh']
+            for sp in SPEEDS:
+                idx = np.minimum(np.round(np.arange(int(len(h) / sp)) * sp).astype(int),
+                                 len(h) - 1)
+                r2 = match_template(Hashes(h.bits[idx], h.valid[idx], h.t0, h.fps), eh)
+                if r2 is not None and r2[1] >= max(conf, _VIS_MIN) and r2[1] > 1.25 * score:
+                    st, score, sp_used = r2[0], r2[1], sp
+        log(f"     {lname} {tpl['name']:{width}} -> {score:.3f} (video"
+            + (f", at {sp_used:.3f}x speed)" if sp_used != 1.0 else ")"))
+        cands.append({"start": st, "end": st + tpl['duration'] / sp_used, "score": float(score),
                       "template": tpl['name'], "anchored": False, "_tpl": tpl,
-                      "src": "visual"})
+                      "src": "visual", "speed": sp_used})
     return cands
 
 
@@ -469,23 +520,37 @@ def _tpl_video_end(tpl):
     return tpl["_vend"]
 
 
-def _refine_cand(video, c, tracks, rcache, log, lname):
+def _refine_cand(video, c, tracks, rcache, log, lname, cfg=None):
     """Snap a candidate's start / end to the exact frames (engine.refine),
     each edge on its own, against the template clip: its start = the
     template's first frame; its end = the template's end (exact) - or, when
-    trim_to_match cut the end short, the matching spot inside the template."""
-    from .refine import refine_range
+    trim_to_match cut the end short, the matching spot inside the template.
+    cfg['template_margin']: 'follow' (default) = the template's own first /
+    last frame mapped into the episode (a template cut with a safety margin
+    of a frame or two keeps it); 'exact' = the intro / credits content edge;
+    'exact+margin' = the content edge + cfg['margin_frames'] (default 1)
+    frames each side."""
+    from .refine import add_margin, norm_margin, norm_template_mode, refine_range
+    cfg = cfg or {}
+    tmode = norm_template_mode(cfg.get("template_margin"))
     tpl = c["_tpl"]
     tend = _tpl_video_end(tpl)
     if tend <= 0:
         return
-    rel_end = c["end"] - c["start"]
+    rel_end = (c["end"] - c["start"]) * float(c.get("speed") or 1.0)   # template time
     trimmed = rel_end < tend - 1.0 and not c.get("anchored")
     ref_rng = (0.0, rel_end if trimmed else tend)
+    kinds = []
     s, e, done = refine_range(video, (c["start"], c["end"]), tpl["path"], ref_rng,
                               ref_exact=(True, not trimmed), log=log, label=f"{lname} ",
                               track=tracks, ref_track=None, cache=rcache,
-                              ref_cache=tpl.setdefault("_rcache", {}))
+                              ref_cache=tpl.setdefault("_rcache", {}), template_mode=tmode,
+                              src_out=kinds)
+    c["edge_src"] = {"start": kinds[0] if kinds else "coarse",
+                     "end": kinds[1] if kinds else "coarse"}
+    if tmode == "exact+margin":
+        s, e = add_margin(video, (s, e), norm_margin(cfg.get("margin_frames")),
+                          cache=rcache, edges=done)
     if done[0]:
         c["start"] = s
         c["match_start"] = s
@@ -534,7 +599,7 @@ def _detect_core(video, cfg, templates, stop_event, log):
             continue
         a_c = (_match_kind(kind, tpls, tracks, sr, cfg, stop_event, log,
                            np, librosa, fftconvolve) if tracks else [])
-        v_c = (_match_kind_visual(kind, tpls, total, video, stop_event, log, vcache)
+        v_c = (_match_kind_visual(kind, tpls, total, video, stop_event, log, vcache, conf)
                if mode != "audio" else [])
         cands = _merge_sources(a_c, v_c, mode, conf)
         cands.sort(key=lambda c: -c["score"])          # stable: template order on ties
@@ -547,7 +612,7 @@ def _detect_core(video, cfg, templates, stop_event, log):
                 c["ok"] = c["ok"] and c["start"] > intro_veto + 10
             if (cfg.get("trim_to_match") and not anchor_cut and not _is_stopped(stop_event)
                     and tracks and c["_tpl"].get('y') is not None
-                    and c.get("src") != "visual"
+                    and c.get("src") != "visual" and float(c.get("speed") or 1.0) == 1.0
                     and (c["ok"] or (rank > 0 and c["score"] >= _NEAR_MISS * conf))):
                 tpl = c["_tpl"]
                 ml = matched_seconds(tracks, c["start"], tpl['y'], sr, librosa, np)
@@ -562,7 +627,7 @@ def _detect_core(video, cfg, templates, stop_event, log):
                     and (c["ok"] or rank == 0) and c["_tpl"].get("path")):
                 _refine_cand(video, c, track_idx or None, rcache,
                              log if rank == 0 or c["ok"] else (lambda m: None),
-                             _SEG_LOG[kind][0])
+                             _SEG_LOG[kind][0], cfg)
         best = cands[0] if cands else None
         if kind == "intro" and best and best["ok"]:
             intro_veto = best["end"]
@@ -587,11 +652,13 @@ def _detect_core(video, cfg, templates, stop_event, log):
                 if rank == 0 and c["ok"]:
                     log(f"   extending intro cut to file start (was {c['start']:.1f}s)")
                 c["start"] = 0.0
+                c["edge_src"] = dict(c.get("edge_src") or {}, start="file")
         for rank, c in enumerate(res.get("credits", [])):
             if cfg.get("credits_to_end") and c["end"] < total - 0.05:
                 if rank == 0 and c["ok"]:
                     log(f"   extending credits cut to file end (was {c['end']:.1f}s)")
                 c["end"] = total
+                c["edge_src"] = dict(c.get("edge_src") or {}, end="file")
     return res
 
 
@@ -599,7 +666,9 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
     """Match one episode against the templates (all variants in each folder).
     cfg: the same dict run_batch takes (intro_dir, credits_dir, preintro_dir,
     aftercredits_dir, confidence, match_lang, trim_to_match, anchor_cut,
-    anchor_secs, intro_from_start, credits_to_end, use_<kind> or use{} ...).
+    anchor_secs, intro_from_start, credits_to_end, use_<kind> or use{},
+    template_margin ('follow' default / 'exact' / 'exact+margin'),
+    margin_frames (0-5, default 1; only used by 'exact+margin') ...).
     templates: optional preloaded result of load_templates_for(cfg).
     Returns {"duration": float, "preintro": [cand...], "intro": [...],
              "credits": [...], "aftercredits": [...]}
@@ -608,7 +677,12 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
     audio matched, before intro_from_start), "anchored", "src" ('audio' /
     'visual' / 'audio+visual' - cfg['detect_mode']), "conflict" (audio and
     pictures pointed at different places), "refined" (an edge was snapped
-    to the exact frame - cfg['refine'], on by default)}. Each list is best
+    to the exact frame - cfg['refine'], on by default), "edge_src" ({"start",
+    "end"}: 'visual' = frame-exact picture match / cut, 'fade' = black
+    stretch without a picture cut, 'audio' = placed by the sound, 'coarse'
+    = not refined, 'file' = extended to the file start / end - anything but
+    'visual' / 'file' is approximate: show a "check this edge" warning)}.
+    Each list is best
     first, at most 5, near-misses (score >= 0.6 x confidence) with ok=False.
     Adds "error" if the episode's audio couldn't be read. Needs librosa."""
     log = log or (lambda m: None)
@@ -635,6 +709,8 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
                         "anchored": bool(c["anchored"]),
                         "src": c.get("src", "audio"),
                         "conflict": bool(c.get("conflict")),
-                        "refined": bool(any(c.get("refined") or ()))})
+                        "refined": bool(any(c.get("refined") or ())),
+                        "edge_src": dict({"start": "coarse", "end": "coarse"},
+                                         **(c.get("edge_src") or {}))})
         out[kind] = lst[:_MAX_CANDS]
     return out

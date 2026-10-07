@@ -2,6 +2,7 @@
 import os
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 from ..config import AUDIO_LANG_CHOICES, VIDEO_DIR
@@ -11,10 +12,10 @@ from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, bind_status_col
                           enable_file_drop, help_button)
 from .audition import _AuditionWindow
 from .common import _KIND_NAMES, _list_media, _template_stem
-from .cut_common import mode_combobox
+from .cut_common import margin_widgets, mode_combobox, norm_margin, norm_tpl_margin
 from .. import jobs as jobreg
 from ..i18n import tr, N_
-from ..ui import icons
+from ..ui import icons, themes
 
 # tr() for a variable key whose literals are marked with N_() / tr() elsewhere
 # (a plain tr(var) works the same, but the extractor flags it)
@@ -164,6 +165,12 @@ class TemplateDetectMixin:
                              "audio differs, e.g. a dub); Audio + Visual = both, merged per "
                              "episode. Pre-intro / after-credits always use audio. Also used "
                              "by Auto-detect on the Cut template sub-tab."))
+        # safety margin + template edges (also used by Cut template → Auto-detect)
+        self.det_margin_var = tk.StringVar(value=str(norm_margin(saved.get("det_margin"))))
+        self.det_tpl_margin_var = tk.StringVar(
+            value=norm_tpl_margin(saved.get("det_tpl_margin")))
+        margin_widgets(opt, self.det_margin_var, self.det_tpl_margin_var).grid(
+            row=5, column=0, columnspan=8, sticky="w", padx=4, pady=(6, 2))
 
         rr = ttk.Frame(detect)
         rr.grid(row=2, column=0, sticky="we", pady=(8, 2))
@@ -172,9 +179,20 @@ class TemplateDetectMixin:
         add_tooltip(self.detect_btn, tr("Fingerprint the episodes and find the intro/credits "
                                         "that recur across them - even if the show uses more "
                                         "than one opening"))
-        self.detect_stop_btn = icons.decorate(ttk.Button(rr, text=tr("Stop"), command=self.stop_detect,
-                                           state="disabled", width=-8), "stop")
-        self.detect_stop_btn.pack(side="left", padx=(6, 0))
+        # the progress row (status, bar, %, Stop) goes to the window's fixed
+        # footer when there is one (shown while this sub-tab is selected)
+        foot = getattr(self, "_bottom", None)
+        if foot is not None:
+            self._detect_foot = ttk.Frame(foot)
+            pf = ttk.Frame(self._detect_foot)
+        else:
+            self._detect_foot = None
+            pf = ttk.Frame(detect)
+        self.detect_stop_btn = icons.decorate(ttk.Button(pf if foot is not None else rr,
+                                                         text=tr("Stop"), command=self.stop_detect,
+                                                         state="disabled", width=-8), "stop")
+        if foot is None:
+            self.detect_stop_btn.pack(side="left", padx=(6, 0))
         info_icon(rr, tr("Needs a folder of episodes from the same show (>=2). "
                          "It finds the segment that repeats across them; a show "
                          "with several openings shows one row per opening. "
@@ -187,15 +205,21 @@ class TemplateDetectMixin:
                                              "Auto-cut stays off until a full run."))
 
         self.detect_status = tk.StringVar(value="")
-        ttk.Label(detect, textvariable=self.detect_status, style="Hint.TLabel").grid(
-            row=3, column=0, sticky="w")
-        pf = ttk.Frame(detect)
-        pf.grid(row=4, column=0, sticky="we", pady=(2, 2))
+        if foot is not None:
+            ttk.Label(self._detect_foot, textvariable=self.detect_status,
+                      style="Hint.TLabel").pack(anchor="w", padx=10, pady=(4, 0))
+            pf.pack(fill="x", padx=10, pady=(2, 6))
+        else:
+            ttk.Label(detect, textvariable=self.detect_status, style="Hint.TLabel").grid(
+                row=3, column=0, sticky="w")
+            pf.grid(row=4, column=0, sticky="we", pady=(2, 2))
         pf.columnconfigure(0, weight=1)
         self.detect_bar = ttk.Progressbar(pf, mode="determinate", maximum=1000)
         self.detect_bar.grid(row=0, column=0, sticky="we")
         self.detect_pct = tk.StringVar(value="")
         ttk.Label(pf, textvariable=self.detect_pct, width=20).grid(row=0, column=1, padx=(6, 0))
+        if foot is not None:
+            self.detect_stop_btn.grid(row=0, column=2, padx=(6, 0))
 
         tvf = ttk.Frame(detect)
         tvf.grid(row=5, column=0, sticky="nsew", pady=(2, 0))
@@ -207,12 +231,15 @@ class TemplateDetectMixin:
                           ("start", N_("Start"), 90), ("end", N_("End"), 90),
                           ("len", N_("Length"), 70), ("example", N_("Example episode"), 260)]:
             self.detect_tree.heading(c, text=tr_key(txt))
+            # px at 100 % -> DPI-scaled, and never narrower than the heading
+            w = max(themes.px(w), tkfont.nametofont("MPCaption").measure(tr_key(txt))
+                    + themes.px(20))
             self.detect_tree.column(c, width=w, anchor=("w" if c in ("kind", "example") else "center"),
                                     stretch=(c == "example"))
         self.detect_tree.grid(row=0, column=0, sticky="nsew")
         # rows already covered by a template you cut earlier show green + ✔
         bind_status_colors(self.detect_tree, {"have": "good"})   # readable on every theme
-        self.detect_tree.column("kind", width=130)
+        self.detect_tree.column("kind", width=themes.px(130))
         sb = ttk.Scrollbar(tvf, orient="vertical", command=self.detect_tree.yview)
         self.detect_tree.configure(yscrollcommand=sb.set)
         sb.grid(row=0, column=1, sticky="ns")
@@ -347,11 +374,12 @@ class TemplateDetectMixin:
                                        tab=self)
         threading.Thread(target=self._detect_worker,
                          args=(files, kinds, window, minlens, thresh, known, lang,
-                               self.det_sens.get(), jid, self.det_mode_var.get()),
+                               self.det_sens.get(), jid, self.det_mode_var.get(),
+                               self._det_margins()),
                          daemon=True).start()
 
     def _detect_worker(self, files, kinds, window, minlens, thresh, known=None, lang=None,
-                       sens_label="", jid=None, mode="audio"):
+                       sens_label="", jid=None, mode="audio", margins=None):
         found = []
         crashed = False
         try:
@@ -362,7 +390,7 @@ class TemplateDetectMixin:
             found = detect_recurring(
                 files, mode=mode, kinds=kinds, window=window, min_lens=minlens,
                 thresh=thresh, progress=self._detect_progress, stop_event=self.detect_stop,
-                diag_out=diag, known=known, lang=lang, log=self.log)
+                diag_out=diag, known=known, lang=lang, log=self.log, **(margins or {}))
             order = {"preintro": 0, "intro": 1, "credits": 2, "aftercredits": 3}
             found.sort(key=lambda c: (order.get(c["kind"], 9),
                                       c.get("known") is not None, -c["count"]))
@@ -440,6 +468,11 @@ class TemplateDetectMixin:
                                               "or Auto-cut all.", n=len(found)))
             self.after(0, _fill)
 
+    def _det_margins(self):
+        """{'margin_frames', 'template_margin'} for the detectors."""
+        return {"margin_frames": norm_margin(self.det_margin_var.get()),
+                "template_margin": norm_tpl_margin(self.det_tpl_margin_var.get())}
+
     def _fill_from_selected(self):
         sel = self.detect_tree.selection()
         if not sel:
@@ -459,8 +492,8 @@ class TemplateDetectMixin:
                 o.set(False)
         on, ef, et = self.sections[kind]
         on.set(True)
-        ef.set_seconds(a)
-        et.set_seconds(b)
+        ef.set_value(a)
+        et.set_value(b)          # engine end -> shows the last frame
         self._refresh_markers()
         if loaded:
             self.player.seek_seconds(a)     # start reviewing at the boundary

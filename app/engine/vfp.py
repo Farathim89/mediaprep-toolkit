@@ -103,11 +103,20 @@ def _close(proc):
 
 
 def _match_matrix(a, b, np):
-    """Bool [Ta, Tb]: frame i of a looks like frame j of b (both valid)."""
+    """Bool [Ta, Tb]: frame i of a looks like frame j, j-1 or j+1 of b (both
+    valid). Two files are sampled at FPS with different phases (one starts a
+    fraction of a sample earlier / later, a different length puts the end
+    window elsewhere): a sample of a may land between two samples of b, so
+    the sample on either side counts too - fast-moving openings / endings
+    otherwise lose half their matches."""
     A = a.bits.astype(np.float32) * 2.0 - 1.0
     B = b.bits.astype(np.float32) * 2.0 - 1.0
     ham = (64.0 - A @ B.T) / 2.0
-    return (ham <= MAX_HAM) & a.valid[:, None] & b.valid[None, :]
+    M = (ham <= MAX_HAM) & a.valid[:, None] & b.valid[None, :]
+    D = M.copy()
+    D[:, 1:] |= M[:, :-1]
+    D[:, :-1] |= M[:, 1:]
+    return D
 
 
 def shared_run(a, b, min_frames, max_gap, max_shift=None):

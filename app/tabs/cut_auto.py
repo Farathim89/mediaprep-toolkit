@@ -12,7 +12,8 @@ from ..i18n import N_, ntr, tr
 from ..ui.widgets import (KeyedCombobox, add_tooltip, enable_file_drop, help_button,
                           info_icon)
 from .common import _list_media, _same_dir
-from .cut_common import _ask_choice, _detect_notes, _is_plex, mode_combobox, tr_key
+from .cut_common import (_ask_choice, _detect_notes, _is_plex, margin_widgets, mode_combobox,
+                         norm_margin, norm_tpl_margin, tr_key)
 from .. import jobs as jobreg
 from ..ui import icons
 
@@ -231,6 +232,15 @@ class AutoCutMixin:
                              "Visual = both - a match confirmed by both is marked "
                              "'audio + visual', a disagreement gets a ⚠. Used by Start batch, "
                              "Review first, Manual cut and Multi cut."))
+
+        # safety margin / template edges (engine cfg margin_frames / template_margin);
+        # the Plex-style scan uses the same safety margin
+        self.margin_frames_var = tk.StringVar(
+            value=str(norm_margin(saved.get("margin_frames"))))
+        self.template_margin_var = tk.StringVar(
+            value=norm_tpl_margin(saved.get("template_margin")))
+        margin_widgets(left, self.margin_frames_var, self.template_margin_var).grid(
+            row=7, column=0, sticky="w", pady=(6, 2))
 
         # ---------- RIGHT: run options (one per row - translations run longer) ----------
         self.move_done_var = tk.BooleanVar(value=bool(saved.get("move_done", False)))
@@ -543,6 +553,8 @@ class AutoCutMixin:
             "credits_to_end": self.credits_to_end_var.get(),
             "match_lang": AUDIO_LANG_CHOICES.get(self.match_lang_var.get()),
             "detect_mode": self.detect_mode_var.get(),
+            "margin_frames": norm_margin(self.margin_frames_var.get()),
+            "template_margin": norm_tpl_margin(self.template_margin_var.get()),
             "subs_langs": (sorted(self.subs_langs)
                            if self.subs_filter_var.get() and self.subs_langs else None),
         }

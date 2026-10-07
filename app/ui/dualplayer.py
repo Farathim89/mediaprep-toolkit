@@ -110,7 +110,13 @@ class DualPlayerTab(ttk.Frame):
             help_button(top, "dual").pack(side="left", padx=(6, 0))
         enable_file_drop_deep(player, drop)                       # drop anywhere in the player
         enable_file_drop(ent, drop)
+        player.load_path = drop               # load + show the path (Convert preview)
         return player
+
+    def load_pair(self, path_a, path_b):
+        """Load A and B (e.g. Convert -> Preview: source segment / sample)."""
+        self.pA.load_path(path_a)
+        self.pB.load_path(path_b)
 
     # ---- combined controls ----
     def _mirror(self, other, sec, playing):

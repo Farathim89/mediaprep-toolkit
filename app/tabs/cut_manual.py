@@ -10,6 +10,7 @@ from ..engine.detect import detect_segments
 from ..engine.formatting import fmt_time
 from ..engine.probe import probe_duration
 from ..i18n import tr
+from ..ui.frametime import file_fps
 from ..ui.player import VideoPlayer
 from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, enable_file_drop,
                           enable_file_drop_deep, help_button)
@@ -58,13 +59,15 @@ class ManualCutMixin:
         self.player = VideoPlayer(mleft, width=480, height=270, log_fn=self.log)
         self.player.pack()
         self.player.enable_tab_shortcuts()   # arrows/space work anywhere on the tab
+        self.player.auto_fit(mbody)          # 16:9 video as large as the page allows
 
         man = ttk.LabelFrame(mright, text=tr(
             "Manual cut points for the previewed video (from / to)"))
         man.pack(fill="x")
         self._manual = {}
         for key, _label in self.MULTI_SEGS:
-            self._manual[key] = (TimeEntry(man), TimeEntry(man))
+            self._manual[key] = (TimeEntry(man), TimeEntry(man, end=True,
+                                                           fps=self._manual_fps))
 
         def _mrow(label, i, key):
             # From and To on their own lines, so the row fits beside the player
@@ -98,7 +101,8 @@ class ManualCutMixin:
                     add_tooltip(g, tr("Jump the player to the {seg} START time typed in the "
                                       "box", seg=seg))
                 else:
-                    add_tooltip(b, tr("Set the {seg} END to the current frame", seg=seg))
+                    add_tooltip(b, tr("Set the {seg} END to the current frame - the To "
+                                      "frame is the last frame cut (inclusive)", seg=seg))
                     add_tooltip(s, tr("Snap the {seg} END to the nearest start of a silence / "
                                       "black frame within ±1 s (uses the To box, or the player "
                                       "position if the box is empty)", seg=seg))
@@ -143,7 +147,8 @@ class ManualCutMixin:
         info_icon(encrow, tr(
             "Leave a section's boxes empty to skip it. Manual cut removes the "
             "filled ranges and keeps the rest, using the Encoding settings and the "
-            "subtitle choice above. Empty Pre-intro/Intro From = start of file; "
+            "subtitle choice above. From and To are both cut: To = the last frame to "
+            "cut (inclusive). Empty Pre-intro/Intro From = start of file; "
             "empty Credits/After-credits To = end of file."),
         ).pack(side="left", anchor="n")
         auto_wrap(ttk.Label(encrow, textvariable=self.enc_summary, style="Hint.TLabel",
@@ -154,6 +159,10 @@ class ManualCutMixin:
         enable_file_drop_deep(self.player, self._drop_load_sel)   # drop anywhere in the player
         enable_file_drop(ment, self._drop_load_sel)
 
+    def _manual_fps(self):
+        """fps of the previewed file (the To boxes step one frame on it)."""
+        return file_fps(self.sel_var.get().strip().strip('"'), getattr(self, "player", None))
+
     # ---------------- markers / player ----------------
     def _refresh_markers(self):
         if not hasattr(self, "player"):
@@ -161,8 +170,8 @@ class ManualCutMixin:
         dur = self.player.timeline.duration
         marks = []
         for key, (ef, et) in self._manual.items():
-            s, s_ok = ef.get_seconds()
-            e, e_ok = et.get_seconds()
+            s, s_ok = ef.get_value()
+            e, e_ok = et.get_value()
             if not (s_ok and e_ok):
                 continue
             s, end, err = _resolve_rng(key, s, e, dur)
@@ -176,8 +185,8 @@ class ManualCutMixin:
             messagebox.showinfo(tr("No video"), tr("Load a video in the preview first."))
             return
         ef, et = self._manual[key]
-        s, s_ok = ef.get_seconds()
-        e, e_ok = et.get_seconds()
+        s, s_ok = ef.get_value()
+        e, e_ok = et.get_value()
         if not s_ok or not e_ok:
             self.status_var.set(tr("The section's From / To time is invalid."))
             return
@@ -188,7 +197,7 @@ class ManualCutMixin:
             return
         seg = tr_key(dict(self.MULTI_SEGS).get(key, key))
         self.status_var.set(tr("Previewing {seg} section {start} -> {end}", seg=seg,
-                               start=fmt_time(s), end=fmt_time(end)))
+                               start=fmt_time(s), end=fmt_time(et.shown(end))))
         self.player.play_range(s, end)
 
     def _mark_manual(self, entry):
@@ -249,8 +258,8 @@ class ManualCutMixin:
         rules as Multi cut and the markers (see _resolve_rng); an empty
         Credits/After-credits To runs to `total` (end of file). The ValueError
         text is translated (it's shown in a message box)."""
-        s, s_ok = ef.get_seconds()
-        t, t_ok = et.get_seconds()
+        s, s_ok = ef.get_value()
+        t, t_ok = et.get_value()
         seg = tr_key(label)
         if not s_ok:
             raise ValueError(tr("{seg}: invalid From time.", seg=seg))
@@ -430,9 +439,9 @@ class ManualCutMixin:
                 ef_val = fr
             to_val = None if (key == "credits" and cfg.get("credits_to_end")) else to
             if ef_val is not None:
-                ef.set_seconds(ef_val)
+                ef.set_value(ef_val)
             if to_val is not None:
-                et.set_seconds(to_val)
+                et.set_value(to_val)       # shows the last removed frame
             filled.append(key)
             if first is None:
                 first = fr

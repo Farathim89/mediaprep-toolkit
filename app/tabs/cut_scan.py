@@ -16,7 +16,7 @@ from ..engine.plexscan import scan_season
 from ..i18n import ntr, tr
 from ..ui.widgets import KeyedCombobox, add_tooltip
 from .cut_common import (_SEGS, _ask_choice, _best_ok, _detect_notes, _mmss, _src_label,
-                         mode_combobox)
+                         margin_widgets, mode_combobox, norm_margin)
 from .templates_detect import _EPLEN, _SENS, eplen_values
 from .. import jobs as jobreg
 from ..ui import icons
@@ -347,10 +347,16 @@ class ScanMixin:
         scb = ttk.Checkbutton(body, text=tr("Snap boundaries to silence / black (±1 s)"),
                               variable=snap_v)
         scb.grid(row=6, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        # the shared safety margin of Cut / Edit → Auto-detect (Detection & mode)
+        shared_m = getattr(self, "margin_frames_var", None)
+        margin_v = tk.StringVar(value=str(norm_margin(
+            shared_m.get() if shared_m is not None else d.get("margin_frames"))))
+        margin_widgets(body, margin_v).grid(row=7, column=0, columnspan=4, sticky="w",
+                                            pady=(6, 0))
         policy_v = tk.StringVar(value="overwrite")
         if ask_policy:
             pf = ttk.Frame(body)
-            pf.grid(row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
+            pf.grid(row=8, column=0, columnspan=4, sticky="w", pady=(6, 0))
             ttk.Label(pf, text=tr("Files that already have times:")).pack(side="left")
             ttk.Radiobutton(pf, text=tr("Overwrite"), variable=policy_v,
                             value="overwrite").pack(side="left", padx=(6, 0))
@@ -372,23 +378,23 @@ class ScanMixin:
             saved = dict(vals, eplen=v["eplen"].get(), sens=v["sens"].get(),
                          intro_mode=v["intro_mode"].get(),
                          credits_mode=v["credits_mode"].get(), snap=bool(snap_v.get()))
+            margin = norm_margin(margin_v.get())
+            if shared_m is not None:
+                shared_m.set(str(margin))       # one safety margin for every detector
             self._plex_saved = saved
             opts = dict(vals, thresh=_SENS.get(saved["sens"], 0.8), lang=self._plex_lang(),
                         intro_mode=saved["intro_mode"], credits_mode=saved["credits_mode"],
-                        snap=saved["snap"], sens_label=saved["sens"])
+                        snap=saved["snap"], sens_label=saved["sens"], margin_frames=margin)
             out["v"] = (opts, policy_v.get())
             dlg.destroy()
         br = ttk.Frame(body)
-        br.grid(row=8, column=0, columnspan=4, sticky="e", pady=(12, 0))
+        br.grid(row=9, column=0, columnspan=4, sticky="e", pady=(12, 0))
         icons.decorate(ttk.Button(br, style="Accent.TButton", text=tr("Scan"), command=ok), "detect").pack(side="left")
         ttk.Button(br, text=tr("Cancel"), command=dlg.destroy).pack(side="left", padx=(6, 0))
         dlg.bind("<Return>", lambda e: ok())
         dlg.bind("<Escape>", lambda e: dlg.destroy())
-        self._centre_dialog(dlg)
-        try:
-            dlg.grab_set()
-        except tk.TclError:
-            pass
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        self._centre_dialog(dlg, modal=True)
         self.wait_window(dlg)
         return out["v"]
 
@@ -439,6 +445,7 @@ class ScanMixin:
                      f"credits {opts['credits_mode']}, sensitivity {opts.get('sens_label')}, "
                      f"first {opts['intro_window']:g}s / last {opts['credits_secs']:g}s"
                      + (", snap" if opts.get("snap") else "")
+                     + f", margin {opts.get('margin_frames', 1)} frame(s)"
                      + (f", {opts['lang']} audio" if opts.get("lang") else ""))
             if n < 2:
                 self.log("[SCAN] only one file: the intro needs >= 2 episodes with the same "

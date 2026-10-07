@@ -1,10 +1,14 @@
 """The page area of the main window: fixed-size pages in a 2-D scroll view.
 
-Pages do NOT reflow when the window is resized. Each page is laid out once
-at a fixed size - its natural (requested) size, at least the `design` size
-(the page area of the default window) - and sits top-left in a canvas. A
-window resize only moves the canvas viewport: horizontal / vertical
-scrollbars appear while the window is smaller than the page and hide again
+Pages don't follow every resize step. Each page is laid out at a fixed size
+- the `design` size (the page area of the default window), but never smaller
+than its natural (requested) size and, in a window smaller than the default
+one, only as large as the visible area (still never below its natural size)
+- and sits top-left in a canvas. The size is re-checked when the page is
+shown, when the window resize has settled and whenever the page's content
+needs more room (a video loaded, a list filled, a longer text, another DPI /
+font): content is never clipped. Horizontal / vertical scrollbars appear
+while the window is smaller than the page's natural size and hide again
 otherwise; a larger window shows the theme background around the page.
 
 Mouse wheel = vertical, Shift+wheel = horizontal. Wheel events over widgets
@@ -36,7 +40,7 @@ class PageView(ttk.Frame):
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
         self._items = {}            # page widget -> canvas window item
-        self._sizes = {}            # page widget -> (w, h) it is laid out at
+        self._sizes = {}            # page widget -> (w, h, viewport) it is laid out at
         self._cur = None
         self._shown = {"v": False, "h": False}
         self._view = None
@@ -44,6 +48,10 @@ class PageView(ttk.Frame):
         self.canvas.bind_all("<MouseWheel>", self._wheel, add="+")
         self.canvas.bind_all("<Shift-MouseWheel>", self._wheel_h, add="+")
         themes.on_palette(self.canvas, lambda p: self.canvas.configure(bg=p["bg"]))
+        self.after(self.WATCH_MS, self._watch)
+
+    # how often the shown page's natural size is re-checked (ms)
+    WATCH_MS = 250
 
     # ------------------------------------------------------------ pages
     def add(self, page):
@@ -66,24 +74,84 @@ class PageView(ttk.Frame):
         self.canvas.xview_moveto(0)
         self.canvas.yview_moveto(0)
 
-    def fit(self, page=None):
-        """(Re)measure the page's natural size; it only ever grows, so a page
-        never jumps smaller while it is used."""
+    def _view_total(self):
+        """The whole page area (canvas + the scrollbars shown now)."""
+        return (self.canvas.winfo_width() + (self.vsb.winfo_width() if self._shown["v"] else 0),
+                self.canvas.winfo_height() + (self.hsb.winfo_height() if self._shown["h"] else 0))
+
+    def _bars(self, pw, ph, cw, ch):
+        """(need_h, need_v, visible w, visible h) for a page of pw x ph in a
+        page area of cw x ch. The inset (margin around the page) is given up
+        before a scrollbar is needed."""
+        sb = self._sbw()
+        need_h = pw > cw
+        need_v = ph > ch
+        need_h = need_h or (need_v and pw > cw - sb)
+        need_v = need_v or (need_h and ph > ch - sb)
+        return need_h, need_v, cw - (sb if need_v else 0), ch - (sb if need_h else 0)
+
+    def _page_size(self, page):
+        """The size `page` is laid out at for the current viewport."""
+        rw, rh = page.winfo_reqwidth(), page.winfo_reqheight()
+        dw, dh = self.design
+        cw, ch = self._view_total()
+        if cw <= 1 or ch <= 1:                  # not on screen yet
+            return max(rw, dw), max(rh, dh)
+        ix, iy = self.inset
+        _nh, _nv, vw, vh = self._bars(rw, rh, cw, ch)
+        return max(rw, min(dw, vw - 2 * ix)), max(rh, min(dh, vh - 2 * iy))
+
+    def fit(self, page=None, idle=True):
+        """(Re)size the page for its content and the current viewport. While
+        the viewport stays the same the page only grows (no jumping back and
+        forth); after a resize it takes the new target size - never smaller
+        than its content."""
         page = page or self._cur
         if page is None:
             return
         try:
-            page.update_idletasks()
-            w = max(page.winfo_reqwidth(), self.design[0])
-            h = max(page.winfo_reqheight(), self.design[1])
+            if idle:
+                page.update_idletasks()
+            w, h = self._page_size(page)
         except tk.TclError:
             return
-        ow, oh = self._sizes.get(page, (0, 0))
-        w, h = max(w, ow), max(h, oh)
-        if (w, h) != (ow, oh):
-            self._sizes[page] = (w, h)
-            self.canvas.itemconfigure(self._items[page], width=w, height=h)
+        view = (self.canvas.winfo_width(), self.canvas.winfo_height())
+        ow, oh, oview = self._sizes.get(page, (0, 0, None))
+        if oview == view:
+            w, h = max(w, ow), max(h, oh)
+        if (w, h, view) != (ow, oh, oview):
+            self._sizes[page] = (w, h, view)
+            if (w, h) != (ow, oh):
+                self.canvas.itemconfigure(self._items[page], width=w, height=h)
         self._update()
+
+    def refit(self, page=None):
+        """Lay `page` out again from scratch (its content got SMALLER, e.g.
+        a player picked a smaller video size): fit() alone only grows while
+        the viewport stays the same."""
+        page = page or self._cur
+        if page is None:
+            return
+        self._sizes.pop(page, None)
+        if page is self._cur:
+            self.fit(page)
+
+    def _watch(self):
+        """The page is a canvas window item of a fixed size, so it doesn't
+        follow its content by itself: when content grows later (a video
+        loaded, a longer translated status, a list filled in, a font that
+        came out wider at this DPI) the page would clip it at the right /
+        bottom edge. A cheap check of the requested size (no layout pass)
+        grows the page - and the scroll region - as soon as that happens."""
+        try:
+            page = self._cur
+            if page is not None and not getattr(self, "_rz_hidden", False):
+                ow, oh = self._sizes.get(page, (0, 0, None))[:2]
+                if page.winfo_reqwidth() > ow or page.winfo_reqheight() > oh:
+                    self.fit(page, idle=False)
+        except tk.TclError:
+            return
+        self.after(self.WATCH_MS, self._watch)
 
     # ------------------------------------------------------------ live resize
     def window_resized(self, size):
@@ -135,12 +203,16 @@ class PageView(ttk.Frame):
                 self.canvas.itemconfigure(self._items[self._cur], state="normal")
             self.canvas.delete("snapshot")
             self._snap = None
+        self.fit(idle=False)       # the settled window size
 
     # ------------------------------------------------------------ viewport
     def _on_configure(self, e):
         if (e.width, e.height) != self._view:
             self._view = (e.width, e.height)
-            self._update()
+            if getattr(self, "_rz_hidden", False):
+                self._update()      # dragging: re-sized once it settles
+            else:
+                self.fit(idle=False)
 
     def _update(self):
         """Scroll region + scrollbars for the current viewport (cheap: no
@@ -158,23 +230,30 @@ class PageView(ttk.Frame):
                 self._sizes.pop(pg)
             self.fit(page)
             return
-        pw, ph = self._sizes.get(page, (0, 0))
-        tw, th = pw + 2 * self.inset[0], ph + 2 * self.inset[1]
-        vw = self.canvas.winfo_width() + (self.vsb.winfo_width() if self._shown["v"] else 0)
-        vh = self.canvas.winfo_height() + (self.hsb.winfo_height() if self._shown["h"] else 0)
-        need_h = tw > vw
-        need_v = th > vh
-        # a scrollbar takes room from the other direction
-        sb = themes.px(12)
-        need_h = need_h or (need_v and tw > vw - sb)
-        need_v = need_v or (need_h and th > vh - sb)
+        pw, ph = self._sizes.get(page, (0, 0, None))[:2]
+        ix, iy = self.inset
+        cw, ch = self._view_total()
+        need_h, need_v, vw, vh = self._bars(pw, ph, cw, ch)
+        # the margin shrinks (down to 0) before a scrollbar is needed
+        x = ix if need_h else max(0, min(ix, vw - pw))
+        y = iy if need_v else max(0, min(iy, vh - ph))
+        try:
+            if tuple(int(v) for v in self.canvas.coords(self._items[page])) != (x, y):
+                self.canvas.coords(self._items[page], x, y)
+        except (tk.TclError, ValueError):
+            pass
         self._toggle("v", need_v, self.vsb, dict(row=0, column=1, sticky="ns"))
         self._toggle("h", need_h, self.hsb, dict(row=1, column=0, sticky="ew"))
-        self.canvas.configure(scrollregion=(0, 0, tw, th))
+        self.canvas.configure(scrollregion=(0, 0, pw + 2 * ix if need_h else vw,
+                                            ph + 2 * iy if need_v else vh))
         if not need_h:
             self.canvas.xview_moveto(0)
         if not need_v:
             self.canvas.yview_moveto(0)
+
+    def _sbw(self):
+        """Thickness of a scrollbar (the room it takes when shown)."""
+        return max(themes.px(12), self.vsb.winfo_reqwidth(), self.hsb.winfo_reqheight())
 
     def _toggle(self, key, on, bar, grid):
         if on and not self._shown[key]:

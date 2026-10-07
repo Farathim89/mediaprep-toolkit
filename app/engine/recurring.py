@@ -473,12 +473,16 @@ def representative_member(cluster):
     return ordered[len(ordered) // 2]
 
 
-def refine_clusters(clusters, lang=None, log=None, progress=None, stop_event=None):
+def refine_clusters(clusters, lang=None, log=None, progress=None, stop_event=None,
+                    template_mode="follow"):
     """Frame-exact edges for every cluster (engine.refine): each member's
     start and end against another member of its cluster - or, for a cluster
     covered by an existing template ('known_path'), against that clip. The
     ranges are replaced in place; each cluster gets 'refined' = how many
-    edges were refined."""
+    edges were refined and 'edge_src' = {path: {"start", "end"}} how each
+    edge was placed (engine.refine.edge_kind: 'visual' exact; 'fade' /
+    'audio' approximate - worth a "check this edge" warning). template_mode:
+    how a known template's edges map (engine.refine.refine_range)."""
     from .refine import refine_ranges
     from .probe import probe_video_duration
     tracks = {}
@@ -501,21 +505,32 @@ def refine_clusters(clusters, lang=None, log=None, progress=None, stop_event=Non
             if not tdur:
                 continue
             known = (c["known_path"], float(tdur))
-        done = {}
+        done, kinds = {}, {}
         c["ranges"] = refine_ranges(c["ranges"], log=log, label=f"{c['kind']} ",
-                                    track_for=track_for, known_ref=known, done_out=done)
+                                    track_for=track_for, known_ref=known, done_out=done,
+                                    template_mode=template_mode, src_out=kinds)
+        c["edge_src"] = {p: {"start": k[0], "end": k[1]} for p, k in kinds.items()}
         c["refined"] = sum(int(a) + int(b) for a, b in done.values())
 
 
 def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240.0,
                      min_lens=None, progress=None, stop_event=None, diag_out=None,
-                     log=None, refine=True, **kw):
+                     log=None, refine=True, margin_frames=1, template_margin="follow", **kw):
     """detect_recurring_segments with a source choice. mode 'audio' = the
     classic audio fingerprints; 'visual' = recurring PICTURES (engine.vfp,
     intro and credits only - pre-intro / after-credits stay audio); 'both' =
     both, merged per episode (vfp.combine_clusters: overlapping results are
     confirmed, else the better one). Every cluster gets 'src'. refine (on by
-    default) snaps every boundary to the exact frame (refine_clusters)."""
+    default) snaps every boundary to the exact frame (refine_clusters).
+    margin_frames (0-5, default 1): after the refinement every segment is
+    widened by that many frames each side (real frame times, clamped to the
+    file and to the episode's other segments) so no intro / credits frame
+    survives at a join; template_margin ('follow' default / 'exact' /
+    'exact+margin'): clusters matched to an existing template ('known')
+    follow the template's own edges, or take the content edge (+ margin)."""
+    from .refine import norm_margin, norm_template_mode
+    margin = norm_margin(margin_frames)
+    tmode = norm_template_mode(template_margin)
     from .vfp import combine_clusters, norm_mode, recurring_video
     mode = norm_mode(mode, "audio")
     min_lens = min_lens or {}
@@ -556,5 +571,43 @@ def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240
     if refine and out and not (stop_event is not None and stop_event.is_set()):
         refine_clusters(out, lang=kw.get("lang"), log=log,
                         progress=lambda f, t="": prog0(0.9 + 0.1 * f, t),
-                        stop_event=stop_event)
+                        stop_event=stop_event, template_mode=tmode)
+    if out and margin and not (stop_event is not None and stop_event.is_set()):
+        _margin_clusters(out, margin, tmode, log)
     return out
+
+
+def _margin_clusters(clusters, n, tmode, log=None):
+    """Widen every member range by n frames each side (engine.refine
+    .margin_segments: real frame times, never into another segment of the
+    same episode). Clusters that follow a known template ('follow') keep
+    its edges as they are."""
+    from .refine import margin_segments
+    from .probe import probe_video_duration
+    per = {}
+    for i, c in enumerate(clusters):
+        if c.get("known_path") and tmode == "follow":
+            continue
+        for p, rng in c["ranges"].items():
+            per.setdefault(p, {})[i] = tuple(rng[:2])
+    # the episode's other (template-followed) segments bound the margin too
+    for i, c in enumerate(clusters):
+        if c.get("known_path") and tmode == "follow":
+            for p, rng in c["ranges"].items():
+                if p in per:
+                    per[p][("fixed", i)] = tuple(rng[:2])
+    durs = {}
+    for p in per:
+        try:
+            durs[p] = float(probe_video_duration(p) or probe_duration(p) or 0.0) or None
+        except Exception:
+            durs[p] = None
+    cache = {}
+    margin_segments(per, n, durs, cache, fixed=lambda k: not isinstance(k, int))
+    for p, segs in per.items():
+        for i, rng in segs.items():
+            if isinstance(i, int):
+                clusters[i]["ranges"][p] = rng
+    if log:
+        log(f"   [margin] {n} frame(s) added around {sum(len(s) for s in per.values())} "
+            "detected segment(s)")
