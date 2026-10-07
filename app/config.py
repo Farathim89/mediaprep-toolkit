@@ -8,7 +8,7 @@ import sys
 from .i18n import N_
 
 # ======================= version =======================
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 APP_NAME = "MediaPrep Toolkit"
 # GitHub repo whose latest release the update check looks at
 UPDATE_REPO = "Farathim89/mediaprep-toolkit"

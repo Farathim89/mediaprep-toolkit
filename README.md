@@ -12,9 +12,10 @@ was lost or broken along the way. Built on FFmpeg.
 > player, a job queue, a modern Fluent UI with 13 themes and 19 languages.
 
 **Download** from [Releases](../../releases):
-- `MediaPrep-Toolkit-Portable-2.0.0.exe` - single file, run it anywhere; your
-  data goes into a `mediaprep-data` folder next to it.
-- `MediaPrep Toolkit v2.0.0.zip` - unzip anywhere and run
+- `MediaPrep-Toolkit-Portable-2.0.1.exe` - single file, run it anywhere; your
+  data goes into a `mediaprep-data` folder next to it. The first start unpacks
+  the app once (a few seconds), later starts take under a second.
+- `MediaPrep Toolkit v2.0.1.zip` - unzip anywhere and run
   `MediaPrep Toolkit.exe` (fastest start).
 
 FFmpeg and mpv are included - nothing else to install.
@@ -155,6 +156,9 @@ corrections to `app/locales/<lang>.json` are welcome.
 
 ## License
 
-MIT - see [LICENSE](LICENSE). The release build bundles FFmpeg (gyan.dev full
-build, GPLv3) - see `_internal\ffmpeg\README-ffmpeg.txt` in the release for
-its license and source links.
+MediaPrep Toolkit is free software under the **GNU General Public License
+v3.0 or later** - see [LICENSE](LICENSE).
+
+The release builds bundle FFmpeg (gyan.dev full build, GPLv3) and mpv
+(GPLv2+) - see `_internalfmpeg\README-ffmpeg.txt` and
+`_internal\mpv\README-mpv.txt` for their licenses and source links.

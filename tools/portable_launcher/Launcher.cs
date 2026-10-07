@@ -32,7 +32,7 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("MediaPrep Toolkit - intro/credits remover and media prep tools (portable)")]
 [assembly: AssemblyCompany("MediaPrep Toolkit")]
 [assembly: AssemblyProduct("MediaPrep Toolkit")]
-[assembly: AssemblyCopyright("© 2026 Farathim, MIT")]
+[assembly: AssemblyCopyright("© 2026 Farathim, GPL-3.0-or-later")]
 // AssemblyVersion / AssemblyFileVersion / AssemblyInformationalVersion come
 // from the VersionInfo.cs that build_exe.py writes (from config.APP_VERSION)
 

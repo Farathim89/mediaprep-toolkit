@@ -1,4 +1,4 @@
-MEDIAPREP TOOLKIT v2.0.0
+MEDIAPREP TOOLKIT v2.0.1
 ========================
 (intro/credits cutting, chapter markers, theme audio, loudness, compare & check)
 
@@ -455,7 +455,9 @@ missing keys).
 
 LICENSE
 -------
-MediaPrep Toolkit is released under the MIT License.
-The exe release bundles unmodified ffmpeg / ffprobe builds (gyan.dev), licensed
-under the GNU GPL v3; the app only runs them as separate programs. See
-_internal\ffmpeg\README-ffmpeg.txt and the LICENSE file next to it.
+MediaPrep Toolkit is free software, released under the GNU General Public
+License v3.0 or later (GPL-3.0-or-later) - see LICENSE / LICENSE.txt.
+Source code: https://github.com/Farathim89/mediaprep-toolkit
+The exe releases bundle unmodified ffmpeg / ffprobe builds (gyan.dev, GNU GPL
+v3) and mpv (GNU GPL v2 or later); see _internal\ffmpeg\README-ffmpeg.txt and
+_internal\mpv\README-mpv.txt.

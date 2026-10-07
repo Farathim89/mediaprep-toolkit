@@ -24,7 +24,11 @@ from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, 
 
 ROOT = os.path.dirname(SPECPATH)                       # the project folder
 APP = os.path.join(ROOT, "app")
-VERSION = (2, 0, 0, 0)
+import re as _re
+with open(os.path.join(ROOT, "app", "config.py"), encoding="utf-8") as _f:
+    _APP_VERSION = _re.search(r'^APP_VERSION = "([^"]+)"', _f.read(), _re.M).group(1)
+VERSION = tuple((list(map(int, _re.findall(r"\d+", _APP_VERSION)))[:4] + [0, 0, 0, 0])[:4])
+VERSION_STR = ".".join(map(str, VERSION))             # e.g. "2.0.1.0" (from config.APP_VERSION)
 NAME = "MediaPrep Toolkit"
 
 FFMPEG_BIN = os.environ.get("MEDIAPREP_FFMPEG_BIN", "")
@@ -157,12 +161,12 @@ version_info = VSVersionInfo(
         StringFileInfo([StringTable("040904B0", [
             StringStruct("CompanyName", NAME),
             StringStruct("FileDescription", "MediaPrep Toolkit - intro/credits remover and media prep tools"),
-            StringStruct("FileVersion", "2.0.0.0"),
+            StringStruct("FileVersion", VERSION_STR),
             StringStruct("InternalName", NAME),
-            StringStruct("LegalCopyright", "© 2026 Farathim, MIT"),
+            StringStruct("LegalCopyright", "© 2026 Farathim, GPL-3.0-or-later"),
             StringStruct("OriginalFilename", f"{PORTABLE_NAME if PORTABLE else NAME}.exe"),
             StringStruct("ProductName", NAME),
-            StringStruct("ProductVersion", "2.0.0.0"),
+            StringStruct("ProductVersion", VERSION_STR),
         ])]),
         VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
     ],
