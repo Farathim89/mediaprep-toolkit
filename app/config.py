@@ -11,7 +11,7 @@ from .i18n import N_
 APP_VERSION = "2.0.0"
 APP_NAME = "MediaPrep Toolkit"
 # GitHub repo whose latest release the update check looks at
-UPDATE_REPO = "Farathim89/intro-credits-toolkit"
+UPDATE_REPO = "Farathim89/mediaprep-toolkit"
 
 # ======================= folder layout =======================
 # APP_ROOT is the folder the user sees: next to "MediaPrep Toolkit.exe" when
