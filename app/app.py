@@ -25,7 +25,7 @@ from .tabs.templates import TemplateTab
 from .tabs.theme_audio import ThemeAudioTab
 from .ui.cleanup import CleanupDialog
 from .ui.dialogs import QueueDialog, SettingsDialog, _fmt_elapsed, install_default_parent
-from .ui import themes
+from .ui import bgmode, themes
 from .ui.dualplayer import DualPlayerTab
 from .ui.icons import decorate
 from .ui.pageview import PageView
@@ -219,6 +219,7 @@ def main():
         applog.record(m)
 
     _enable_dpi_awareness()   # before the Tk root is created
+    bgmode.remember_foreground()   # MEDIAPREP_BACKGROUND test runs: user's window
     root = make_root()   # drag-and-drop capable if tkinterdnd2 is installed
     root.title(f"{APP_NAME} v{APP_VERSION}")
     _set_window_icon(root)
@@ -235,13 +236,22 @@ def main():
     default_size = (f"{min(dw, root.winfo_screenwidth())}x"
                     f"{min(dh, root.winfo_screenheight() - 80)}")
     start_geo = _restore_geometry(root, saved, default_size)
+    if bgmode.enabled():
+        # scripted test run: open off-screen and never steal the user's focus
+        root.withdraw()
+        bgmode.apply(root)
+        bgmode.place_offscreen(root, start_geo.split("+")[0] if start_geo else default_size)
+        root.deiconify()
+        for ms in (0, 50, 200, 600, 1500, 3000):     # Tk activates on (re)map
+            root.after(ms, lambda: bgmode.give_back_focus(root))
 
     # remember the last NORMAL (not maximized) geometry, so a maximized
     # window still restores to a sensible size when un-maximized next time
     normal_geo = {"g": start_geo}
 
     def _track_geometry(e):
-        if e.widget is root and root.state() == "normal" and root.winfo_width() > 200:
+        if e.widget is root and root.state() == "normal" and root.winfo_width() > 200 \
+                and not bgmode.enabled():          # don't remember the off-screen spot
             normal_geo["g"] = root.geometry()
         if e.widget is root and "page_view" in _late:
             _late["page_view"].window_resized((e.width, e.height))

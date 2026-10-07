@@ -6,7 +6,7 @@ from tkinter import messagebox, ttk
 
 from ..config import APP_VERSION, CPU_THREAD_CHOICES, PREFS
 from ..i18n import tr
-from . import themes
+from . import bgmode, themes
 from .tkthread import _call_tk
 from .widgets import KeyedCombobox, add_tooltip
 from .. import i18n, jobs, notify, updater
@@ -99,6 +99,9 @@ def place_dialog(dlg, parent=None, modal=False, focus=None):
         x = max(left, min(x, right - w))
         y = max(top, min(y, bottom - h - themes.px(32)))
         dlg.geometry(f"+{x}+{y}")
+        if bgmode.enabled():                   # scripted test run: never steal focus
+            bgmode.apply(dlg)
+            bgmode.place_offscreen(dlg)
         if not shown:
             dlg.deiconify()
         dlg.lift()
@@ -118,7 +121,11 @@ def place_dialog(dlg, parent=None, modal=False, focus=None):
                     dlg.grab_set()
                 except tk.TclError:
                     pass
-            (focus if focus is not None else dlg).focus_force()
+            if bgmode.enabled():
+                (focus if focus is not None else dlg).focus_set()   # no window activation
+                bgmode.give_back_focus(dlg)
+            else:
+                (focus if focus is not None else dlg).focus_force()
         except tk.TclError:
             pass
     try:
