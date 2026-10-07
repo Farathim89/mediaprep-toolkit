@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 
-from ..config import POPEN_FLAGS, TEMP_DIR
+from ..config import limit_cmd, popen_flags, TEMP_DIR
 from .formatting import format_seconds
 
 
@@ -65,7 +65,8 @@ def _run_exempt(cmd, **kw):
     window is minimized. Returns a CompletedProcess like subprocess.run."""
     kw.setdefault("stdout", subprocess.PIPE)
     kw.setdefault("stderr", subprocess.PIPE)
-    kw.setdefault("creationflags", POPEN_FLAGS)
+    kw.setdefault("creationflags", popen_flags())
+    cmd = limit_cmd(cmd)
     try:
         proc = subprocess.Popen(cmd, **kw)
     except OSError as e:                   # ffmpeg/ffprobe missing
@@ -91,8 +92,8 @@ def _run_capture_stoppable(cmd, stop_event=None):
     text, rc = "", -1
     try:
         errfh = open(errpath, "w", encoding="utf-8", errors="replace")
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=errfh,
-                                creationflags=POPEN_FLAGS)
+        proc = subprocess.Popen(limit_cmd(cmd), stdout=subprocess.DEVNULL, stderr=errfh,
+                                creationflags=popen_flags())
     except OSError as e:                   # ffmpeg missing
         try:
             errfh.close()
@@ -158,11 +159,12 @@ def run_ffmpeg_with_progress(cmd, duration_sec, fps=None, expected_offset=0.0,
     if "-progress" not in cmd:
         cmd = [cmd[0], "-progress", progress_file, "-stats_period", "0.5"] + cmd[1:]
 
+    cmd = limit_cmd(cmd)
     start_wall = time.time()
     stderr_fh = open(stderr_file, "w", encoding="utf-8", errors="replace")
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_fh,
-                                creationflags=POPEN_FLAGS)
+                                creationflags=popen_flags())
     except OSError as e:                   # ffmpeg missing / not on PATH
         stderr_fh.close()
         if on_log:

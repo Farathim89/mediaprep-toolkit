@@ -44,7 +44,7 @@ boundary (never loses a detection).
 import re
 import subprocess
 
-from ..config import POPEN_FLAGS
+from ..config import limit_cmd, popen_flags
 
 VW, VH = 48, 27          # decode size of the visual windows
 SEARCH = 3.0             # the coarse boundary may be this far off (further: widened / followed)
@@ -81,8 +81,8 @@ class _Frames:
 
 def _run(cmd, timeout=120):
     try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           stdin=subprocess.DEVNULL, creationflags=POPEN_FLAGS,
+        p = subprocess.run(limit_cmd(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           stdin=subprocess.DEVNULL, creationflags=popen_flags(),
                            timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return None

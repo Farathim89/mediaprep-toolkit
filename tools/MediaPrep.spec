@@ -1,5 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for "MediaPrep Toolkit.exe" (onedir, windowed).
+# PyInstaller spec for "MediaPrep Toolkit.exe" (onedir, windowed) - or, with
+# MEDIAPREP_PORTABLE=1, the portable one-file exe (MEDIAPREP_PORTABLE_NAME,
+# e.g. "MediaPrep-Toolkit-Portable-2.0.0"): everything packed into one exe,
+# unpacked to %TEMP%\_MEIxxxx for each run, user data in <exe folder># mediaprep-data (a runtime hook sets sys.mediaprep_portable, see config.py).
 # Run it through tools/build_exe.py, which also sets the work/dist folders
 # (OUTSIDE the project) and puts README.txt + LICENSE.txt next to the exe.
 #
@@ -24,6 +27,17 @@ FFMPEG_BIN = os.environ.get("MEDIAPREP_FFMPEG_BIN", "")
 FFMPEG_VERSION = os.environ.get("MEDIAPREP_FFMPEG_VERSION", "unknown")
 MPV_EXE = os.environ.get("MEDIAPREP_MPV_EXE", "")
 MPV_VERSION = os.environ.get("MEDIAPREP_MPV_VERSION", "unknown")
+PORTABLE = os.environ.get("MEDIAPREP_PORTABLE", "") == "1"
+PORTABLE_NAME = os.environ.get("MEDIAPREP_PORTABLE_NAME", "MediaPrep-Toolkit-Portable")
+
+# portable marker: a runtime hook runs before the app and flags the build
+runtime_hooks = []
+if PORTABLE:
+    os.makedirs(workpath, exist_ok=True)
+    _hook = os.path.join(workpath, "pyi_rth_mediaprep_portable.py")
+    with open(_hook, "w", encoding="utf-8") as f:
+        f.write("import sys\nsys.mediaprep_portable = True\n")
+    runtime_hooks.append(_hook)
 
 # ---- read-only app resources (only the language catalogs, not the
 # translator template files) ----
@@ -125,7 +139,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=runtime_hooks,
     excludes=excludes,
     noarchive=False,
     optimize=0,
@@ -142,7 +156,7 @@ version_info = VSVersionInfo(
             StringStruct("FileVersion", "2.0.0.0"),
             StringStruct("InternalName", NAME),
             StringStruct("LegalCopyright", "© 2026 Farathim, MIT"),
-            StringStruct("OriginalFilename", f"{NAME}.exe"),
+            StringStruct("OriginalFilename", f"{PORTABLE_NAME if PORTABLE else NAME}.exe"),
             StringStruct("ProductName", NAME),
             StringStruct("ProductVersion", "2.0.0.0"),
         ])]),
@@ -150,26 +164,46 @@ version_info = VSVersionInfo(
     ],
 )
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name=NAME,
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=False,
-    disable_windowed_traceback=False,
-    icon=os.path.join(APP, "assets", "icon.ico"),
-    version=version_info,
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name=NAME,
-)
+if PORTABLE:
+    # one file; runtime_tmpdir None = unpack under %TEMP%, removed on exit
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name=PORTABLE_NAME,
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        runtime_tmpdir=None,
+        console=False,
+        disable_windowed_traceback=False,
+        icon=os.path.join(APP, "assets", "icon.ico"),
+        version=version_info,
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name=NAME,
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        disable_windowed_traceback=False,
+        icon=os.path.join(APP, "assets", "icon.ico"),
+        version=version_info,
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name=NAME,
+    )

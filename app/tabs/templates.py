@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from ..config import (AFTERCREDITS_DIR, AUDIO_LANG_CHOICES, CREDITS_DIR, INTRO_DIR,
-                      POPEN_FLAGS, PREINTRO_DIR)
+                      limit_cmd, popen_flags, PREINTRO_DIR)
 from ..engine.files import move_to_trash
 from ..engine.formatting import fmt_time
 from ..engine.probe import audio_track_for_lang
@@ -417,8 +417,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                 cmd += ["-t", f"{max(0.001, e - half - ss):.4f}"]
         cmd += ["-map", "0:v:0", "-map", f"0:a:{a_idx}?",
                 "-c:v", "libx264", "-crf", "18", "-preset", "superfast", "-c:a", "copy", out]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              creationflags=POPEN_FLAGS)
+        proc = subprocess.run(limit_cmd(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              creationflags=popen_flags())
         return proc.returncode == 0, proc.stderr.decode(errors="replace")
 
     @staticmethod

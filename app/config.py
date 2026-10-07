@@ -24,8 +24,17 @@ UPDATE_REPO = "Farathim89/intro-credits-toolkit"
 #
 # app/migrate.py moves an old-layout install (videos\, input\, logs\,
 # toolkit_settings.json ...) into these places at startup.
+#
+# Portable build (one-file exe, tools/build_exe.py --portable): its runtime
+# hook sets sys.mediaprep_portable, and the user data lives in
+# <exe folder>\mediaprep-data\ instead (the bundled ffmpeg / mpv / locales
+# are unpacked to sys._MEIPASS for each run).
 APP_DIR = os.path.dirname(os.path.abspath(__file__))          # the app/ package
-if getattr(sys, "frozen", False):
+PORTABLE = bool(getattr(sys, "frozen", False) and getattr(sys, "mediaprep_portable", False))
+PORTABLE_DATA = "mediaprep-data"
+if PORTABLE:
+    APP_ROOT = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), PORTABLE_DATA)
+elif getattr(sys, "frozen", False):
     APP_ROOT = os.path.dirname(os.path.abspath(sys.executable))
 else:
     APP_ROOT = os.path.dirname(APP_DIR)
@@ -156,6 +165,94 @@ MEDIA_EXTS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v",
 
 # ffmpeg subprocesses must not flash a console window on Windows
 POPEN_FLAGS = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+# "Limit CPU use" (Settings -> Performance): ffmpeg / ffprobe / mpv run at
+# below-normal priority and encodes / decodes get a thread cap. Keys of the
+# "Max encoder threads" choice (the labels are built in the Settings dialog).
+CPU_THREAD_CHOICES = ("auto", "2", "4", "6", "8", "12", "16", "all")
+# hardware encoders - their work is on the GPU, a -threads cap is pointless
+_HW_ENCODER_TAGS = ("_nvenc", "_qsv", "_amf", "_vaapi", "_mf", "_videotoolbox")
+
+
+def auto_threads():
+    """'Auto' thread cap: half the logical cores, at least 1, at most 8."""
+    return max(1, min(8, (os.cpu_count() or 2) // 2))
+
+
+def cpu_threads(prefs=None):
+    """The thread cap N of the "Limit CPU use" setting, or 0 = no cap (the
+    setting is off, or 'All' threads)."""
+    p = PREFS if prefs is None else prefs
+    if not p.get("cpu_limit", True):
+        return 0
+    v = str(p.get("cpu_threads", "auto")).strip().lower()
+    if v == "all":
+        return 0
+    if v.isdigit() and int(v) > 0:
+        return int(v)
+    return auto_threads()
+
+
+def popen_flags():
+    """creationflags for every ffmpeg / ffprobe / mpv the app starts: no
+    console window, plus below-normal priority while "Limit CPU use" is on
+    (read live, so a change applies to the next process)."""
+    f = POPEN_FLAGS
+    if os.name == "nt" and PREFS.get("cpu_limit", True):
+        f |= BELOW_NORMAL_PRIORITY_CLASS
+    return f
+
+
+def limit_cmd(cmd):
+    """An ffmpeg argv with the "Limit CPU use" thread caps added (a copy; any
+    other program, or the setting off / 'All', -> cmd unchanged):
+      * -filter_threads / -filter_complex_threads min(N, 4)   (global)
+      * -threads N before every -i                    (decoder threads)
+      * software video encoders: -threads N; libx265 also -x265-params
+        pools=N, libsvtav1 -svtav1-params lp=N; GPU encoders untouched.
+    A command that already sets -threads is left alone."""
+    n = cpu_threads()
+    if not n or not cmd:
+        return cmd
+    prog = os.path.splitext(os.path.basename(str(cmd[0])))[0].lower()
+    if prog != "ffmpeg" or "-threads" in cmd:
+        return cmd
+    fn = str(min(n, 4))
+    out = [cmd[0], "-filter_threads", fn, "-filter_complex_threads", fn]
+    x265_at = svt_at = None
+    i = 1
+    while i < len(cmd):
+        a = cmd[i]
+        if a == "-i":
+            out += ["-threads", str(n)]
+        elif (a in ("-c:v", "-vcodec", "-codec:v") or a.startswith("-c:v:"))                 and i + 1 < len(cmd):
+            enc = str(cmd[i + 1])
+            out += [a, enc]
+            i += 2
+            low = enc.lower()
+            if low == "copy" or any(t in low for t in _HW_ENCODER_TAGS):
+                continue
+            if low == "libsvtav1":
+                svt_at = len(out)
+                continue
+            out += ["-threads", str(n)]
+            if low == "libx265":
+                x265_at = len(out)
+            continue
+        out.append(a)
+        i += 1
+    todo = [(at, flag, key) for at, flag, key in ((x265_at, "-x265-params", "pools"),
+                                                   (svt_at, "-svtav1-params", "lp"))
+            if at is not None]
+    for at, flag, key in sorted(todo, reverse=True):      # inserts from the back
+        if flag in out:
+            j = out.index(flag) + 1
+            if j < len(out) and f"{key}=" not in out[j]:
+                out[j] = f"{out[j]}:{key}={n}" if out[j] else f"{key}={n}"
+        else:
+            out[at:at] = [flag, f"{key}={n}"]
+    return out
 
 AUDIO_RECODE_MAP = {
     "ac3": ("ac3", "640k"),
@@ -274,6 +371,8 @@ PREF_DEFAULTS = {
     "log_keep_days": 30,          # session logs older than this go to the trash
     "language": "en",             # UI language code ("auto" = Windows language), see i18n.py
     "player_engine": "auto",      # video preview engine: auto (mpv if found) / mpv / opencv
+    "cpu_limit": True,            # Limit CPU use: low-priority ffmpeg/mpv + thread caps
+    "cpu_threads": "auto",        # thread cap: a CPU_THREAD_CHOICES key
 }
 PREFS = dict(PREF_DEFAULTS)
 

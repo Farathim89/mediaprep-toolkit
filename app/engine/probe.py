@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 
-from ..config import POPEN_FLAGS
+from ..config import limit_cmd, popen_flags
 
 
 def _probe_json(input_file, extra=(), timeout=120):
@@ -95,7 +95,7 @@ def _probe(cmd, timeout=120):
     probe never raises into, or hangs, the UI."""
     try:
         return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              creationflags=POPEN_FLAGS, timeout=timeout)
+                              creationflags=popen_flags(), timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
         return None
 
@@ -411,9 +411,9 @@ def full_check(input_file, stop_event=None, timeout=1800):
     # false alarm that has nothing to do with corruption. -sn -dn drop subs/data;
     # the "?" makes v/a optional so audio-only or video-only files still work.
     proc = subprocess.Popen(
-        ["ffmpeg", "-nostdin", "-v", "error", "-i", input_file,
-         "-map", "0:v?", "-map", "0:a?", "-sn", "-dn", "-f", "null", "-"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=POPEN_FLAGS)
+        limit_cmd(["ffmpeg", "-nostdin", "-v", "error", "-i", input_file,
+                   "-map", "0:v?", "-map", "0:a?", "-sn", "-dn", "-f", "null", "-"]),
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=popen_flags())
 
     lines = []
 

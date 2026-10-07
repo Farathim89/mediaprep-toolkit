@@ -8,18 +8,16 @@ its own AudioPlayer, so the Dual Player can play two soundtracks at once.
 Everything is optional: if sounddevice (or an audio device, or ffmpeg) is
 missing, start() simply does nothing and the player stays silent, exactly as
 before."""
-import os
 import shutil
 import subprocess
 import threading
+
+from ..config import limit_cmd, popen_flags
 
 _RATE = 48000
 _CHANNELS = 2
 _BYTES_PER_FRAME = _CHANNELS * 4          # float32 stereo
 _PREFETCH_BYTES = (_RATE // 20) * _BYTES_PER_FRAME   # first 50 ms of sound
-
-# hide the ffmpeg console window on Windows
-_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 _sd = None            # sounddevice module (lazy)
 _np = None            # numpy module (lazy)
@@ -95,9 +93,9 @@ class AudioPlayer:
                 "-f", "f32le", "-ac", str(_CHANNELS), "-ar", str(_RATE),
                 "pipe:1"]
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(limit_cmd(cmd), stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL,
-                                    creationflags=_NO_WINDOW)
+                                    creationflags=popen_flags())
         except Exception as exc:
             self._log(f"[audio] could not start ffmpeg: {exc}")
             return False

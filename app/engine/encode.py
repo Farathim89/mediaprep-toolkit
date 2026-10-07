@@ -6,7 +6,7 @@ import subprocess
 import threading
 
 from ..config import (AUDIO_RECODE_MAP, AUTO_CODEC_MAP, AUTO_GPU_CODEC_MAP,
-                      DEFAULT_AUDIO_RECODE, NVENC_PRESET_MAP, POPEN_FLAGS,
+                      DEFAULT_AUDIO_RECODE, NVENC_PRESET_MAP, popen_flags,
                       SVT_PRESET_MAP)
 from .formatting import format_ffmpeg_timestamp, format_size
 from .probe import (_probe_json, count_frames_between, probe_source_video_bitrate,
@@ -38,7 +38,7 @@ def nvenc_available(codec="h264_nvenc"):
                      "-f", "lavfi", "-i", "color=s=256x256:d=0.1", "-frames:v", "1",
                      "-c:v", codec, "-f", "null", "-"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    creationflags=POPEN_FLAGS, timeout=30)
+                    creationflags=popen_flags(), timeout=30)
                 _nvenc_cache[codec] = r.returncode == 0
             except (subprocess.TimeoutExpired, OSError):
                 _nvenc_cache[codec] = False

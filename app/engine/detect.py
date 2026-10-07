@@ -6,7 +6,7 @@ import glob
 import subprocess
 import threading
 
-from ..config import CREDITS_SEARCH_WINDOW, INTRO_SEARCH_WINDOW, POPEN_FLAGS, TEMP_DIR
+from ..config import CREDITS_SEARCH_WINDOW, INTRO_SEARCH_WINDOW, limit_cmd, popen_flags, TEMP_DIR
 from .probe import (audio_track_for_lang, probe_audio_streams, probe_duration,
                     probe_video_duration)
 
@@ -101,8 +101,8 @@ def extract_wav(src, dst, track=None):
         cmd += ["-map", f"0:a:{track}"]
     cmd += ["-vn", "-acodec", "pcm_s16le", "-ar", "22050", "-ac", "1", dst]
     try:
-        ret = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             creationflags=POPEN_FLAGS)
+        ret = subprocess.run(limit_cmd(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=popen_flags())
     except OSError:                      # ffmpeg missing
         return False
     return ret.returncode == 0

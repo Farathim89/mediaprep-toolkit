@@ -3,16 +3,24 @@
 tools/MediaPrep.spec.
 
     python tools/build_exe.py [--ffmpeg-bin DIR] [--mpv-exe FILE] [--out DIR]
+                              [--portable [--portable-dir DIR]]
 
 Build files go OUTSIDE the project: <out>/work and <out>/dist (default
 %TEMP%/mp_build). The result is <out>/dist/MediaPrep Toolkit/:
     MediaPrep Toolkit.exe, README.txt, LICENSE.txt,
     _internal/ (with ffmpeg/ and mpv/ - mpv.exe + README-mpv.txt)
 --mpv-exe "" builds without mpv (the preview players then use OpenCV).
+
+--portable builds the single-file portable exe instead
+(<out>/work_portable, <out>/dist_portable) and copies ONLY
+MediaPrep-Toolkit-Portable-<version>.exe into --portable-dir (default
+D:/Ai - Programs/MediaPrep-Portable). It keeps its user data in a
+"mediaprep-data" folder next to itself, created on first start.
 """
 import argparse
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +29,13 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = os.path.join(ROOT, "tools", "MediaPrep.spec")
 NAME = "MediaPrep Toolkit"
+PORTABLE_DIR = r"D:\Ai - Programs\MediaPrep-Portable"
+
+
+def _app_version():
+    with open(os.path.join(ROOT, "app", "config.py"), encoding="utf-8") as f:
+        m = re.search(r'^APP_VERSION = "([^"]+)"', f.read(), re.M)
+    return m.group(1) if m else "0.0.0"
 
 
 def _default_ffmpeg_bin():
@@ -90,6 +105,10 @@ def main():
     ap.add_argument("--mpv-exe", default=_default_mpv_exe(),
                     help='mpv.exe to bundle ("" = none)')
     ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "mp_build"))
+    ap.add_argument("--portable", action="store_true",
+                    help="build the single-file portable exe instead of the folder build")
+    ap.add_argument("--portable-dir", default=PORTABLE_DIR,
+                    help="where the portable exe is copied to (only the exe)")
     args = ap.parse_args()
 
     ff_bin = args.ffmpeg_bin
@@ -115,21 +134,34 @@ def main():
     out = os.path.abspath(args.out)
     if (os.path.normcase(out) + os.sep).startswith(os.path.normcase(ROOT) + os.sep):
         sys.exit("refusing to build inside the project folder")
-    work, dist = os.path.join(out, "work"), os.path.join(out, "dist")
+    suffix = "_portable" if args.portable else ""
+    work, dist = os.path.join(out, "work" + suffix), os.path.join(out, "dist" + suffix)
+    portable_name = f"MediaPrep-Toolkit-Portable-{_app_version()}"
     env = dict(os.environ, MEDIAPREP_FFMPEG_BIN=ff_bin, MEDIAPREP_FFMPEG_VERSION=ff_version,
-               MEDIAPREP_MPV_EXE=mpv_exe or "", MEDIAPREP_MPV_VERSION=mpv_version or "")
+               MEDIAPREP_MPV_EXE=mpv_exe or "", MEDIAPREP_MPV_VERSION=mpv_version or "",
+               MEDIAPREP_PORTABLE="1" if args.portable else "",
+               MEDIAPREP_PORTABLE_NAME=portable_name)
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
            "--workpath", work, "--distpath", dist, SPEC]
     print(" ".join(f'"{c}"' if " " in c else c for c in cmd))
     os.makedirs(out, exist_ok=True)
     subprocess.check_call(cmd, env=env, cwd=out)
 
+    mpv_short = mpv_version.split(" Copyright")[0] if mpv_version else "no mpv"
+    if args.portable:
+        built = os.path.join(dist, portable_name + ".exe")
+        os.makedirs(args.portable_dir, exist_ok=True)
+        target = os.path.join(args.portable_dir, portable_name + ".exe")
+        shutil.copyfile(built, target)
+        print(f"\nBuilt: {target}  ({os.path.getsize(target) / 2**20:.0f} MB, ffmpeg "
+              f"{ff_version}, {mpv_short})")
+        return
+
     app_dir = os.path.join(dist, NAME)
     shutil.copyfile(os.path.join(ROOT, "README.txt"), os.path.join(app_dir, "README.txt"))
     with open(os.path.join(app_dir, "LICENSE.txt"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write(LICENSE)
 
-    mpv_short = mpv_version.split(" Copyright")[0] if mpv_version else "no mpv"
     print(f"\nBuilt: {app_dir}  ({_dir_size(app_dir) / 2**20:.0f} MB, ffmpeg {ff_version}"
           f", {mpv_short})")
 

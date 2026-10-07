@@ -174,6 +174,19 @@ def _restart_command():
     return [sys.executable, script] + sys.argv[1:]
 
 
+def _restart_env():
+    """Environment for the restarted copy. A one-file (portable) build must
+    start as a NEW independent instance that unpacks its own bundle - not
+    reuse this run's _MEI folder, which is deleted when this one exits."""
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        for k in list(env):
+            if k.startswith("_PYI_") or k == "_MEIPASS2":
+                env.pop(k, None)
+    return env
+
+
 def _open_url(url):
     try:
         import webbrowser
@@ -756,7 +769,8 @@ def main():
         except Exception:
             pass
         try:
-            subprocess.Popen(_restart_command(), cwd=os.getcwd(), close_fds=True)
+            subprocess.Popen(_restart_command(), cwd=os.getcwd(), close_fds=True,
+                             env=_restart_env())
         except OSError as exc:
             applog.record(f"[settings] restart failed: {exc}")
             return False

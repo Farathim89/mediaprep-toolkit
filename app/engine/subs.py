@@ -5,7 +5,7 @@ import re
 import json
 import subprocess
 
-from ..config import POPEN_FLAGS, TEMP_DIR
+from ..config import popen_flags, TEMP_DIR
 from .probe import probe_duration, probe_streams, probe_video_duration
 from .process import _run_exempt
 
@@ -141,7 +141,7 @@ def _disposition_args(ref):
             ["ffprobe", "-v", "error", "-show_entries",
              "stream=codec_type:stream_disposition", "-of", "json", ref],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            creationflags=POPEN_FLAGS, timeout=60)
+            creationflags=popen_flags(), timeout=60)
         streams = json.loads(r.stdout or b"{}").get("streams", [])
     except (subprocess.TimeoutExpired, OSError, ValueError):
         return []

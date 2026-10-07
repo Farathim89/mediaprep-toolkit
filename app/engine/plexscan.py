@@ -36,7 +36,7 @@ How it works (the same idea Plex uses):
 import os
 import subprocess
 
-from ..config import POPEN_FLAGS
+from ..config import limit_cmd, popen_flags
 from .probe import _probe_json, audio_track_for_lang, probe_duration, probe_video_duration
 from .vfp import MODES, combine, per_episode, recurring_video
 
@@ -170,8 +170,8 @@ def detect_credits_visual(path, search_secs=420, fps=2, log=None, stop_event=Non
            "-vf", f"fps={fps},scale={w}:{h},format=gray",
            "-f", "rawvideo", "-pix_fmt", "gray", "-"]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL, creationflags=POPEN_FLAGS)
+        proc = subprocess.Popen(limit_cmd(cmd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, creationflags=popen_flags())
     except OSError as e:
         log(f"   [visual] ffmpeg could not start: {e}")
         return None

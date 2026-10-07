@@ -34,6 +34,8 @@ import sys
 import threading
 import time
 
+from ..config import popen_flags
+
 _IS_WIN = os.name == "nt"
 _NO_WINDOW = 0x08000000 if _IS_WIN else 0
 _seq = itertools.count(1)
@@ -244,7 +246,7 @@ class MpvProcess:
         self._alive = False
         args = [exe, f"--wid={int(wid)}", f"--input-ipc-server={self.name}"]
         args += list(self.BASE_ARGS) + list(extra)
-        self.proc = subprocess.Popen(args, creationflags=_NO_WINDOW,
+        self.proc = subprocess.Popen(args, creationflags=popen_flags(),
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
         job = _job_handle()

@@ -3,7 +3,7 @@ after-credits) that recur across several episodes."""
 import os
 import subprocess
 
-from ..config import POPEN_FLAGS, TEMP_DIR
+from ..config import limit_cmd, popen_flags, TEMP_DIR
 from .probe import audio_track_for_lang, probe_duration
 
 
@@ -26,8 +26,8 @@ def _decode_window_wav(src, dst, window, from_end=False, track=None):
         cmd += ["-map", f"0:a:{track}"]
     cmd += ["-ar", "22050", "-ac", "1", "-y", dst]
     try:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       creationflags=POPEN_FLAGS)
+        subprocess.run(limit_cmd(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=popen_flags())
     except OSError:                      # ffmpeg missing - caller finds no wav
         pass
 

@@ -15,7 +15,7 @@ one is in range. edge=None takes the nearest edge of any type."""
 import re
 import subprocess
 
-from ..config import POPEN_FLAGS
+from ..config import limit_cmd, popen_flags
 
 SILENCE_NOISE = "-40dB"
 SILENCE_MIN = 0.15
@@ -36,8 +36,8 @@ def _run(cmd, timeout):
     """ffmpeg stderr text, or None if ffmpeg is missing / timed out / failed
     (unreadable file, no such stream)."""
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                              creationflags=POPEN_FLAGS, timeout=timeout)
+        proc = subprocess.run(limit_cmd(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                              creationflags=popen_flags(), timeout=timeout)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:

@@ -301,6 +301,10 @@ def run(root=None, app_dir=None, frozen=None):
     list of log messages (empty when there was nothing to do). Never raises."""
     if os.environ.get("MEDIAPREP_NO_MIGRATE", "").strip() not in ("", "0"):
         return ["[migrate] skipped (MEDIAPREP_NO_MIGRATE is set)"]
+    if C.PORTABLE and root is None:
+        # the portable exe's mediaprep-data\ never had the old flat layout,
+        # and the exe folder itself holds the user's other files - leave it
+        return []
     root = os.path.abspath(root or C.APP_ROOT)
     m = _Migrator(root, app_dir or C.APP_DIR,
                   getattr(sys, "frozen", False) if frozen is None else frozen)

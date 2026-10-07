@@ -103,10 +103,23 @@ def run(out_dir=None):
 
     def s_ffprobe():
         r = subprocess.run(["ffprobe", "-version"], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, creationflags=C.POPEN_FLAGS)
+                           stderr=subprocess.PIPE, creationflags=C.popen_flags())
         return {"_ok": r.returncode == 0, "ffprobe": shutil.which("ffprobe"),
                 "ffmpeg": shutil.which("ffmpeg"),
                 "version": r.stdout.decode(errors="replace").splitlines()[0]}
+
+    def s_environment():
+        # the preview players' mpv (bundled: sys._MEIPASS\mpv), the data folder
+        # (portable: <exe folder>\mediaprep-data) and the Limit CPU use caps
+        from .ui import mpvplayer
+        exe = mpvplayer.find_mpv()
+        frozen = bool(getattr(sys, "frozen", False))
+        return {"_ok": bool(exe) or not frozen, "mpv": exe,
+                "mpv_version": mpvplayer.mpv_version(exe) if exe else None,
+                "bundle": getattr(sys, "_MEIPASS", None), "portable": C.PORTABLE,
+                "app_root": C.APP_ROOT, "cpu_limit": bool(C.PREFS.get("cpu_limit", True)),
+                "cpu_threads": C.cpu_threads(), "popen_flags": hex(C.popen_flags()),
+                "omp_threads": os.environ.get("OMP_NUM_THREADS")}
 
     def s_imports():
         out = {}
@@ -138,7 +151,7 @@ def run(out_dir=None):
             wav = os.path.join(out_dir, name + ".wav")
             _write_wav(wav, _episode(np, rng, total, at, sil))
             mp4 = os.path.join(out_dir, name + ".mp4")
-            _mux(wav, mp4, C.POPEN_FLAGS)
+            _mux(wav, mp4, C.popen_flags())
             os.remove(wav)
             files[name] = (mp4, at)
         return {k: v[0] if isinstance(v, tuple) else v for k, v in files.items()}
@@ -200,6 +213,7 @@ def run(out_dir=None):
                 "snapped": t, "reason": why, "expected": 16.0}
 
     step("ffprobe", s_ffprobe)
+    step("environment", s_environment)
     step("imports", s_imports)
     step("generate_clips", s_generate)
     if "ep01" in files:

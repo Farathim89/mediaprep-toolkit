@@ -18,7 +18,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from ..config import POPEN_FLAGS
+from ..config import popen_flags
 from ..engine.formatting import fmt_time, format_size, parse_time
 from ..engine.probe import probe_duration, probe_streams, probe_video_fps
 from ..engine.process import _run_capture_stoppable
@@ -44,7 +44,7 @@ def _probe_tracks(path):
             ["ffprobe", "-v", "error", "-show_format", "-show_streams",
              "-print_format", "json", path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            creationflags=POPEN_FLAGS, timeout=120)
+            creationflags=popen_flags(), timeout=120)
         data = json.loads(r.stdout or b"{}")
     except (subprocess.TimeoutExpired, OSError, ValueError):
         return None
@@ -346,7 +346,7 @@ def _has_vmaf():
             r = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
                                capture_output=True, text=True,
                                encoding="utf-8", errors="replace",
-                               creationflags=POPEN_FLAGS, timeout=30)
+                               creationflags=popen_flags(), timeout=30)
             _VMAF_AVAILABLE = "libvmaf" in (r.stdout or "")
         except Exception:
             _VMAF_AVAILABLE = False

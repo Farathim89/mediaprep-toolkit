@@ -14,7 +14,7 @@ black screens don't count as "the same picture"."""
 import os
 import subprocess
 
-from ..config import POPEN_FLAGS
+from ..config import limit_cmd, popen_flags
 from .probe import probe_duration, probe_video_duration
 
 FPS = 4               # frames hashed per second
@@ -56,8 +56,8 @@ def video_hashes(path, start=0.0, duration=None, fps=FPS, stop_event=None, log=N
             "-vf", f"fps={fps},scale={W}:{H},format=gray",
             "-f", "rawvideo", "-pix_fmt", "gray", "-"]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL, creationflags=POPEN_FLAGS)
+        proc = subprocess.Popen(limit_cmd(cmd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, creationflags=popen_flags())
     except OSError as e:
         log(f"   [visual] ffmpeg could not start: {e}")
         return None

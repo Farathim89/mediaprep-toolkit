@@ -6,15 +6,30 @@ export theme songs, even out loudness across a season, and check that nothing
 was lost or broken along the way. Built on FFmpeg.
 
 > Successor of the original single-file *Intro & Credits Toolkit*. Version 2.0
-> is a near-complete rewrite: template-free detection, a review-before-encoding
-> workflow, Plex-ready presets, audio tools, a job queue, 13 themes and
-> 19 languages.
+> is a near-complete rewrite: frame-exact detection (with or without
+> templates, by sound and picture), a review-before-encoding workflow, a
+> HandBrake-style converter, Plex-ready presets, audio tools, an mpv-based
+> player, a job queue, a modern Fluent UI with 13 themes and 19 languages.
 
-**Download:** grab the latest `MediaPrep Toolkit` zip from
-[Releases](../../releases), unzip anywhere and run `MediaPrep Toolkit.exe`.
-FFmpeg is included - nothing else to install.
+**Download** from [Releases](../../releases):
+- `MediaPrep-Toolkit-Portable-2.0.0.exe` - single file, run it anywhere; your
+  data goes into a `mediaprep-data` folder next to it.
+- `MediaPrep Toolkit v2.0.0.zip` - unzip anywhere and run
+  `MediaPrep Toolkit.exe` (fastest start).
+
+FFmpeg and mpv are included - nothing else to install.
 
 ## Features
+
+### Detection (all modes)
+- Finds intros, credits, pre-intros and after-credits by **sound, picture or
+  both**, then places every edge **frame-exact** using the picture (sound
+  can't tell where a silent gap belongs). Edges that can only be approximate
+  (fades, no picture cut) are marked ⚠.
+- Template matching follows the template's own first/last frame; template-
+  free scans add a 1-frame safety margin (0-5) so no single intro frame
+  flashes at the join. Works across releases (720p, shifted, 25 fps PAL).
+- `tools/accuracy_test.py` - reusable accuracy test suite.
 
 ### Templates
 - **Cut template** - frame-accurate preview player (with sound), **Set** the
@@ -49,6 +64,16 @@ FFmpeg is included - nothing else to install.
   after each file, finished sources moved to `videos\done`.
 - **Per-show presets** and **Add to queue** for overnight runs.
 
+### Convert (HandBrake replacement)
+- Queue of files/folders, built-in and own presets (Plex-ready HEVC/H.264,
+  high quality, small file, AV1, archive, fast GPU).
+- H.264 / HEVC / AV1 (CPU or NVENC), CRF/CQ or bitrate, never-bigger cap,
+  resize, auto crop, deinterlace, denoise, deblock, HDR→SDR.
+- Per-track audio (copy/AAC/AC3/E-AC3/Opus/FLAC, downmix) and subtitles
+  (keep, default, forced, burn-in), MKV or MP4.
+- Preview: encode a 10 s sample, compare it A/B, see the estimated size and
+  time first.
+
 ### Audio
 - **Theme Audio** - export the intro as `theme.mp3` for Plex, with fades,
   optional -16 LUFS normalisation and a preview.
@@ -63,6 +88,12 @@ FFmpeg is included - nothing else to install.
 - **Check** - quick or full-decode check of files/folders for corruption.
 
 ### App
+- Video player powered by **mpv** (GPU decoding, instant frame stepping,
+  16:9 preview); falls back to OpenCV if mpv is missing.
+- Fluent design: sidebar navigation, info icons instead of walls of text,
+  fixed pages that scroll instead of reflowing, progress always visible.
+- "Limit CPU use" (on by default): low priority + thread cap for all
+  encodes.
 - Job queue with status bar, Windows notifications when long jobs finish,
   update check (GitHub releases), per-tab **?** help.
 - 13 themes incl. *Follow Windows*, Plex, Gold on Dark, Nord, Dracula,

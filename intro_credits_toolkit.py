@@ -52,11 +52,12 @@ class _LazyErrLog:
 
 def _frozen_setup():
     """Environment for the PyInstaller build - before anything imports the
-    engine (it runs ffmpeg/ffprobe by name from PATH)."""
+    engine (it runs ffmpeg/ffprobe by name from PATH). The portable one-file
+    build keeps its data in <exe folder>/mediaprep-data (config.APP_ROOT)."""
     if not getattr(sys, "frozen", False):
         return
-    root = os.path.dirname(os.path.abspath(sys.executable))
-    bundle = getattr(sys, "_MEIPASS", root)
+    from app.config import APP_ROOT as root      # light import (no numpy)
+    bundle = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
     ff_dir = os.path.join(bundle, "ffmpeg")
     if os.path.isfile(os.path.join(ff_dir, "ffmpeg.exe")):
         # the bundled copy wins over any system ffmpeg
@@ -68,9 +69,26 @@ def _frozen_setup():
         sys.stderr = _LazyErrLog(os.path.join(root, "Data", "logs", "errors.log"))
 
 
+def _cpu_limit_env():
+    """'Limit CPU use' (Settings -> Performance): cap the math libraries'
+    thread pools (numpy BLAS / OpenMP / numba used by librosa) - must happen
+    before numpy is first imported. Read straight from the settings file."""
+    try:
+        from app import config as C
+        n = C.cpu_threads(dict(C.PREF_DEFAULTS, **C.load_settings()))
+    except Exception:
+        return
+    if n:
+        n = min(n, os.cpu_count() or n)       # numba refuses more than the cores
+        for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                  "NUMEXPR_NUM_THREADS", "NUMBA_NUM_THREADS"):
+            os.environ[k] = str(n)
+
+
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     _frozen_setup()
+    _cpu_limit_env()
     if len(sys.argv) >= 2 and sys.argv[1] == "--selftest":
         from app.selftest import run as _selftest
         sys.exit(_selftest(sys.argv[2] if len(sys.argv) > 2 else None))

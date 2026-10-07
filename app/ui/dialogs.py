@@ -4,7 +4,7 @@ bar)."""
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from ..config import APP_VERSION, PREFS
+from ..config import APP_VERSION, CPU_THREAD_CHOICES, PREFS
 from ..i18n import tr
 from . import themes
 from .tkthread import _call_tk
@@ -453,6 +453,37 @@ class SettingsDialog(tk.Toplevel):
                   style="Hint.TLabel", wraplength=self.WRAP).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
+        # Limit CPU use: below-normal priority + thread caps for ffmpeg / mpv
+        # (config.popen_flags / limit_cmd; the math-library cap at startup)
+        pf = ttk.LabelFrame(f, text=tr("Performance"))
+        pf.pack(fill="x", pady=(10, 0))
+        self.v_cpu = tk.BooleanVar(value=bool(PREFS.get("cpu_limit", True)))
+        cur = str(PREFS.get("cpu_threads", "auto")).lower()
+        self.v_threads = tk.StringVar(value=cur if cur in CPU_THREAD_CHOICES else "auto")
+        cpu_cb = ttk.Checkbutton(pf, text=tr("Limit CPU use (recommended)"),
+                                 variable=self.v_cpu)
+        cpu_cb.grid(row=0, column=0, columnspan=2, sticky="w")
+        add_tooltip(cpu_cb, tr("Runs ffmpeg and the video player at below-normal priority "
+                               "and caps how many threads encodes and decodes use, so the "
+                               "PC stays responsive and cooler during long jobs. Encodes "
+                               "can take a little longer. GPU (NVENC) encodes are not "
+                               "slowed. Applies to the next job; the analysis libraries "
+                               "pick it up after a restart."))
+        ttk.Label(pf, text=tr("Max encoder threads:")).grid(row=1, column=0, sticky="w",
+                                                            padx=(18, 0), pady=(4, 0))
+        thr_labels = [tr("Auto (half the cores, max 8)")] + list(CPU_THREAD_CHOICES[1:-1])             + [tr("All")]
+        self.thr_box = KeyedCombobox(pf, textvariable=self.v_threads,
+                                     values=list(CPU_THREAD_CHOICES), labels=thr_labels,
+                                     state="readonly", width=24)
+        self.thr_box.grid(row=1, column=1, sticky="w", padx=6, pady=(4, 0))
+        add_tooltip(self.thr_box, tr("The most CPU threads one ffmpeg job may use. 'All' "
+                                     "lets ffmpeg decide (only the lower priority stays)."))
+
+        def _cpu_toggle(*_a):
+            self.thr_box.configure(state="readonly" if self.v_cpu.get() else "disabled")
+        self.v_cpu.trace_add("write", _cpu_toggle)
+        _cpu_toggle()
+
         n = ttk.LabelFrame(f, text=tr("Notifications when a job finishes"))
         n.pack(fill="x", pady=(10, 0))
         self.v_on = tk.BooleanVar(value=PREFS["notify_on"])
@@ -532,6 +563,8 @@ class SettingsDialog(tk.Toplevel):
         PREFS["notify_sound"] = bool(self.v_sound.get())
         PREFS["update_check"] = bool(self.v_upd.get())
         PREFS["player_engine"] = self.v_engine.get() or "auto"
+        PREFS["cpu_limit"] = bool(self.v_cpu.get())
+        PREFS["cpu_threads"] = self.v_threads.get() or "auto"
         try:
             PREFS["notify_min_minutes"] = max(0.0, float(self.v_min.get().replace(",", ".")))
         except ValueError:

@@ -437,6 +437,18 @@ for _k in ("template_cut", "cut_manual", "cut_multi", "theme"):
     _add_block(_k, TO_INCLUSIVE)
 for _k in ("template_detect", "cut_auto", "cut_multi"):
     _add_block(_k, SAFETY_MARGIN)
+_add_block("queue", N_(
+    "Settings -> Performance: 'Limit CPU use (recommended)' (on by default) runs every "
+    "ffmpeg / ffprobe / mpv the app starts at below-normal priority and caps the "
+    "threads of encodes, decodes and detection ('Max encoder threads': Auto = half "
+    "the cores, at most 8; 'All' keeps only the lower priority). The PC stays "
+    "responsive and runs cooler; CPU encodes may take a little longer, GPU (NVENC) "
+    "encodes are hardly affected. It applies to the next job; the audio analysis "
+    "libraries pick it up after a restart."))
+_add_block("folders", N_(
+    "Portable version (MediaPrep-Toolkit-Portable-....exe): Media\ and Data\ are "
+    "kept in a 'mediaprep-data' folder next to the exe instead (created on first "
+    "start), so the whole thing can live on a USB stick."))
 
 HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager",
               "cut_auto", "cut_manual", "cut_multi", "convert", "theme",

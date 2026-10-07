@@ -26,7 +26,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-from ..config import (DATA_DIR, MEDIA_DIR, NVENC_PRESET_MAP, POPEN_FLAGS, SVT_PRESET_MAP,
+from ..config import (DATA_DIR, MEDIA_DIR, NVENC_PRESET_MAP, popen_flags, SVT_PRESET_MAP,
                       TEMP_DIR)
 from .encode import NVENC_CPU_FALLBACK, nvenc_available
 from .files import _commit_part, _part_path
@@ -327,7 +327,7 @@ def encoder_usable(enc):
                     ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-f", "lavfi",
                      "-i", "color=s=256x256:d=0.1", "-frames:v", "1", "-c:v", "av1_nvenc",
                      "-f", "null", "-"], stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, creationflags=POPEN_FLAGS, timeout=30)
+                    stderr=subprocess.DEVNULL, creationflags=popen_flags(), timeout=30)
                 _AV1_NV["ok"] = r.returncode == 0
             except (subprocess.TimeoutExpired, OSError):
                 _AV1_NV["ok"] = False
@@ -338,7 +338,7 @@ def _has_filter(name, _cache={}):
     if name not in _cache:
         try:
             r = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, creationflags=POPEN_FLAGS, timeout=30)
+                               stderr=subprocess.DEVNULL, creationflags=popen_flags(), timeout=30)
             names = {ln.split()[1] for ln in r.stdout.decode(errors="replace").splitlines()
                      if len(ln.split()) > 2 and ln.startswith(" ")}
         except (subprocess.TimeoutExpired, OSError, IndexError):

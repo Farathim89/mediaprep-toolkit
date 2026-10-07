@@ -6,7 +6,7 @@ import math
 import json
 import subprocess
 
-from ..config import POPEN_FLAGS
+from ..config import limit_cmd, popen_flags
 from .encode import build_audio_recode_args
 from .probe import probe_audio_streams, probe_duration
 from .process import _run_capture_stoppable, _run_exempt, run_ffmpeg_with_progress
@@ -27,10 +27,10 @@ def probe_volume(input_file, track=0):
     Returns (mean_db, max_db)."""
     try:
         r = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-nostats", "-i", input_file,
-             "-map", f"0:a:{int(track or 0)}?", "-af", f"{_MEAS_SILENCE_TRIM},volumedetect",
-             "-vn", "-f", "null", "-"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=POPEN_FLAGS)
+            limit_cmd(["ffmpeg", "-hide_banner", "-nostats", "-i", input_file,
+                       "-map", f"0:a:{int(track or 0)}?", "-af",
+                       f"{_MEAS_SILENCE_TRIM},volumedetect", "-vn", "-f", "null", "-"]),
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=popen_flags())
     except OSError:                        # ffmpeg missing
         return None, None
     t = r.stderr.decode(errors="replace")
