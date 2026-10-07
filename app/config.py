@@ -25,15 +25,41 @@ UPDATE_REPO = "Farathim89/mediaprep-toolkit"
 # app/migrate.py moves an old-layout install (videos\, input\, logs\,
 # toolkit_settings.json ...) into these places at startup.
 #
-# Portable build (one-file exe, tools/build_exe.py --portable): its runtime
-# hook sets sys.mediaprep_portable, and the user data lives in
-# <exe folder>\mediaprep-data\ instead (the bundled ffmpeg / mpv / locales
-# are unpacked to sys._MEIPASS for each run).
+# Portable build (tools/build_exe.py --portable): a small launcher exe
+# carries this folder build as a zip, unpacks it ONCE to
+# <launcher folder>\mediaprep-data\runtime\<version>-<hash>\ and starts it
+# with MEDIAPREP_PORTABLE_DATA=<...>\mediaprep-data; the user data then lives
+# in that mediaprep-data\ (Media\, Data\) instead of next to this exe.
+# The older one-file build (--portable-onefile) flags itself with a runtime
+# hook (sys.mediaprep_portable) and unpacks to sys._MEIPASS for each run.
 APP_DIR = os.path.dirname(os.path.abspath(__file__))          # the app/ package
-PORTABLE = bool(getattr(sys, "frozen", False) and getattr(sys, "mediaprep_portable", False))
 PORTABLE_DATA = "mediaprep-data"
+
+
+def _portable_root():
+    """The mediaprep-data folder of a portable build, else None."""
+    if not getattr(sys, "frozen", False):
+        return None
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if getattr(sys, "mediaprep_portable", False):              # one-file build
+        return os.path.join(exe_dir, PORTABLE_DATA)
+    # launcher build: this exe sits in <data>\runtime\<version>-<hash>\ - the
+    # env var names <data>; without it (exe started by hand) the folder
+    # layout itself tells
+    runtime = os.path.dirname(exe_dir)
+    if os.path.basename(runtime).lower() != "runtime":
+        return None
+    data = os.path.dirname(runtime)
+    env = os.environ.get("MEDIAPREP_PORTABLE_DATA", "").strip()
+    if env and os.path.normcase(os.path.abspath(env)) == os.path.normcase(data):
+        return data
+    return data if os.path.basename(data).lower() == PORTABLE_DATA else None
+
+
+_PORTABLE_ROOT = _portable_root()
+PORTABLE = _PORTABLE_ROOT is not None
 if PORTABLE:
-    APP_ROOT = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), PORTABLE_DATA)
+    APP_ROOT = _PORTABLE_ROOT
 elif getattr(sys, "frozen", False):
     APP_ROOT = os.path.dirname(os.path.abspath(sys.executable))
 else:

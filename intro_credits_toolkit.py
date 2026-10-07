@@ -52,8 +52,8 @@ class _LazyErrLog:
 
 def _frozen_setup():
     """Environment for the PyInstaller build - before anything imports the
-    engine (it runs ffmpeg/ffprobe by name from PATH). The portable one-file
-    build keeps its data in <exe folder>/mediaprep-data (config.APP_ROOT)."""
+    engine (it runs ffmpeg/ffprobe by name from PATH). The portable build
+    keeps its data in <portable exe folder>/mediaprep-data (config.APP_ROOT)."""
     if not getattr(sys, "frozen", False):
         return
     from app.config import APP_ROOT as root      # light import (no numpy)

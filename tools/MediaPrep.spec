@@ -1,8 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for "MediaPrep Toolkit.exe" (onedir, windowed) - or, with
-# MEDIAPREP_PORTABLE=1, the portable one-file exe (MEDIAPREP_PORTABLE_NAME,
-# e.g. "MediaPrep-Toolkit-Portable-2.0.0"): everything packed into one exe,
-# unpacked to %TEMP%\_MEIxxxx for each run, user data in <exe folder># mediaprep-data (a runtime hook sets sys.mediaprep_portable, see config.py).
+# PyInstaller spec for "MediaPrep Toolkit.exe" (onedir, windowed). The
+# portable exe (build_exe.py --portable) packs this same onedir build behind
+# a small launcher (tools/portable_launcher) - nothing portable-specific here.
+# With MEDIAPREP_PORTABLE=1 (build_exe.py --portable-onefile) it builds the
+# older one-file exe instead (MEDIAPREP_PORTABLE_NAME, e.g.
+# "MediaPrep-Toolkit-Portable-2.0.0"): unpacked to %TEMP%\_MEIxxxx for each
+# run, user data in <exe folder>\mediaprep-data (a runtime hook sets
+# sys.mediaprep_portable, see config.py).
 # Run it through tools/build_exe.py, which also sets the work/dist folders
 # (OUTSIDE the project) and puts README.txt + LICENSE.txt next to the exe.
 #
