@@ -158,6 +158,7 @@
   "Auto (detect black bars)": "",
   "Auto (detect)": "",
   "Auto (match source)": "",
+  "Auto (mpv if available)": "",
   "Auto - CPU (match source)": "",
   "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "",
   "Auto - GPU / NVENC (match source)": "",
@@ -1096,6 +1097,7 @@
   "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "",
   "These templates already exist:": "",
   "This build's detection engine has no detect_segments() yet - update the toolkit.": "",
+  "This edge was placed by sound / a fade - check it in the player": "",
   "This file is being cut right now\n- load it again when the run finishes": "",
   "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
     "one": "",
@@ -1155,7 +1157,9 @@
   "Video encoder": "",
   "Video file:": "",
   "Video files": "",
+  "Video player": "",
   "Video player controls": "",
+  "Video player engine:": "",
   "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "",
   "Video tracks": "",
   "Video unloaded\n(freed so the batch can move it)": "",
@@ -1239,6 +1243,9 @@
   "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "",
   "minutes": "",
   "missing or zero-byte file": "",
+  "mpv found: {path}": "",
+  "mpv not found - the OpenCV preview is used": "",
+  "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "",
   "needs a From time": "",
   "needs a To time": "",
   "new:": "",
@@ -1369,5 +1376,7 @@
   "≈ 5-10% smaller, ~2x slower": "",
   "≈ 8-12% smaller, ~4x slower": "",
   "◀ Prev": "",
+  "⚠ {seg} end approximate": "",
+  "⚠ {seg} start approximate": "",
   "✔ {kind} (have)": ""
 }

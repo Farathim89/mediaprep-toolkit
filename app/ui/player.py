@@ -1,11 +1,17 @@
-"""VideoPlayer - a frame-accurate OpenCV preview widget shared by both tabs.
+"""VideoPlayer - a frame-accurate preview widget shared by both tabs.
 
-Includes a TimelineBar that shows the marked segments as coloured bands with a
-draggable playhead, keyboard shortcuts, a jump-to-time box, and sound with a
-mute button + volume slider (audio via ui/playback.py; silent if sounddevice is
-missing). Playback is wall-clock driven so picture and sound stay in step.
-cv2 and Pillow are imported lazily so the app still runs (manual entry only)
-without them."""
+Two engines behind one widget (Settings -> Video player engine):
+  mpv     - mpv.exe draws into the video box and decodes on the GPU; it also
+            plays the sound (ui/mpvplayer.py). Smooth playback, fast steps.
+  OpenCV  - frames decoded by cv2 and painted as Tk images; sound via
+            ui/playback.py (silent if sounddevice is missing). Wall-clock
+            driven so picture and sound stay in step.
+"Auto" uses mpv when it is found and starts, else OpenCV. Both number frames
+the same way (frame k = time k / fps), so Set / Go / the time boxes behave
+identically. Includes a TimelineBar that shows the marked segments as coloured
+bands with a draggable playhead, keyboard shortcuts, a jump-to-time box, and a
+mute button + volume slider. cv2 and Pillow are imported lazily so the app
+still runs (manual entry only) without them."""
 import os
 import time
 import tkinter as tk
@@ -16,7 +22,57 @@ from ..engine.formatting import fmt_time, parse_time
 from ..engine.probe import probe_duration
 from .widgets import add_tooltip, fixed_label
 from ..i18n import tr
-from . import icons, themes
+from . import icons, mpvplayer, themes
+from .. import applog
+from ..config import PREFS
+
+# Video player engines (Settings): "auto" = mpv if found + it starts, else OpenCV
+ENGINES = ("auto", "mpv", "opencv")
+_MPV = {"exe": False, "failed": False, "logged": set()}   # session-wide mpv state
+
+
+def _mpv_exe():
+    if _MPV["exe"] is False:
+        _MPV["exe"] = mpvplayer.find_mpv()
+    return _MPV["exe"]
+
+
+def _log_engine_once(key, msg):
+    if key not in _MPV["logged"]:
+        _MPV["logged"].add(key)
+        applog.record(msg)
+
+
+def pick_engine():
+    """The engine the next load uses: "mpv" or "opencv" (from the setting)."""
+    pref = str(PREFS.get("player_engine", "auto") or "auto").lower()
+    if pref == "opencv":
+        _log_engine_once("opencv", "[player] engine: OpenCV (set in Settings)")
+        return "opencv"
+    exe = _mpv_exe()
+    if exe and (pref == "mpv" or not _MPV["failed"]):     # Auto gives up after a failure
+        _log_engine_once("mpv", f"[player] engine: mpv ({exe}; "
+                                f"{mpvplayer.mpv_version(exe) or 'unknown version'})")
+        return "mpv"
+    why = "mpv did not start" if exe else "mpv not found"
+    _log_engine_once("fallback", f"[player] engine: OpenCV ({why})")
+    return "opencv"
+
+
+def _snap_fps(fps):
+    """mpv reports e.g. 23.976025 (from a rounded per-frame duration): snap
+    it to the exact NTSC / integer rate the OpenCV engine reports, so both
+    engines number frames identically."""
+    try:
+        fps = float(fps)
+    except (TypeError, ValueError):
+        return None
+    if not fps > 0:
+        return None
+    for cand in (round(fps), round(fps * 1.001) * 1000 / 1001):
+        if cand > 0 and abs(fps - cand) / cand < 2e-5:
+            return float(cand)
+    return fps
 
 # segment band colours on the timeline, per theme (palette marker_<kind>).
 # Pass the KIND ("intro", ...) to set_markers so the bands follow theme
@@ -302,6 +358,19 @@ class VideoPlayer(ttk.Frame):
         # THIS player's own controls (the Dual Player uses it to link A and B)
         self.on_user_seek = None
         self.audio = AudioPlayer(log_fn=self._log)
+        self.audio_track = None      # audio stream index (0:a:N); None = default
+        # mpv engine state (see _mpv_* below)
+        self._engine = None          # "mpv" / "opencv" while a video is loaded
+        self._mpv = None             # mpvplayer.MpvProcess (started on first load)
+        self._mpv_job = None         # Tk after() id of the event pump
+        self._mpv_seek_rid = 0       # id of the last seek: older position events are stale
+        self._mpv_settled = True     # the last seek has landed (playback-restart seen)
+        self._mpv_play_rid = 0       # id of the last unpause: older pause/eof events are stale
+        self._mpv_pending_end = None  # play_range: stop frame to arm once the seek lands
+        self._mpv_end_armed = False  # mpv 'end' is set (auto-pause point)
+        self._mpv_end_frame = None   # the frame that 'end' stops on
+        self._mpv_hold = False       # stopped at 'end': keep cur_frame, ignore time-pos
+        self.mpv_time_pos = None     # mpv's exact time-pos of the shown frame (diagnostics)
 
         self.canvas = tk.Canvas(self, width=self.VW, height=self.VH,
                                 highlightthickness=1, borderwidth=0,
@@ -328,6 +397,14 @@ class VideoPlayer(ttk.Frame):
             self.canvas.bind("<Configure>", self._on_canvas_configure)
         else:
             self.canvas.pack()
+        # mpv draws into this frame (placed over the canvas, inside its focus
+        # ring, only while mpv has a video loaded). mpv's own window in it is
+        # disabled, so clicks and file drops land on this frame.
+        self._mpv_host = tk.Frame(self.canvas, highlightthickness=0, borderwidth=0,
+                                  takefocus=0)
+        self._mpv_host.bind("<Button-1>", lambda e: self.canvas.focus_set())
+        themes.on_palette(self._mpv_host, self._mpv_palette)
+        self.bind("<Destroy>", lambda e: e.widget is self and self._mpv_close(), add="+")
         self._placeholder()
 
         self.timeline = TimelineBar(self, on_seek=self._on_seek,
@@ -503,6 +580,8 @@ class VideoPlayer(ttk.Frame):
     # ---- sound controls ----
     def toggle_mute(self):
         self.audio.muted = not self.audio.muted
+        if self._mpv is not None:
+            self._mpv.set("mute", bool(self.audio.muted))
         if self._icons:
             icons.set_icon(self.mute_btn, "mute" if self.audio.muted else "volume")
         else:
@@ -519,12 +598,25 @@ class VideoPlayer(ttk.Frame):
         vol = max(0.0, min(self.vol_var.get(), 100.0))
         self.audio.volume = vol / 100.0
         self.vol_lbl.configure(text=f"{int(round(vol))}%")
+        if self._mpv is not None:
+            self._mpv.set("volume", self._mpv_volume())
         if self.audio.muted and vol > 0:      # moving the slider unmutes
             self.toggle_mute()
+
+    def set_audio_track(self, index):
+        """Play audio stream 0:a:<index> (None = the file's default). Applies
+        to the running playback with mpv, from the next Play with OpenCV."""
+        self.audio_track = None if index is None else max(0, int(index))
+        self.audio.track = self.audio_track
+        if self._mpv is not None:
+            self._mpv.set("aid", "auto" if self.audio_track is None else self.audio_track + 1)
 
     # public transport controls (used by the Dual Player)
     def play(self):
         if self.cap is not None and not self.playing:
+            if self._engine == "mpv":
+                self._mpv_play()
+                return
             self.playing = True
             self._show_playing(True)
             self._start_clock_and_audio()
@@ -535,6 +627,8 @@ class VideoPlayer(ttk.Frame):
         running) so two players can start together. True if it can play."""
         if self.cap is None or self.playing:
             return False
+        if self._engine == "mpv":      # mpv starts picture + sound itself
+            return not self._mpv_at_end()
         self._play_start_frame = self.cur_frame
         self.audio.prepare(self._path, self.current_seconds() or 0.0)
         return True
@@ -542,6 +636,9 @@ class VideoPlayer(ttk.Frame):
     def start_prepared(self, t0):
         """Begin playback set up by prepare_play() (call audio.go() first);
         t0 is the shared wall-clock start, so both players stay in step."""
+        if self._engine == "mpv":
+            self._mpv_play()
+            return
         self.playing = True
         self._show_playing(True)
         self._play_t0 = t0
@@ -572,6 +669,15 @@ class VideoPlayer(ttk.Frame):
         if end_frame <= start_frame:
             return
         self._stop_play()
+        if self._engine == "mpv":
+            # seek, then (once it has landed) arm mpv's end point + play
+            self._goto(start_frame, play=False, notify=False)
+            self._mpv_pending_end = end_frame
+            self._stop_at_frame = end_frame
+            self.playing = True
+            self._show_playing(True)
+            self._mpv_kick()
+            return
         self._seek_show(start_frame)
         self._stop_at_frame = end_frame
         self.playing = True
@@ -601,6 +707,11 @@ class VideoPlayer(ttk.Frame):
         by the running play loop, which still counts from the old start."""
         if self.cap is None:
             return
+        if self._engine == "mpv":
+            self._mpv_goto(idx, play)
+            if notify:
+                self._notify_seek()
+            return
         was = self.playing
         self._stop_play()
         self._seek_show(idx)    # clamps
@@ -611,6 +722,9 @@ class VideoPlayer(ttk.Frame):
 
     def _start_playing(self):
         if self.cap is None or self.playing:
+            return
+        if self._engine == "mpv":
+            self._mpv_play()
             return
         self.playing = True
         self._show_playing(True)
@@ -629,12 +743,8 @@ class VideoPlayer(ttk.Frame):
         of the app (e.g. the batch's 'move to done') can move or delete it.
         Safe to call when nothing is loaded."""
         self._stop_play()
-        if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
+        self._release_cap()
+        self._mpv_close()        # mpv quits -> the file handle is released
         self._path = None
         self._cur_bgr = None
         self.total_frames = 0
@@ -643,15 +753,24 @@ class VideoPlayer(ttk.Frame):
             self.timeline.set_duration(0.0)
         self._placeholder(tr("Video unloaded\n(freed so the batch can move it)"))
 
+    def _release_cap(self):
+        """Close the open video (OpenCV capture / mpv's current file)."""
+        if self.cap is not None:
+            if self._engine == "mpv":
+                if self._mpv is not None:
+                    self._mpv.command("stop")       # mpv lets go of the file
+            else:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+            self.cap = None
+        self._engine = None
+
     def _clear_loaded(self, msg):
         """Forget the previous video entirely (frame, markers, time label) so a
         failed load doesn't leave the old clip on screen looking loaded."""
-        if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
+        self._release_cap()
         self._path = None
         self._cur_bgr = None
         self.total_frames = 0
@@ -662,19 +781,27 @@ class VideoPlayer(ttk.Frame):
         self._placeholder(msg)
 
     def load(self, path):
-        if not self._ensure_libs():
-            self._placeholder(tr("Preview needs opencv-python + Pillow\n"
-                                 "(run Install Requirements.bat)\n"
-                                 "- you can still type times manually"))
-            self._log("[player] opencv-python / Pillow missing - preview disabled,"
-                      " manual entry still works.")
-            return False
         if path and self._norm(path) in VideoPlayer.locked_paths:
             self._log(f"[player] {os.path.basename(path)} is being cut right now (it will be "
                       "moved when done) - preview it after the run finishes.")
             if self.cap is None:
                 self._placeholder(tr("This file is being cut right now\n"
                                      "- load it again when the run finishes"))
+            return False
+        if pick_engine() == "mpv":
+            ok = self._mpv_load(path)
+            if ok is not None:                  # None = mpv could not start
+                return ok
+        self._mpv_close()
+        return self._load_cv(path)
+
+    def _load_cv(self, path):
+        if not self._ensure_libs():
+            self._placeholder(tr("Preview needs opencv-python + Pillow\n"
+                                 "(run Install Requirements.bat)\n"
+                                 "- you can still type times manually"))
+            self._log("[player] opencv-python / Pillow missing - preview disabled,"
+                      " manual entry still works.")
             return False
         self._stop_play()
         self._clear_loaded(tr("Loading..."))
@@ -685,6 +812,7 @@ class VideoPlayer(ttk.Frame):
             self._log(f"[player] could not open {os.path.basename(path)}")
             return False
         self.cap = cap
+        self._engine = "opencv"
         self._path = path
         fps = cap.get(self._cv2.CAP_PROP_FPS)
         self.fps = fps if fps and fps > 0 else 25.0
@@ -729,7 +857,9 @@ class VideoPlayer(ttk.Frame):
             self.canvas.place_configure(width=w, height=h)
         else:
             self.canvas.configure(width=w, height=h)
-        if self._cur_bgr is not None:
+        if self._engine == "mpv":
+            pass                     # mpv follows its frame's size by itself
+        elif self._cur_bgr is not None:
             self._show(self._cur_bgr)
         else:
             self._placeholder(getattr(self, "_placeholder_msg", None))
@@ -823,6 +953,7 @@ class VideoPlayer(ttk.Frame):
     def _placeholder(self, msg=None):
         if msg is None:
             msg = tr("No video loaded")
+        self._mpv_surface(False)
         self.canvas.delete("all")
         cw, ch = self._canvas_size()
         self._placeholder_msg = msg
@@ -843,10 +974,12 @@ class VideoPlayer(ttk.Frame):
 
     def _on_canvas_resize(self, _e=None):
         self._resize_job = None
+        if self._engine == "mpv":
+            return
         if self._cur_bgr is not None:
             self._show(self._cur_bgr)
         else:
-            self._placeholder()
+            self._placeholder(getattr(self, "_placeholder_msg", None))
 
     def _seek_show(self, idx):
         if self.cap is None:
@@ -936,9 +1069,16 @@ class VideoPlayer(ttk.Frame):
         self._play_t0 = time.monotonic()
 
     def _stop_play(self):
+        was = self.playing
         self.playing = False
         self._stop_at_frame = None
         self._show_playing(False)
+        if self._engine == "mpv":
+            self._mpv_pending_end = None
+            if was and self._mpv is not None:
+                self._mpv.set("pause", True)
+            self._mpv_disarm_end()
+            return
         self.audio.stop()
         if self._play_after is not None:
             try:
@@ -983,3 +1123,294 @@ class VideoPlayer(ttk.Frame):
         next_due = (self.cur_frame + 1 - self._play_start_frame) / self.fps
         delay = int((next_due - (time.monotonic() - self._play_t0)) * 1000)
         self._play_after = self.after(min(max(delay, 1), 40), self._play_loop)
+
+    # ------------------------------------------------------------ mpv engine
+    # mpv works asynchronously: a seek / step sets cur_frame to the target at
+    # once (so Set, Go and the Dual Player link see it immediately) and sends
+    # an exact seek; when mpv reports the seek has landed (playback-restart)
+    # the player asks for mpv's time-pos and takes the shown frame's number
+    # from it - normally the same frame, corrected if the file disagrees
+    # (e.g. past the last frame). Events are drained on the Tk thread by
+    # _mpv_pump; every event carries "_seq" (see mpvplayer) so position /
+    # pause / eof news from before the latest seek or play is ignored.
+    def _mpv_palette(self, pal):
+        bg = pal.get("video_bg", "#000000")
+        try:
+            self._mpv_host.configure(bg=bg)
+        except tk.TclError:
+            pass
+        if self._mpv is not None:
+            self._mpv.set("background-color", bg)
+
+    def _mpv_volume(self):
+        """mpv volume for the slider: the OpenCV engine's gain is v^2, mpv's
+        is (volume/100)^3 - so the same slider position sounds the same."""
+        g = max(0.0, min(float(self.audio.volume), 1.0)) ** 2
+        return round(100.0 * g ** (1.0 / 3.0), 2)
+
+    def _mpv_surface(self, on):
+        try:
+            if on:
+                self._mpv_host.place(x=0, y=0, relwidth=1, relheight=1)
+            else:
+                self._mpv_host.place_forget()
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _mpv_start(self):
+        """Start this player's mpv (once; reused for later loads)."""
+        b = self._mpv
+        if b is not None and b.alive():
+            return True
+        self._mpv_close()
+        exe = _mpv_exe()
+        if not exe:
+            return False
+        bg = themes.current().get("video_bg", "#000000")
+        extra = [f"--background-color={bg}", f"--volume={self._mpv_volume()}",
+                 "--mute=" + ("yes" if self.audio.muted else "no")]
+        if self.audio_track is not None:
+            extra.append(f"--aid={self.audio_track + 1}")
+        try:
+            b = mpvplayer.MpvProcess(exe, self._mpv_host.winfo_id(), extra=extra)
+        except (OSError, ValueError, tk.TclError) as exc:
+            _MPV["failed"] = True
+            self._log(f"[player] mpv could not start ({exc}) - using OpenCV instead")
+            applog.record(f"[player] mpv could not start ({exc}) - using OpenCV instead")
+            return False
+        for prop in ("time-pos", "pause", "eof-reached"):
+            b.observe(prop)
+        self._mpv = b
+        return True
+
+    def _mpv_close(self):
+        """Quit this player's mpv (frees the file); safe to call any time."""
+        b, self._mpv = self._mpv, None
+        if self._mpv_job is not None:
+            try:
+                self.after_cancel(self._mpv_job)
+            except (tk.TclError, ValueError):
+                pass
+            self._mpv_job = None
+        if self._engine == "mpv":
+            self.cap = None
+            self._engine = None
+            self.playing = False
+        self._mpv_pending_end = None
+        self._mpv_end_armed = False
+        if b is not None:
+            b.close()
+
+    def _mpv_load(self, path):
+        """Open path in mpv. True / False like load(); None = mpv is not
+        usable (the caller falls back to OpenCV)."""
+        self._stop_play()
+        if not self._mpv_start():
+            return None
+        b = self._mpv
+        self._clear_loaded(tr("Loading..."))
+        if not path or not os.path.isfile(path):
+            self._placeholder(tr("Could not open video"))
+            self._log(f"[player] could not open {os.path.basename(path or '')}")
+            return False
+        b.set("pause", True)
+        b.set("end", "none")
+        rid = b.command("loadfile", path)
+        self._mpv_seek_rid, self._mpv_settled, self._mpv_play_rid = rid, False, 0
+
+        def done(m):
+            ev = m.get("event")
+            return m.get("_seq", 0) >= rid and (
+                ev in ("file-loaded", "ipc-closed")
+                or (ev == "end-file" and m.get("reason") == "error"))
+        ev = b.wait_event(done, 20.0)
+        kind = ev.get("event") if ev else None
+        if kind != "file-loaded":
+            if kind == "end-file":
+                self._placeholder(tr("Could not open video"))
+                self._log(f"[player] could not open {os.path.basename(path)}")
+                return False
+            # mpv died or hung on this file: let OpenCV try it
+            self._log(f"[player] mpv did not open {os.path.basename(path)} - trying OpenCV")
+            self._mpv_close()
+            return None
+        if not b.get("vid"):
+            self._clear_loaded(tr("Could not read video"))
+            self._log(f"[player] could not read a frame from {os.path.basename(path)}")
+            return False
+        fps = _snap_fps(b.get("container-fps")) or _snap_fps(b.get("estimated-vf-fps"))
+        if not fps:
+            try:
+                from ..engine.probe import probe_video_fps
+                fps = _snap_fps(probe_video_fps(path))
+            except Exception:
+                fps = None
+        self.fps = fps or 25.0
+        dur = b.get("duration")
+        if not dur:
+            dur = probe_duration(path)
+        try:
+            # the OpenCV engine's frame count: duration x fps, rounded
+            frames = int(float(dur) * self.fps + 0.5) if dur else 0
+        except (TypeError, ValueError):
+            frames = 0
+        self.cap = b
+        self._engine = "mpv"
+        self._path = path
+        self.total_frames = max(frames, 0)
+        if len(str(self.total_frames)) > 6:
+            self._time_box.remeasure()
+        self.cur_frame = 0
+        self.mpv_time_pos = None
+        self.timeline.set_duration(self.total_frames / self.fps if self.fps else 0.0)
+        self._update_time()
+        self._mpv_surface(True)
+        mpvplayer.disable_child_windows(self._mpv_host.winfo_id())
+        self.canvas.focus_set()
+        self._mpv_kick()
+        return True
+
+    def _mpv_kick(self, delay=1):
+        """Run the event pump soon (after a command)."""
+        if self._mpv is None:
+            return
+        if self._mpv_job is not None:
+            try:
+                self.after_cancel(self._mpv_job)
+            except (tk.TclError, ValueError):
+                pass
+        self._mpv_job = self.after(delay, self._mpv_pump)
+
+    def _mpv_at_end(self):
+        return self.total_frames > 0 and self.cur_frame >= self.total_frames - 1
+
+    def _mpv_goto(self, idx, play=None):
+        b = self._mpv
+        if b is None or not self.fps:
+            return
+        idx = max(0, int(idx))
+        if self.total_frames > 0:
+            idx = min(idx, self.total_frames - 1)
+        was = self.playing
+        want = was if play is None else bool(play)
+        # any manual move cancels a section preview's stop point
+        self._stop_at_frame = None
+        self._mpv_pending_end = None
+        self._mpv_disarm_end()
+        if was and not want:
+            self.playing = False
+            self._show_playing(False)
+            b.set("pause", True)
+        self.cur_frame = idx
+        self._update_time()
+        self._mpv_hold = False
+        self._mpv_seek_rid = b.command("seek", idx / self.fps, "absolute+exact")
+        self._mpv_settled = False
+        if want and not was:
+            self._mpv_play()
+        self._mpv_kick()
+
+    def _mpv_play(self):
+        b = self._mpv
+        if b is None or self.cap is None or self._mpv_at_end():
+            return
+        self._mpv_pending_end = None
+        self._mpv_disarm_end()
+        self.playing = True
+        self._show_playing(True)
+        self._mpv_hold = False
+        self._mpv_play_rid = b.set("pause", False)
+        self._mpv_kick()
+
+    def _mpv_arm_end(self, end_frame):
+        """play_range: let mpv pause by itself on end_frame (frames at or
+        after the 'end' time are not shown; half a frame keeps rounding safe)."""
+        self._mpv.set("end", f"{(end_frame + 0.5) / self.fps:.6f}")
+        self._mpv_end_armed = True
+        self._mpv_end_frame = end_frame
+
+    def _mpv_disarm_end(self):
+        if self._mpv_end_armed and self._mpv is not None:
+            self._mpv.set("end", "none")
+        self._mpv_end_armed = False
+
+    def _mpv_set_pos(self, pos):
+        if pos is None or self.cap is None or not self.fps:
+            return
+        try:
+            pos = float(pos)
+        except (TypeError, ValueError):
+            return
+        self.mpv_time_pos = pos
+        f = max(0, int(round(pos * self.fps)))
+        if self.total_frames > 0:
+            f = min(f, self.total_frames - 1)
+        if f != self.cur_frame:
+            self.cur_frame = f
+            self._update_time()
+
+    def _mpv_pump(self):
+        """Drain mpv's events on the Tk thread (position, seek landed,
+        auto-pause at a section end / the end of the file, mpv gone)."""
+        self._mpv_job = None
+        b = self._mpv
+        if b is None:
+            return
+        pos_dirty = stopped = False
+        for m in b.drain():
+            seq = m.get("_seq", 0)
+            ev = m.get("event")
+            if ev == "ipc-closed":
+                self._mpv_died()
+                return
+            if "reply" in m:
+                if (m["reply"] == "pos" and seq >= self._mpv_seek_rid
+                        and m.get("error") == "success"):
+                    self._mpv_set_pos(m.get("data"))
+                continue
+            if ev == "playback-restart":
+                if seq >= self._mpv_seek_rid and not self._mpv_settled:
+                    self._mpv_settled = True
+                    b.command("get_property", "time-pos", tag="pos")
+                    if self._mpv_pending_end is not None and self.playing:
+                        self._mpv_arm_end(self._mpv_pending_end)
+                        self._mpv_pending_end = None
+                        self._mpv_play_rid = b.set("pause", False)
+            elif ev == "property-change":
+                name = m.get("name")
+                if name == "time-pos":
+                    if self._mpv_settled and not self._mpv_hold and seq >= self._mpv_seek_rid:
+                        pos_dirty = True
+                elif name in ("pause", "eof-reached"):
+                    # mpv paused by itself: section end ('end') or end of file
+                    if (m.get("data") is True and self.playing and self._mpv_pending_end is None
+                            and seq >= self._mpv_play_rid):
+                        stopped = True
+        if pos_dirty:
+            self._mpv_set_pos(b.props.get("time-pos"))
+        if stopped:
+            self.playing = False
+            self._stop_at_frame = None
+            self._show_playing(False)
+            # at the 'end' point mpv holds the frame but does not set pause:
+            # pause first, or lifting 'end' would let it play on
+            b.set("pause", True)
+            end_frame = self._mpv_end_frame if self._mpv_end_armed else None
+            self._mpv_disarm_end()
+            if end_frame is not None:
+                # held on the last frame before 'end' - its time-pos reads
+                # as the 'end' time itself, so take the frame we asked for
+                self._mpv_set_pos(end_frame / self.fps)
+                self._mpv_hold = True        # ignore that time-pos until the next move
+            else:
+                b.command("get_property", "time-pos", tag="pos")
+        if self.cap is None:
+            return
+        delay = 10 if not self._mpv_settled else 30 if self.playing else 250
+        self._mpv_job = self.after(delay, self._mpv_pump)
+
+    def _mpv_died(self):
+        self._log("[player] mpv stopped unexpectedly - load the video again")
+        applog.record("[player] mpv stopped unexpectedly")
+        self._mpv_close()
+        self._clear_loaded(tr("Could not read video"))

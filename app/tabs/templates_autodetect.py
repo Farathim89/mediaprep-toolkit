@@ -23,7 +23,7 @@ from ..engine.plexscan import detect_credits_visual
 from ..engine.recurring import detect_recurring
 from ..i18n import tr
 from ..ui.widgets import add_tooltip
-from .common import _KIND_NAMES, _list_media, _same_file
+from .common import _KIND_NAMES, _list_media, _same_file, mark_edges
 from .cut_common import _best_ok, _cand_label, tr_key
 from .templates_detect import _SENS
 from .. import jobs as jobreg
@@ -79,6 +79,7 @@ class TemplateAutoMixin:
         on.set(True)
         ef.set_value(float(c["start"]))
         et.set_value(float(c["end"]))      # shows the last frame of the range
+        mark_edges(ef, et, c.get("edge_src"))   # ⚠ on an edge placed by sound / a fade
         ef.flash()
         et.flash()
         self._refresh_markers()
@@ -198,14 +199,16 @@ class TemplateAutoMixin:
                     return
                 key = os.path.normcase(os.path.abspath(video))
                 for c in cl:
-                    rng = next((r for p, r in c["ranges"].items()
-                                if os.path.normcase(os.path.abspath(p)) == key), None)
+                    me = next((p for p in c["ranges"]
+                               if os.path.normcase(os.path.abspath(p)) == key), None)
+                    rng = c["ranges"][me] if me is not None else None
                     if not rng or c["kind"] not in cands:
                         continue
                     cand = {"start": float(rng[0]), "end": float(rng[1]),
                             "score": float(c["score"]),
                             "template": tr("season scan ({n} episodes)", n=c["count"]),
-                            "ok": True, "src": c.get("src", "audio"), "season": True}
+                            "ok": True, "src": c.get("src", "audio"), "season": True,
+                            "edge_src": (c.get("edge_src") or {}).get(me)}
                     cands[c["kind"]].insert(0, cand)
                     self.log(f"[AUTO] {c['kind']}: {fmt_time(rng[0])} -> {fmt_time(rng[1])} "
                              f"recurs in {c['count']} episode(s) (by {cand['src']}, "

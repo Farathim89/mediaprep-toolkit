@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "自動 (黒帯を検出)",
  "Auto (detect)": "自動 (検出)",
  "Auto (match source)": "自動(ソースに合わせる)",
+ "Auto (mpv if available)": "自動（mpv があれば使用）",
  "Auto - CPU (match source)": "自動 - CPU(ソースに合わせる)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "自動 - CPU は各ソースのコーデック系統に合ったエンコーダーを選び(HEVC ソース -> libx265、AV1 -> SVT-AV1、それ以外 -> libx264)、出力サイズが膨らまないようにします。自動 - GPU / NVENC は NVIDIA エンコーダーで同じことを行います(HEVC/AV1/VP9 -> H.265 NVENC、それ以外 -> H.264 NVENC) - はるかに高速ですが、同じ画質ではファイルがやや大きくなります。NVIDIA GPU のない PC では CPU エンコーダーに切り替わります。Plex 向け HEVC / H.264 = ほぼロスレスの HEVC または H.264 と Plex 向け音声を MKV に収め、映像ビットレートをソースのすぐ下に制限するので、カット後のファイルが大きくなりません(Plex はトランスコードなしでダイレクト再生します)。",
  "Auto - GPU / NVENC (match source)": "自動 - GPU / NVENC(ソースに合わせる)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "これらの行は停止した検出によるものです。自動カットの前に検出を最後まで実行してください。",
  "These templates already exist:": "これらのテンプレートは既に存在します:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "このビルドの検出エンジンにはまだ detect_segments() がありません - ツールキットを更新してください。",
+ "This edge was placed by sound / a fade - check it in the player": "この境界は音声 / フェードから推定して配置されました - プレーヤーで確認してください",
  "This file is being cut right now\n- load it again when the run finishes": "このファイルは現在カット中です\n- 実行が終わったら再度読み込んでください",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Data\\temp\\trash から {days:g} 日より古いゴミ箱項目 {n} 件({files} ファイル、{size})を完全に削除します。\n\n後から復元することはできません。\n\n削除しますか?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "映像エンコーダー",
  "Video file:": "動画ファイル:",
  "Video files": "動画ファイル",
+ "Video player": "ビデオプレーヤー",
  "Video player controls": "動画プレーヤーの操作",
+ "Video player engine:": "ビデオプレーヤーのエンジン:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "動画プレーヤー: タイムラインをクリック/ドラッグしてシーク。 Space = 再生/一時停止、Left/Right = 1 フレーム、Shift+Left/Right = 10 フレーム、Home/End = 最初/最後のフレーム、M = ミュート。キーはボックスに入力中以外ならタブ内のどこでも使えます(デュアルプレーヤー: 先に動画をクリック)。「移動:」には 21:30、0:01:05.5、00:01:05:500 を入力できます。「⏏ 解放」はファイルを解放して移動できるようにします。セクション横の ▶ はその 開始→終了 の範囲だけを再生します。時間ボックスは HH : MM : SS : mmm 形式で、空のボックスは 0 とみなされます。",
  "Video tracks": "映像トラック",
  "Video unloaded\n(freed so the batch can move it)": "動画を解放しました\n(バッチが移動できるよう解放済み)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "中央値 {med:.1f} LUFS、ばらつき {spread:.1f}。{verdict}",
  "minutes": "分",
  "missing or zero-byte file": "ファイルがないか 0 バイトです",
+ "mpv found: {path}": "mpv が見つかりました: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv が見つかりません - OpenCV プレビューを使用します",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv はグラフィックカードを使って滑らかに再生し、コマ送りも高速です（音声も mpv が再生）。OpenCV はシンプルな内蔵プレビューです。自動では mpv が見つかり起動できればそれを使い、そうでなければ OpenCV を使います。変更後に読み込んだ動画から適用されます。",
  "needs a From time": "開始時間が必要です",
  "needs a To time": "終了時間が必要です",
  "new:": "新:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5～10% 小さい、約 2 倍低速",
  "≈ 8-12% smaller, ~4x slower": "≈ 8～12% 小さい、約 4 倍低速",
  "◀ Prev": "◀ 前へ",
+ "⚠ {seg} end approximate": "⚠ {seg} の終了は概算",
+ "⚠ {seg} start approximate": "⚠ {seg} の開始は概算",
  "✔ {kind} (have)": "✔ {kind}(作成済み)"
 }

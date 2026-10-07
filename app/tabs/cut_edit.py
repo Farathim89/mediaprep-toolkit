@@ -18,7 +18,7 @@ from ..i18n import ntr, tr
 from ..ui.dialogs import ask_string, place_dialog
 from ..ui.player import VideoPlayer
 from ..ui.widgets import ScrollFrame, add_tooltip, build_log_tab, trim_text_lines
-from .common import _KIND_NAMES, _same_dir, _same_file, _snap_in_thread
+from .common import _KIND_NAMES, _same_dir, _same_file, _snap_in_thread, mark_edges
 from .cut_auto import AutoCutMixin
 from .cut_common import _cand_label, _is_plex, norm_margin, norm_tpl_margin, tr_key
 from .cut_manual import ManualCutMixin
@@ -43,6 +43,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         self._manual_cands_path = ""      # ... and the video it belongs to
         self._multi_cands = {}            # Multi cut: path -> detect_segments result
         self._multi_notes = {}            # Multi cut: iid -> "intro weak 0.41; ..."
+        self._multi_edges = {}            # Multi cut: iid -> {key: {"start","end"}} edge_src
         self._multi_info = set()          # ... iids whose note is informational (no ⚠)
         self._plex_saved = dict(saved.get("plex_scan") or {})   # last scan options
         self.columnconfigure(0, weight=1)
@@ -572,6 +573,13 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             player = self.multi_player
         ef.set_value(a)
         et.set_value(b)
+        es = c.get("edge_src") if isinstance(c.get("edge_src"), dict) else None
+        if where != "manual" and self._multi_sel:
+            if es:
+                self._multi_edges.setdefault(self._multi_sel, {})[key] = dict(es)
+            else:
+                self._multi_edges.get(self._multi_sel, {}).pop(key, None)
+        mark_edges(ef, et, es)         # ⚠ on an edge placed by sound / a fade
         ef.flash()
         et.flash()
         if where == "manual":

@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "Auto (zwarte balken detecteren)",
  "Auto (detect)": "Auto (detecteren)",
  "Auto (match source)": "Auto (zoals bron)",
+ "Auto (mpv if available)": "Automatisch (mpv indien beschikbaar)",
  "Auto - CPU (match source)": "Auto - CPU (zoals bron)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "Auto - CPU kiest de encoder die past bij de codecfamilie van elke bron (HEVC-bron -> libx265, AV1 -> SVT-AV1, anders libx264), zodat de uitvoer niet opzwelt. Auto - GPU / NVENC doet hetzelfde met de NVIDIA-encoders (HEVC/AV1/VP9 -> H.265 NVENC, anders H.264 NVENC) - veel sneller, iets grotere bestanden bij dezelfde kwaliteit; valt terug op de CPU-encoder op een pc zonder NVIDIA-GPU. Plex-ready HEVC / H.264 = vrijwel verliesloze HEVC of H.264 met Plex-vriendelijke audio in een MKV, met de videobitrate net onder die van de bron begrensd zodat het geknipte bestand nooit groter wordt (Plex speelt het direct af zonder transcoderen).",
  "Auto - GPU / NVENC (match source)": "Auto - GPU / NVENC (zoals bron)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "Deze rijen komen uit een gestopte detectie. Laat Detecteren eerst helemaal draaien voor Auto-knippen.",
  "These templates already exist:": "Deze sjablonen bestaan al:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "De detectie-engine van deze build heeft nog geen detect_segments() - werk de toolkit bij.",
+ "This edge was placed by sound / a fade - check it in the player": "Deze grens is geplaatst op basis van geluid / een fade - controleer hem in de speler",
  "This file is being cut right now\n- load it again when the run finishes": "Dit bestand wordt nu geknipt\n- laad het opnieuw als de run klaar is",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Hiermee wordt {n} prullenbakitem ({files} bestanden, {size}) ouder dan {days:g} dagen DEFINITIEF verwijderd uit Data\\temp\\trash.\n\nHet kan daarna NIET meer worden hersteld.\n\nVerwijderen?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "Video-encoder",
  "Video file:": "Videobestand:",
  "Video files": "Videobestanden",
+ "Video player": "Videospeler",
  "Video player controls": "Bediening videospeler",
+ "Video player engine:": "Engine van de videospeler:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "Videospeler: klik/sleep op de tijdlijn om te spoelen.  Space = afspelen/pauze, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = eerste/laatste frame, M = dempen. Toetsen werken overal op het tabblad behalve tijdens typen in een vak (Dubbele speler: klik eerst op een video). 'Ga naar:' accepteert 21:30, 0:01:05.5 of 00:01:05:500. '⏏ Ontladen' geeft het bestand vrij zodat het verplaatst kan worden. Een ▶ naast een sectie speelt alleen dat Van→Tot-bereik af. Tijdvakken zijn HH : MM : SS : mmm - een leeg vak telt als 0.",
  "Video tracks": "Videosporen",
  "Video unloaded\n(freed so the batch can move it)": "Video ontladen\n(vrijgegeven zodat de batch hem kan verplaatsen)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "mediaan {med:.1f} LUFS, spreiding {spread:.1f}; {verdict}",
  "minutes": "minuten",
  "missing or zero-byte file": "ontbrekend of leeg bestand",
+ "mpv found: {path}": "mpv gevonden: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv niet gevonden - de OpenCV-voorvertoning wordt gebruikt",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv speelt vloeiend af en stapt snel beeld voor beeld met behulp van de videokaart, met eigen geluid. OpenCV is de eenvoudige ingebouwde voorvertoning. Automatisch gebruikt mpv als het gevonden wordt en start, anders OpenCV. Geldt voor video's die na de wijziging worden geladen.",
  "needs a From time": "heeft een Van-tijd nodig",
  "needs a To time": "heeft een Tot-tijd nodig",
  "new:": "nieuw:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5-10% kleiner, ~2x trager",
  "≈ 8-12% smaller, ~4x slower": "≈ 8-12% kleiner, ~4x trager",
  "◀ Prev": "◀ Vorige",
+ "⚠ {seg} end approximate": "⚠ einde van {seg} bij benadering",
+ "⚠ {seg} start approximate": "⚠ begin van {seg} bij benadering",
  "✔ {kind} (have)": "✔ {kind} (aanwezig)"
 }

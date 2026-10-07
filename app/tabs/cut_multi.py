@@ -15,7 +15,7 @@ from ..ui.frametime import cached_fps, excl_to_shown, file_fps, prefetch_fps, sh
 from ..ui.player import VideoPlayer
 from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, bind_status_colors,
                           enable_file_drop_deep, enable_paths_drop, help_button)
-from .common import _VIDEO_TYPES
+from .common import _VIDEO_TYPES, mark_edges
 from .cut_common import _SEGS, _TO_END, _ZERO_FROM, _resolve_rng, tr_key
 from .. import jobs as jobreg
 from ..ui import icons, themes
@@ -370,6 +370,7 @@ class MultiCutMixin:
         for iid in self.multi_tree.selection():
             self._multi_cands.pop(self._multi_paths.pop(iid, None), None)
             self._multi_seg.pop(iid, None)
+            self._multi_edges.pop(iid, None)
             self._multi_notes.pop(iid, None)
             self._multi_info.discard(iid)
             self.multi_tree.delete(iid)
@@ -390,6 +391,7 @@ class MultiCutMixin:
         self.multi_tree.delete(*self.multi_tree.get_children())
         self._multi_paths.clear()
         self._multi_seg.clear()
+        self._multi_edges.clear()
         self._multi_notes.clear()
         self._multi_info.clear()
         self._multi_cands.clear()
@@ -447,10 +449,12 @@ class MultiCutMixin:
         # trace writing an empty range back mid-update)
         self._multi_loading = True
         ranges = self._multi_seg.get(iid, {})
+        edges = self._multi_edges.get(iid, {})
         for key, (ef, et) in self._multi_entries.items():
             fr, to = ranges.get(key, [None, None])
             ef.set_value(fr) if fr is not None else self._multi_clear_entry(ef)
             et.set_value(to) if to is not None else self._multi_clear_entry(et)
+            mark_edges(ef, et, edges.get(key))     # ⚠ on edges placed by sound / a fade
         self._multi_loading = False
         self._multi_markers()
 
@@ -488,7 +492,19 @@ class MultiCutMixin:
         if self._multi_loading or not self._multi_sel:
             return
         iid = self._multi_sel
-        self._multi_seg[iid] = self._multi_read_entries()
+        new = self._multi_read_entries()
+        old = self._multi_seg.get(iid, {})
+        edges = self._multi_edges.get(iid)
+        if edges:
+            # an edge the user changed is no longer the detected one
+            for key, (fr, to) in new.items():
+                es = edges.get(key)
+                o = old.get(key, [None, None])
+                if es and fr != o[0]:
+                    es["start"] = None
+                if es and to != o[1]:
+                    es["end"] = None
+        self._multi_seg[iid] = new
         self._multi_write_row(iid)
         self._multi_markers()
 
@@ -510,6 +526,7 @@ class MultiCutMixin:
                     if v[1] is not None and shown.get(k) is not None:
                         v[1] = round(shown_to_excl(shown[k], fps), 6)
             self._multi_seg[iid] = seg
+            self._multi_edges.pop(iid, None)      # times typed / copied by hand
             self._multi_write_row(iid)
         if selected:
             msg = ntr("Applied the section times to {n} selected file.",

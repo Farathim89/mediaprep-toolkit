@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "自动 (检测黑边)",
  "Auto (detect)": "自动 (检测)",
  "Auto (match source)": "自动(匹配源)",
+ "Auto (mpv if available)": "自动（如有 mpv 则使用）",
  "Auto - CPU (match source)": "自动 - CPU(匹配源)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "自动 - CPU 会选择与每个源编码家族匹配的编码器(HEVC 源 -> libx265，AV1 -> SVT-AV1，其他 -> libx264)，避免输出体积暴涨。自动 - GPU / NVENC 用 NVIDIA 编码器做同样的事(HEVC/AV1/VP9 -> H.265 NVENC，其他 -> H.264 NVENC) - 快得多，同等画质下文件略大；在没有 NVIDIA GPU 的电脑上会回退到 CPU 编码器。Plex 就绪 HEVC / H.264 = 近无损的 HEVC 或 H.264 加 Plex 友好音频，封装为 MKV，视频码率限制在源码率之下，剪切后的文件不会变大(Plex 无需转码即可直接播放)。",
  "Auto - GPU / NVENC (match source)": "自动 - GPU / NVENC(匹配源)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "这些行来自已停止的检测。请在自动剪切前将检测运行完毕。",
  "These templates already exist:": "这些模板已存在：",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "此版本的检测引擎还没有 detect_segments() - 请更新工具包。",
+ "This edge was placed by sound / a fade - check it in the player": "此边界是根据声音 / 淡入淡出放置的 - 请在播放器中检查",
  "This file is being cut right now\n- load it again when the run finishes": "此文件正在被剪切\n- 运行结束后请重新加载",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "这将从 Data\\temp\\trash 中永久删除早于 {days:g} 天的 {n} 个回收站项目({files} 个文件，{size})。\n\n之后将无法恢复。\n\n要删除吗？",
@@ -1155,7 +1157,9 @@
  "Video encoder": "视频编码器",
  "Video file:": "视频文件：",
  "Video files": "视频文件",
+ "Video player": "视频播放器",
  "Video player controls": "视频播放器控制",
+ "Video player engine:": "视频播放器引擎：",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "视频播放器：点击/拖动时间线进行跳转。 Space = 播放/暂停，Left/Right = 1 帧，Shift+Left/Right = 10 帧，Home/End = 第一/最后一帧，M = 静音。除了在框中输入时，按键在标签页的任何位置都有效(双播放器：先点击一个视频)。“跳转到：”接受 21:30、0:01:05.5 或 00:01:05:500。“⏏ 卸载”会释放文件以便移动。分段旁的 ▶ 只播放该 起→止 范围。时间框格式为 HH : MM : SS : mmm - 空框视为 0。",
  "Video tracks": "视频轨道",
  "Video unloaded\n(freed so the batch can move it)": "视频已卸载\n(已释放，以便批量处理移动它)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "中位数 {med:.1f} LUFS，离散 {spread:.1f}；{verdict}",
  "minutes": "分钟",
  "missing or zero-byte file": "文件缺失或为 0 字节",
+ "mpv found: {path}": "已找到 mpv：{path}",
+ "mpv not found - the OpenCV preview is used": "未找到 mpv - 使用 OpenCV 预览",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv 利用显卡流畅播放并快速逐帧步进，声音也由它播放。OpenCV 是简单的内置预览。自动：找到 mpv 且能启动时使用 mpv，否则使用 OpenCV。对更改后加载的视频生效。",
  "needs a From time": "需要起始时间",
  "needs a To time": "需要结束时间",
  "new:": "新：",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 小 5-10%，约慢 2 倍",
  "≈ 8-12% smaller, ~4x slower": "≈ 小 8-12%，约慢 4 倍",
  "◀ Prev": "◀ 上一个",
+ "⚠ {seg} end approximate": "⚠ {seg}结束位置为近似值",
+ "⚠ {seg} start approximate": "⚠ {seg}开始位置为近似值",
  "✔ {kind} (have)": "✔ {kind}(已有)"
 }

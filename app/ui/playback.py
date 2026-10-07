@@ -56,6 +56,7 @@ class AudioPlayer:
         self._log = log_fn or (lambda m: None)
         self.volume = 0.8
         self.muted = False
+        self.track = None        # audio stream 0:a:N to play (None = ffmpeg's pick)
         self._proc = None
         self._stream = None
         self._lock = threading.Lock()
@@ -87,10 +88,12 @@ class AudioPlayer:
                     self._log("[audio] ffmpeg not found on PATH - playback is silent.")
             return False
         cmd = ["ffmpeg", "-v", "error", "-nostdin",
-               "-ss", f"{max(0.0, offset_sec):.3f}", "-i", path,
-               "-vn", "-sn", "-dn",
-               "-f", "f32le", "-ac", str(_CHANNELS), "-ar", str(_RATE),
-               "pipe:1"]
+               "-ss", f"{max(0.0, offset_sec):.3f}", "-i", path]
+        if self.track is not None:
+            cmd += ["-map", f"0:a:{int(self.track)}?"]
+        cmd += ["-vn", "-sn", "-dn",
+                "-f", "f32le", "-ac", str(_CHANNELS), "-ar", str(_RATE),
+                "pipe:1"]
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL,

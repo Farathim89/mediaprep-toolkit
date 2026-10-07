@@ -2,11 +2,13 @@
 """Build "MediaPrep Toolkit.exe" (PyInstaller onedir, windowed) from
 tools/MediaPrep.spec.
 
-    python tools/build_exe.py [--ffmpeg-bin DIR] [--out DIR]
+    python tools/build_exe.py [--ffmpeg-bin DIR] [--mpv-exe FILE] [--out DIR]
 
 Build files go OUTSIDE the project: <out>/work and <out>/dist (default
 %TEMP%/mp_build). The result is <out>/dist/MediaPrep Toolkit/:
-    MediaPrep Toolkit.exe, README.txt, LICENSE.txt, _internal/ (with ffmpeg/)
+    MediaPrep Toolkit.exe, README.txt, LICENSE.txt,
+    _internal/ (with ffmpeg/ and mpv/ - mpv.exe + README-mpv.txt)
+--mpv-exe "" builds without mpv (the preview players then use OpenCV).
 """
 import argparse
 import glob
@@ -28,6 +30,18 @@ def _default_ffmpeg_bin():
     pkgs = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages")
     hits = sorted(glob.glob(os.path.join(pkgs, "Gyan.FFmpeg*", "ffmpeg-*", "bin")))
     return hits[-1] if hits else ""
+
+
+def _default_mpv_exe():
+    """mpv.exe to bundle: MEDIAPREP_MPV, PATH or the usual install folders."""
+    sys.path.insert(0, ROOT)
+    try:
+        from app.ui.mpvplayer import find_mpv
+        return find_mpv() or ""
+    except Exception:
+        return ""
+    finally:
+        sys.path.remove(ROOT)
 
 
 LICENSE = """MIT License
@@ -54,6 +68,8 @@ SOFTWARE.
 
 The bundled ffmpeg / ffprobe (_internal\\ffmpeg) are separate programs under
 the GNU GPL v3 - see _internal\\ffmpeg\\LICENSE and README-ffmpeg.txt.
+The bundled mpv (_internal\\mpv) is a separate program under the GNU GPL v2
+or later - see _internal\\mpv\\README-mpv.txt.
 """
 
 
@@ -71,6 +87,8 @@ def _dir_size(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ffmpeg-bin", default=_default_ffmpeg_bin())
+    ap.add_argument("--mpv-exe", default=_default_mpv_exe(),
+                    help='mpv.exe to bundle ("" = none)')
     ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "mp_build"))
     args = ap.parse_args()
 
@@ -83,11 +101,23 @@ def main():
     first = (r.stdout.splitlines() or [""])[0]          # "ffmpeg version 8.1.2-full_build-..."
     ff_version = first.split(" Copyright")[0].replace("ffmpeg version ", "").strip()
 
+    mpv_exe = args.mpv_exe
+    mpv_version = ""
+    if mpv_exe:
+        if not os.path.isfile(mpv_exe):
+            sys.exit(f"mpv.exe not found: {mpv_exe!r} (use --mpv-exe FILE, or --mpv-exe \"\")")
+        r = subprocess.run([mpv_exe, "--no-config", "--version"], capture_output=True,
+                           text=True, errors="replace")
+        mpv_version = (r.stdout.splitlines() or ["mpv (unknown version)"])[0].strip()
+    else:
+        print("WARNING: building without mpv - the preview players will use OpenCV")
+
     out = os.path.abspath(args.out)
     if (os.path.normcase(out) + os.sep).startswith(os.path.normcase(ROOT) + os.sep):
         sys.exit("refusing to build inside the project folder")
     work, dist = os.path.join(out, "work"), os.path.join(out, "dist")
-    env = dict(os.environ, MEDIAPREP_FFMPEG_BIN=ff_bin, MEDIAPREP_FFMPEG_VERSION=ff_version)
+    env = dict(os.environ, MEDIAPREP_FFMPEG_BIN=ff_bin, MEDIAPREP_FFMPEG_VERSION=ff_version,
+               MEDIAPREP_MPV_EXE=mpv_exe or "", MEDIAPREP_MPV_VERSION=mpv_version or "")
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
            "--workpath", work, "--distpath", dist, SPEC]
     print(" ".join(f'"{c}"' if " " in c else c for c in cmd))
@@ -99,7 +129,9 @@ def main():
     with open(os.path.join(app_dir, "LICENSE.txt"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write(LICENSE)
 
-    print(f"\nBuilt: {app_dir}  ({_dir_size(app_dir) / 2**20:.0f} MB, ffmpeg {ff_version})")
+    mpv_short = mpv_version.split(" Copyright")[0] if mpv_version else "no mpv"
+    print(f"\nBuilt: {app_dir}  ({_dir_size(app_dir) / 2**20:.0f} MB, ffmpeg {ff_version}"
+          f", {mpv_short})")
 
 
 if __name__ == "__main__":

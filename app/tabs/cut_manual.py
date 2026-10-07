@@ -14,7 +14,7 @@ from ..ui.frametime import file_fps
 from ..ui.player import VideoPlayer
 from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, enable_file_drop,
                           enable_file_drop_deep, help_button)
-from .common import _VIDEO_TYPES, _same_file
+from .common import _VIDEO_TYPES, _same_file, edges_for_range, mark_edges
 from .cut_common import _best_ok, _cand_label, _resolve_rng, tr_key
 from .. import jobs as jobreg
 from ..ui import icons
@@ -442,6 +442,8 @@ class ManualCutMixin:
                 ef.set_value(ef_val)
             if to_val is not None:
                 et.set_value(to_val)       # shows the last removed frame
+            # ⚠ on an edge placed by sound / a fade (not on an exact frame)
+            mark_edges(ef, et, edges_for_range(best.get("edge_src"), [ef_val, to_val]))
             filled.append(key)
             if first is None:
                 first = fr

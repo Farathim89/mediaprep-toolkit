@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "Auto (schwarze Balken erkennen)",
  "Auto (detect)": "Auto (erkennen)",
  "Auto (match source)": "Auto (wie Quelle)",
+ "Auto (mpv if available)": "Automatisch (mpv, falls vorhanden)",
  "Auto - CPU (match source)": "Auto - CPU (wie Quelle)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "Auto - CPU wählt den Encoder passend zur Codec-Familie jeder Quelle (HEVC-Quelle -> libx265, AV1 -> SVT-AV1, sonst libx264), damit die Ausgabe nicht aufbläht. Auto - GPU / NVENC macht dasselbe mit den NVIDIA-Encodern (HEVC/AV1/VP9 -> H.265 NVENC, sonst H.264 NVENC) - viel schneller, bei gleicher Qualität etwas größere Dateien; auf einem PC ohne NVIDIA-GPU wird auf den CPU-Encoder zurückgegriffen. Plex-ready HEVC / H.264 = nahezu verlustfreies HEVC oder H.264 mit Plex-freundlichem Audio in einer MKV, die Videobitrate knapp unter der der Quelle begrenzt, sodass die geschnittene Datei nie größer wird (Plex spielt sie direkt ohne Transkodierung ab).",
  "Auto - GPU / NVENC (match source)": "Auto - GPU / NVENC (wie Quelle)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "Diese Zeilen stammen aus einer gestoppten Erkennung. Führe Erkennen bis zum Ende aus, bevor du auto-schneidest.",
  "These templates already exist:": "Diese Vorlagen existieren bereits:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "Die Erkennungs-Engine dieses Builds hat noch kein detect_segments() - aktualisiere das Toolkit.",
+ "This edge was placed by sound / a fade - check it in the player": "Diese Grenze wurde anhand des Tons / einer Blende gesetzt - prüfe sie im Player",
  "This file is being cut right now\n- load it again when the run finishes": "Diese Datei wird gerade geschnitten\n- lade sie erneut, wenn der Lauf fertig ist",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Dies löscht {n} Papierkorb-Element ({files} Dateien, {size}), älter als {days:g} Tage, ENDGÜLTIG aus Data\\temp\\trash.\n\nEs kann danach NICHT wiederhergestellt werden.\n\nLöschen?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "Video-Encoder",
  "Video file:": "Videodatei:",
  "Video files": "Videodateien",
+ "Video player": "Videoplayer",
  "Video player controls": "Video-Player-Steuerung",
+ "Video player engine:": "Videoplayer-Engine:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "Video-Player: Zeitleiste klicken/ziehen zum Spulen.  Space = Abspielen/Pause, Left/Right = 1 Bild, Shift+Left/Right = 10 Bilder, Home/End = erstes/letztes Bild, M = stumm. Tasten funktionieren überall im Tab, außer beim Tippen in einem Feld (Doppel-Player: erst in ein Video klicken). 'Gehe zu:' akzeptiert 21:30, 0:01:05.5 oder 00:01:05:500. '⏏ Entladen' gibt die Datei frei, damit sie verschoben werden kann. Ein ▶ neben einem Abschnitt spielt nur diesen Von→Bis-Bereich. Zeitfelder sind HH : MM : SS : mmm - ein leeres Feld zählt als 0.",
  "Video tracks": "Videospuren",
  "Video unloaded\n(freed so the batch can move it)": "Video entladen\n(freigegeben, damit der Stapel es verschieben kann)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "Median {med:.1f} LUFS, Streuung {spread:.1f}; {verdict}",
  "minutes": "Minuten",
  "missing or zero-byte file": "fehlende oder leere Datei",
+ "mpv found: {path}": "mpv gefunden: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv nicht gefunden - die OpenCV-Vorschau wird verwendet",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv spielt flüssig ab und geht schnell Bild für Bild weiter - über die Grafikkarte, mit eigenem Ton. OpenCV ist die einfache eingebaute Vorschau. Automatisch nutzt mpv, wenn es gefunden wird und startet, sonst OpenCV. Gilt für Videos, die nach der Änderung geladen werden.",
  "needs a From time": "braucht eine Von-Zeit",
  "needs a To time": "braucht eine Bis-Zeit",
  "new:": "neu:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5-10 % kleiner, ~2x langsamer",
  "≈ 8-12% smaller, ~4x slower": "≈ 8-12 % kleiner, ~4x langsamer",
  "◀ Prev": "◀ Zurück",
+ "⚠ {seg} end approximate": "⚠ {seg}-Ende ungefähr",
+ "⚠ {seg} start approximate": "⚠ {seg}-Anfang ungefähr",
  "✔ {kind} (have)": "✔ {kind} (vorhanden)"
 }

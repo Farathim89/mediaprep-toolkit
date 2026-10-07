@@ -431,6 +431,28 @@ class SettingsDialog(tk.Toplevel):
                              "'Follow Windows' switches Light / Dark with the Windows "
                              "app mode."))
 
+        # video preview engine (ui/player.py): Auto / mpv / OpenCV
+        vp = ttk.LabelFrame(f, text=tr("Video player"))
+        vp.pack(fill="x", pady=(10, 0))
+        vp.columnconfigure(1, weight=1)
+        ttk.Label(vp, text=tr("Video player engine:")).grid(row=0, column=0, sticky="w")
+        cur = str(PREFS.get("player_engine", "auto")).lower()
+        self.v_engine = tk.StringVar(value=cur if cur in ("auto", "mpv", "opencv") else "auto")
+        ebox = KeyedCombobox(vp, textvariable=self.v_engine, values=["auto", "mpv", "opencv"],
+                             labels=[tr("Auto (mpv if available)"), "mpv", "OpenCV"],
+                             state="readonly", width=24)
+        ebox.grid(row=0, column=1, sticky="w", padx=6)
+        add_tooltip(ebox, tr("mpv plays smoothly and steps frames fast using the graphics "
+                             "card, with its own sound. OpenCV is the simple built-in "
+                             "preview. Auto uses mpv when it is found and starts, else "
+                             "OpenCV. Applies to videos loaded after the change."))
+        from . import mpvplayer
+        exe = mpvplayer.find_mpv()
+        ttk.Label(vp, text=(tr("mpv found: {path}", path=exe) if exe else
+                            tr("mpv not found - the OpenCV preview is used")),
+                  style="Hint.TLabel", wraplength=self.WRAP).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
         n = ttk.LabelFrame(f, text=tr("Notifications when a job finishes"))
         n.pack(fill="x", pady=(10, 0))
         self.v_on = tk.BooleanVar(value=PREFS["notify_on"])
@@ -509,6 +531,7 @@ class SettingsDialog(tk.Toplevel):
         PREFS["notify_toast"] = bool(self.v_toast.get())
         PREFS["notify_sound"] = bool(self.v_sound.get())
         PREFS["update_check"] = bool(self.v_upd.get())
+        PREFS["player_engine"] = self.v_engine.get() or "auto"
         try:
             PREFS["notify_min_minutes"] = max(0.0, float(self.v_min.get().replace(",", ".")))
         except ValueError:

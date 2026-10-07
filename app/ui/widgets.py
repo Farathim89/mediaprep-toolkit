@@ -50,6 +50,34 @@ class TimeEntry(ttk.Frame):
             self._entries[i].bind(
                 "<KeyRelease>",
                 lambda ev, i=i: self._advance(ev, i))
+        self._warn = None                  # the ⚠ label (set_warning), made on demand
+        self._warn_texts = None            # box texts the warning was given for
+        for var in self.vars:
+            var.trace_add("write", lambda *_a: self._warn_check())
+
+    # ---- "approximate edge" warning ----
+    def set_warning(self, text=None):
+        """Show a small ⚠ after the boxes with `text` as its tooltip (e.g. a
+        boundary detection placed by sound / a fade, not on an exact frame);
+        None hides it. Call it after filling the box: the mark goes away by
+        itself as soon as the value changes (Set, Snap, typing, a new fill)."""
+        if not text:
+            if self._warn is not None:
+                self._warn.grid_remove()
+            self._warn_texts = None
+            return
+        if self._warn is None:
+            self._warn = ttk.Label(self, text="⚠", style="Bare.TLabel")
+            themes.on_palette(self._warn, lambda p: self._warn.configure(
+                foreground=p.get("warn", "#d08000")))
+            self._warn_tip = Tooltip(self._warn, text, delay=200)
+        self._warn_tip.text = text
+        self._warn.grid(row=0, column=7, padx=(themes.px(3), 0))
+        self._warn_texts = self._texts()
+
+    def _warn_check(self):
+        if self._warn_texts is not None and self._texts() != self._warn_texts:
+            self.set_warning(None)
 
     def _state(self, flag, on):
         try:

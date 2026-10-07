@@ -273,6 +273,7 @@ PREF_DEFAULTS = {
     "update_last_check": 0.0,     # epoch seconds of the last check
     "log_keep_days": 30,          # session logs older than this go to the trash
     "language": "en",             # UI language code ("auto" = Windows language), see i18n.py
+    "player_engine": "auto",      # video preview engine: auto (mpv if found) / mpv / opencv
 }
 PREFS = dict(PREF_DEFAULTS)
 

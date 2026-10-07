@@ -15,6 +15,7 @@ from ..engine.detect import detect_segments, load_templates_for
 from ..engine.plexscan import scan_season
 from ..i18n import ntr, tr
 from ..ui.widgets import KeyedCombobox, add_tooltip
+from .common import approx_edge_notes, edges_for_range
 from .cut_common import (_SEGS, _ask_choice, _best_ok, _detect_notes, _mmss, _src_label,
                          margin_widgets, mode_combobox, norm_margin)
 from .templates_detect import _EPLEN, _SENS, eplen_values
@@ -55,13 +56,16 @@ class ScanMixin:
 
     def _multi_apply_results(self, entries, policy="overwrite"):
         """Put detection results into the Multi cut list. entries =
-        [(path, ranges, notes, warn, cands)]: ranges = {key: [from, to]} for
-        the sections that were searched (others are left alone); policy
-        'fill' only sets sections that are still empty. New files are added.
+        [(path, ranges, notes, warn, cands[, edges])]: ranges = {key: [from, to]}
+        for the sections that were searched (others are left alone); edges =
+        {key: {"start", "end"}} how detection placed them (approximate ones get
+        a ⚠ on their box); policy 'fill' only sets sections that are still
+        empty. New files are added.
         Returns (n_new, n_updated, first_iid, first_warn_iid)."""
         n_new = n_upd = 0
         first = first_warn = None
-        for path, ranges, notes, warn, cands in entries:
+        for path, ranges, notes, warn, cands, *more in entries:
+            edges = (more[0] if more else None) or {}
             iid = self._multi_iid_for(path)
             if iid is None:
                 iid = self.multi_tree.insert(
@@ -77,6 +81,8 @@ class ScanMixin:
                 if policy == "fill" and (old[0] is not None or old[1] is not None):
                     continue
                 cur[key] = [rng[0], rng[1]]
+                self._multi_edges.setdefault(iid, {})[key] = edges_for_range(
+                    edges.get(key), rng)
             self._multi_write_row(iid)
             self._multi_set_notes(iid, notes, warn=warn)
             if cands:
@@ -120,6 +126,17 @@ class ScanMixin:
                     to = None
             out[key] = [fr, to]
         return out
+
+    def _multi_detect_entry(self, path, res, cfg, have=None, ranges_use_have=True):
+        """One detect_segments result as a _multi_apply_results entry:
+        problems make the row 'need a look'; approximate edges (placed by
+        sound / a fade) are added to its notes and marked on the boxes."""
+        ranges = self._multi_ranges_from_detect(res, cfg, have if ranges_use_have else None)
+        edges = {k: edges_for_range((_best_ok((res or {}).get(k)) or {}).get("edge_src"), r)
+                 for k, r in ranges.items()}
+        problems = _detect_notes(res, cfg.get("use", {}), have, ui=True)
+        return (path, ranges, "; ".join(problems + approx_edge_notes(edges)),
+                bool(problems), res or None, edges)
 
     def _detect_loop(self, files, cfg, tag, review=False):
         """Worker side: load the templates once, match every file. Returns
@@ -225,22 +242,18 @@ class ScanMixin:
     def _multi_detect_done(self, files, cfg, policy, results, have, stopped):
         self._running(False)
         self.bar["value"] = 0
-        use = cfg.get("use", {})
         entries = []
         for f in files:
             if f not in results:
                 continue
-            res = results[f]
-            entries.append((f, self._multi_ranges_from_detect(res, cfg, have),
-                            "; ".join(_detect_notes(res, use, have, ui=True)), True,
-                            res or None))
+            entries.append(self._multi_detect_entry(f, results[f], cfg, have))
         if not entries:
             self.status_var.set(tr("Auto-detect stopped before any file finished.") if stopped
                                 else tr("Auto-detect: nothing to fill."))
             return
         _new, _upd, first, first_warn = self._multi_apply_results(entries, policy)
         self._multi_reselect(first_warn or first)
-        n_warn = sum(1 for e in entries if e[2])
+        n_warn = sum(1 for e in entries if e[3])
         shown = ntr("Auto-detect filled {n} file: {ok} complete, {warn} need a look (⚠)",
                     "Auto-detect filled {n} files: {ok} complete, {warn} need a look (⚠)",
                     len(entries), ok=len(entries) - n_warn, warn=n_warn)
@@ -514,7 +527,10 @@ class ScanMixin:
                 continue
             ranges = {k: (list(r[k]) if r.get(k) else [None, None])
                       for k in ("intro", "credits")}
+            edges = {k: edges_for_range(r.get(k + "_edge_src"), ranges[k])
+                     for k in ("intro", "credits")}
             notes, warn = self._plex_notes(r, opts, len(files))
+            notes = " · ".join(([notes] if notes else []) + approx_edge_notes(edges))
             cands = {}
             for key in ("intro", "credits"):
                 lst = [{"start": c["start"], "end": c["end"], "score": c["score"],
@@ -522,7 +538,7 @@ class ScanMixin:
                        for c in (r.get("cands") or {}).get(key, [])]
                 if lst:
                     cands[key] = lst
-            entries.append((f, ranges, notes, warn, cands or None))
+            entries.append((f, ranges, notes, warn, cands or None, edges))
         _new, _upd, first, first_warn = self._multi_apply_results(
             entries, target.get("policy", "overwrite"))
         self._multi_reselect(first_warn or first)

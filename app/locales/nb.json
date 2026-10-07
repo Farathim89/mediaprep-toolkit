@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "Auto (finn svarte kanter)",
  "Auto (detect)": "Auto (finn)",
  "Auto (match source)": "Auto (som kilden)",
+ "Auto (mpv if available)": "Auto (mpv hvis tilgjengelig)",
  "Auto - CPU (match source)": "Auto - CPU (som kilden)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "Auto - CPU velger koderen som passer hver kildes kodekfamilie (HEVC-kilde -> libx265, AV1 -> SVT-AV1, ellers libx264) så utdataene ikke vokser i størrelse. Auto - GPU / NVENC gjør det samme med NVIDIA-koderne (HEVC/AV1/VP9 -> H.265 NVENC, ellers H.264 NVENC) - mye raskere, litt større filer ved samme kvalitet; faller tilbake til CPU-koderen på en PC uten NVIDIA-GPU. Plex-klar HEVC / H.264 = nesten tapsfri HEVC eller H.264 med Plex-vennlig lyd i en MKV, der videobitraten holdes like under kildens så den klippede filen aldri blir større (Plex direkteavspiller den uten omkoding).",
  "Auto - GPU / NVENC (match source)": "Auto - GPU / NVENC (som kilden)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "Disse radene kommer fra en stoppet gjenkjenning. Kjør Gjenkjenn til slutten før Autoklipp.",
  "These templates already exist:": "Disse malene finnes allerede:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "Denne versjonens gjenkjenningsmotor har ikke detect_segments() ennå - oppdater verktøyet.",
+ "This edge was placed by sound / a fade - check it in the player": "Denne kanten ble plassert ut fra lyd / en overtoning - sjekk den i spilleren",
  "This file is being cut right now\n- load it again when the run finishes": "Denne filen klippes akkurat nå\n- last den inn igjen når kjøringen er ferdig",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Dette sletter PERMANENT {n} element i papirkurven ({files} filer, {size}) eldre enn {days:g} dager fra Data\\temp\\trash.\n\nDe kan IKKE gjenopprettes etterpå.\n\nSlette dem?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "Videokoder",
  "Video file:": "Videofil:",
  "Video files": "Videofiler",
+ "Video player": "Videospiller",
  "Video player controls": "Kontroller for videoavspilleren",
+ "Video player engine:": "Videospillerens motor:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "Videoavspiller: klikk/dra i tidslinjen for å spole.  Space = spill av/pause, Left/Right = 1 bilde, Shift+Left/Right = 10 bilder, Home/End = første/siste bilde, M = demp. Tastene virker hvor som helst på fanen unntatt mens du skriver i et felt (Dobbel avspiller: klikk på en video først). 'Gå til:' godtar 21:30, 0:01:05.5 eller 00:01:05:500. '⏏ Løs ut' frigjør filen så den kan flyttes. En ▶ ved siden av et segment spiller bare det Fra→Til-området. Tidsfelt er HH : MM : SS : mmm - et tomt felt teller som 0.",
  "Video tracks": "Videospor",
  "Video unloaded\n(freed so the batch can move it)": "Video løst ut\n(frigjort så batchen kan flytte den)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "median {med:.1f} LUFS, spredning {spread:.1f}; {verdict}",
  "minutes": "minutter",
  "missing or zero-byte file": "manglende fil eller fil på null byte",
+ "mpv found: {path}": "mpv funnet: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv ikke funnet - OpenCV-forhåndsvisningen brukes",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv spiller av jevnt og går raskt bilde for bilde ved hjelp av grafikkortet, med egen lyd. OpenCV er den enkle innebygde forhåndsvisningen. Auto bruker mpv når det blir funnet og starter, ellers OpenCV. Gjelder videoer som lastes inn etter endringen.",
  "needs a From time": "trenger en Fra-tid",
  "needs a To time": "trenger en Til-tid",
  "new:": "ny:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5-10 % mindre, ~2x tregere",
  "≈ 8-12% smaller, ~4x slower": "≈ 8-12 % mindre, ~4x tregere",
  "◀ Prev": "◀ Forrige",
+ "⚠ {seg} end approximate": "⚠ {seg} slutt omtrentlig",
+ "⚠ {seg} start approximate": "⚠ {seg} start omtrentlig",
  "✔ {kind} (have)": "✔ {kind} (har)"
 }

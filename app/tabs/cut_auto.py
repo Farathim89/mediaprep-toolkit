@@ -12,7 +12,7 @@ from ..i18n import N_, ntr, tr
 from ..ui.widgets import (KeyedCombobox, add_tooltip, enable_file_drop, help_button,
                           info_icon)
 from .common import _list_media, _same_dir
-from .cut_common import (_ask_choice, _detect_notes, _is_plex, margin_widgets, mode_combobox,
+from .cut_common import (_ask_choice, _is_plex, margin_widgets, mode_combobox,
                          norm_margin, norm_tpl_margin, tr_key)
 from .. import jobs as jobreg
 from ..ui import icons
@@ -475,17 +475,14 @@ class AutoCutMixin:
             return
         if mode == "replace":
             self._multi_clear()
-        use = cfg.get("use", {})
         entries = []
         for f in files:
             if f not in results:
                 continue
-            res = results[f]
-            entries.append((f, self._multi_ranges_from_detect(res, cfg),
-                            "; ".join(_detect_notes(res, use, have, ui=True)), True,
-                            res or None))
+            entries.append(self._multi_detect_entry(f, results[f], cfg, have,
+                                                    ranges_use_have=False))
         _new, n_upd, first, first_warn = self._multi_apply_results(entries)
-        n_warn = sum(1 for e in entries if e[2])
+        n_warn = sum(1 for e in entries if e[3])
         n_ok = len(entries) - n_warn
         self._multi_sel = None              # open the first row that needs a look
         self._multi_reselect(first_warn or first)

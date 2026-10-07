@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "자동 (검은 띠 감지)",
  "Auto (detect)": "자동 (감지)",
  "Auto (match source)": "자동(소스에 맞춤)",
+ "Auto (mpv if available)": "자동 (mpv가 있으면 사용)",
  "Auto - CPU (match source)": "자동 - CPU(소스에 맞춤)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "자동 - CPU는 각 소스의 코덱 계열에 맞는 인코더를 선택해(HEVC 소스 -> libx265, AV1 -> SVT-AV1, 그 외 -> libx264) 출력 크기가 부풀지 않게 합니다. 자동 - GPU / NVENC는 NVIDIA 인코더로 같은 일을 합니다(HEVC/AV1/VP9 -> H.265 NVENC, 그 외 -> H.264 NVENC) - 훨씬 빠르지만 같은 화질에서 파일이 약간 큽니다. NVIDIA GPU가 없는 PC에서는 CPU 인코더로 전환됩니다. Plex용 HEVC / H.264 = 거의 무손실 HEVC 또는 H.264와 Plex 친화 오디오를 MKV에 담고, 영상 비트레이트를 원본 바로 아래로 제한해 잘린 파일이 커지지 않습니다(Plex가 트랜스코딩 없이 직접 재생).",
  "Auto - GPU / NVENC (match source)": "자동 - GPU / NVENC(소스에 맞춤)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "이 행들은 중지된 감지에서 나온 것입니다. 자동 컷 전에 감지를 끝까지 실행하세요.",
  "These templates already exist:": "다음 템플릿이 이미 있습니다:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "이 빌드의 감지 엔진에는 아직 detect_segments()가 없습니다 - 툴킷을 업데이트하세요.",
+ "This edge was placed by sound / a fade - check it in the player": "이 경계는 소리 / 페이드로 추정해 배치되었습니다 - 플레이어에서 확인하세요",
  "This file is being cut right now\n- load it again when the run finishes": "이 파일은 지금 자르는 중입니다\n- 실행이 끝나면 다시 불러오세요",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Data\\temp\\trash에서 {days:g}일보다 오래된 휴지통 항목 {n}개(파일 {files}개, {size})를 영구적으로 삭제합니다.\n\n이후에는 복구할 수 없습니다.\n\n삭제할까요?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "비디오 인코더",
  "Video file:": "영상 파일:",
  "Video files": "영상 파일",
+ "Video player": "비디오 플레이어",
  "Video player controls": "영상 플레이어 조작",
+ "Video player engine:": "비디오 플레이어 엔진:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "영상 플레이어: 타임라인을 클릭/드래그해 탐색합니다.  Space = 재생/일시 정지, Left/Right = 1프레임, Shift+Left/Right = 10프레임, Home/End = 첫/마지막 프레임, M = 음소거. 상자에 입력하는 중이 아니면 탭 어디에서나 키가 작동합니다(듀얼 플레이어: 먼저 영상 클릭). '이동:'에는 21:30, 0:01:05.5 또는 00:01:05:500을 입력할 수 있습니다. '⏏ 언로드'는 파일을 해제해 옮길 수 있게 합니다. 구간 옆의 ▶는 해당 시작→끝 범위만 재생합니다. 시간 상자는 HH : MM : SS : mmm 형식이며 빈 상자는 0으로 간주됩니다.",
  "Video tracks": "영상 트랙",
  "Video unloaded\n(freed so the batch can move it)": "영상 언로드됨\n(일괄 처리가 옮길 수 있도록 해제됨)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "중앙값 {med:.1f} LUFS, 편차 {spread:.1f}; {verdict}",
  "minutes": "분",
  "missing or zero-byte file": "파일이 없거나 0바이트임",
+ "mpv found: {path}": "mpv 찾음: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv를 찾을 수 없음 - OpenCV 미리보기를 사용합니다",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv는 그래픽 카드를 사용해 부드럽게 재생하고 프레임 단위 이동도 빠르며, 소리도 직접 재생합니다. OpenCV는 간단한 내장 미리보기입니다. 자동은 mpv를 찾아 실행할 수 있으면 mpv를, 아니면 OpenCV를 사용합니다. 변경 후 불러온 동영상부터 적용됩니다.",
  "needs a From time": "시작 시간이 필요함",
  "needs a To time": "끝 시간이 필요함",
  "new:": "새 파일:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5-10% 작음, 약 2배 느림",
  "≈ 8-12% smaller, ~4x slower": "≈ 8-12% 작음, 약 4배 느림",
  "◀ Prev": "◀ 이전",
+ "⚠ {seg} end approximate": "⚠ {seg} 끝 위치 대략적",
+ "⚠ {seg} start approximate": "⚠ {seg} 시작 위치 대략적",
  "✔ {kind} (have)": "✔ {kind}(있음)"
 }

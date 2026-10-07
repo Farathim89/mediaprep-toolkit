@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "Авто (найти чёрные полосы)",
  "Auto (detect)": "Авто (определить)",
  "Auto (match source)": "Авто (как в исходнике)",
+ "Auto (mpv if available)": "Авто (mpv, если доступен)",
  "Auto - CPU (match source)": "Авто - CPU (как в исходнике)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "Авто - CPU выбирает кодировщик под семейство кодека каждого исходника (исходник HEVC -> libx265, AV1 -> SVT-AV1, иначе libx264), чтобы размер результата не раздувался. Авто - GPU / NVENC делает то же с кодировщиками NVIDIA (HEVC/AV1/VP9 -> H.265 NVENC, иначе H.264 NVENC) — намного быстрее, файлы чуть больше при том же качестве; на ПК без GPU NVIDIA используется кодировщик CPU. Plex-ready HEVC / H.264 = почти без потерь HEVC или H.264 со звуком для Plex в MKV, битрейт видео ограничен чуть ниже исходного, поэтому вырезанный файл никогда не растёт (Plex воспроизводит его напрямую без транскодирования).",
  "Auto - GPU / NVENC (match source)": "Авто - GPU / NVENC (как в исходнике)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "Эти строки получены остановленным поиском. Доведите поиск до конца перед автонарезкой.",
  "These templates already exist:": "Эти шаблоны уже существуют:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "В движке поиска этой сборки ещё нет detect_segments() — обновите программу.",
+ "This edge was placed by sound / a fade - check it in the player": "Эта граница поставлена по звуку / затуханию - проверьте её в плеере",
  "This file is being cut right now\n- load it again when the run finishes": "Этот файл сейчас режется\n- загрузите его снова после завершения",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Будет НАВСЕГДА удалён {n} объект корзины (файлов: {files}, {size}) старше {days:g} дн. из Data\\temp\\trash.\n\nВосстановить его будет НЕЛЬЗЯ.\n\nУдалить?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "Видеокодировщик",
  "Video file:": "Видеофайл:",
  "Video files": "Видеофайлы",
+ "Video player": "Видеоплеер",
  "Video player controls": "Управление видеоплеером",
+ "Video player engine:": "Движок видеоплеера:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "Видеоплеер: щёлкните/тяните шкалу времени для перемотки.  Space = воспроизведение/пауза, Left/Right = 1 кадр, Shift+Left/Right = 10 кадров, Home/End = первый/последний кадр, M = без звука. Клавиши работают в любом месте вкладки, кроме ввода в поле (Двойной плеер: сначала щёлкните по видео). «Перейти к:» принимает 21:30, 0:01:05.5 или 00:01:05:500. «⏏ Выгрузить» освобождает файл, чтобы его можно было переместить. ▶ рядом с разделом воспроизводит только диапазон От→До. Поля времени — ЧЧ : ММ : СС : мс; пустое поле считается 0.",
  "Video tracks": "Видеодорожки",
  "Video unloaded\n(freed so the batch can move it)": "Видео выгружено\n(освобождено, чтобы пакет мог его переместить)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "медиана {med:.1f} LUFS, разброс {spread:.1f}; {verdict}",
  "minutes": "минут",
  "missing or zero-byte file": "файл отсутствует или пустой",
+ "mpv found: {path}": "mpv найден: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv не найден - используется предпросмотр OpenCV",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv воспроизводит плавно и быстро переходит по кадрам с помощью видеокарты, со своим звуком. OpenCV - простой встроенный предпросмотр. «Авто» использует mpv, если он найден и запускается, иначе OpenCV. Применяется к видео, загруженным после изменения.",
  "needs a From time": "нужно время «От»",
  "needs a To time": "нужно время «До»",
  "new:": "новый:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ на 5-10% меньше, ~2x медленнее",
  "≈ 8-12% smaller, ~4x slower": "≈ на 8-12% меньше, ~4x медленнее",
  "◀ Prev": "◀ Назад",
+ "⚠ {seg} end approximate": "⚠ {seg}: конец приблизительный",
+ "⚠ {seg} start approximate": "⚠ {seg}: начало приблизительное",
  "✔ {kind} (have)": "✔ {kind} (есть)"
 }

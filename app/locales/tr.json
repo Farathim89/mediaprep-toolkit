@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "Otomatik (siyah bantları algıla)",
  "Auto (detect)": "Otomatik (algıla)",
  "Auto (match source)": "Otomatik (kaynağa uy)",
+ "Auto (mpv if available)": "Otomatik (varsa mpv)",
  "Auto - CPU (match source)": "Otomatik - CPU (kaynağa uy)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "Otomatik - CPU, çıktının şişmemesi için her kaynağın codec ailesine uyan kodlayıcıyı seçer (HEVC kaynak -> libx265, AV1 -> SVT-AV1, diğerleri libx264). Otomatik - GPU / NVENC aynısını NVIDIA kodlayıcılarıyla yapar (HEVC/AV1/VP9 -> H.265 NVENC, diğerleri H.264 NVENC) - çok daha hızlı, aynı kalitede biraz daha büyük dosyalar; NVIDIA GPU'su olmayan bir PC'de CPU kodlayıcısına döner. Plex'e hazır HEVC / H.264 = MKV içinde Plex dostu sesle neredeyse kayıpsız HEVC veya H.264; video bit hızı kaynağın hemen altında sınırlanır, böylece kesilen dosya asla büyümez (Plex onu dönüştürmeden doğrudan oynatır).",
  "Auto - GPU / NVENC (match source)": "Otomatik - GPU / NVENC (kaynağa uy)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "Bu satırlar durdurulmuş bir algılamadan geliyor. Otomatik kesimden önce Algıla'yı sonuna kadar çalıştırın.",
  "These templates already exist:": "Bu şablonlar zaten var:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "Bu sürümün algılama motorunda henüz detect_segments() yok - araç setini güncelleyin.",
+ "This edge was placed by sound / a fade - check it in the player": "Bu sınır sese / bir geçişe göre yerleştirildi - oynatıcıda kontrol edin",
  "This file is being cut right now\n- load it again when the run finishes": "Bu dosya şu anda kesiliyor\n- iş bitince tekrar yükleyin",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Bu işlem Data\\temp\\trash içinden {days:g} günden eski {n} çöp öğesini ({files} dosya, {size}) KALICI olarak silecek.\n\nSonradan kurtarılAMAZ.\n\nSilinsin mi?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "Video kodlayıcı",
  "Video file:": "Video dosyası:",
  "Video files": "Video dosyaları",
+ "Video player": "Video oynatıcı",
  "Video player controls": "Video oynatıcı kontrolleri",
+ "Video player engine:": "Video oynatıcı motoru:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "Video oynatıcı: sarmak için zaman çizelgesine tıklayın/sürükleyin.  Space = oynat/duraklat, Left/Right = 1 kare, Shift+Left/Right = 10 kare, Home/End = ilk/son kare, M = sessiz. Tuşlar, bir kutuya yazarken dışında sekmenin her yerinde çalışır (Çift Oynatıcı: önce bir videoya tıklayın). 'Git:' 21:30, 0:01:05.5 veya 00:01:05:500 kabul eder. '⏏ Çıkar' dosyayı serbest bırakır, böylece taşınabilir. Bir bölümün yanındaki ▶ yalnızca o Başlangıç→Bitiş aralığını çalar. Zaman kutuları SS : DD : SN : mmm biçimindedir - boş kutu 0 sayılır.",
  "Video tracks": "Video parçaları",
  "Video unloaded\n(freed so the batch can move it)": "Video çıkarıldı\n(toplu işlem taşıyabilsin diye serbest bırakıldı)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "medyan {med:.1f} LUFS, yayılım {spread:.1f}; {verdict}",
  "minutes": "dakika",
  "missing or zero-byte file": "eksik veya sıfır baytlık dosya",
+ "mpv found: {path}": "mpv bulundu: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv bulunamadı - OpenCV önizlemesi kullanılıyor",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv, ekran kartını kullanarak akıcı oynatır ve kare kare hızlıca ilerler; sesi de kendisi çalar. OpenCV basit yerleşik önizlemedir. Otomatik, mpv bulunup başlatılabiliyorsa onu, aksi halde OpenCV'yi kullanır. Değişiklikten sonra yüklenen videolara uygulanır.",
  "needs a From time": "bir Başlangıç zamanı gerekli",
  "needs a To time": "bir Bitiş zamanı gerekli",
  "new:": "yeni:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ %5-10 küçük, ~2 kat yavaş",
  "≈ 8-12% smaller, ~4x slower": "≈ %8-12 küçük, ~4 kat yavaş",
  "◀ Prev": "◀ Önceki",
+ "⚠ {seg} end approximate": "⚠ {seg} bitişi yaklaşık",
+ "⚠ {seg} start approximate": "⚠ {seg} başlangıcı yaklaşık",
  "✔ {kind} (have)": "✔ {kind} (var)"
 }

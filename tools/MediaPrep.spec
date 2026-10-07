@@ -5,6 +5,9 @@
 #
 # Env: MEDIAPREP_FFMPEG_BIN = folder with ffmpeg.exe + ffprobe.exe (and a
 # LICENSE one level up), bundled into _internal/ffmpeg/.
+#      MEDIAPREP_MPV_EXE = mpv.exe (the preview players' engine), bundled into
+# _internal/mpv/ with README-mpv.txt (optional: without it the players use
+# their OpenCV engine).
 import os
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
@@ -19,6 +22,8 @@ NAME = "MediaPrep Toolkit"
 
 FFMPEG_BIN = os.environ.get("MEDIAPREP_FFMPEG_BIN", "")
 FFMPEG_VERSION = os.environ.get("MEDIAPREP_FFMPEG_VERSION", "unknown")
+MPV_EXE = os.environ.get("MEDIAPREP_MPV_EXE", "")
+MPV_VERSION = os.environ.get("MEDIAPREP_MPV_VERSION", "unknown")
 
 # ---- read-only app resources (only the language catalogs, not the
 # translator template files) ----
@@ -64,6 +69,37 @@ if FFMPEG_BIN:
             "configuration of each release)\n"
         )
     datas.append((note, "ffmpeg"))
+
+# ---- bundled mpv (GPLv2+ build; ui/mpvplayer.py finds _internal/mpv/mpv.exe) ----
+if MPV_EXE and os.path.isfile(MPV_EXE):
+    datas.append((MPV_EXE, "mpv"))
+    # the shinchiro builds ship this shader compiler next to mpv.exe (used
+    # only where Windows lacks d3dcompiler_47)
+    d3dc = os.path.join(os.path.dirname(MPV_EXE), "d3dcompiler_43.dll")
+    if os.path.isfile(d3dc):
+        datas.append((d3dc, "mpv"))
+    note = os.path.join(workpath, "README-mpv.txt")
+    os.makedirs(workpath, exist_ok=True)
+    with open(note, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(
+            f"{MPV_VERSION}\n"
+            "\n"
+            "mpv.exe is the unmodified Windows build of the mpv media player, bundled\n"
+            "so the preview players of MediaPrep Toolkit can decode on the graphics\n"
+            "card. MediaPrep Toolkit only runs it as a separate program (controlled\n"
+            "over its JSON IPC); it is not linked into the app.\n"
+            "\n"
+            "License: mpv is free software under the GNU General Public License,\n"
+            "version 2 or later (GPLv2+); builds made with -Dgpl=false are under the\n"
+            "GNU LGPL v2.1 or later. See\n"
+            "https://github.com/mpv-player/mpv/blob/master/Copyright\n"
+            "\n"
+            "Website:           https://mpv.io\n"
+            "Source code:       https://github.com/mpv-player/mpv\n"
+            "Windows builds:    https://github.com/shinchiro/mpv-winbuild-cmake/releases\n"
+            "                   (the build recipe and the exact sources of each release)\n"
+        )
+    datas.append((note, "mpv"))
 
 hiddenimports = [
     "sklearn.utils._typedefs", "sklearn.neighbors._partition_nodes",

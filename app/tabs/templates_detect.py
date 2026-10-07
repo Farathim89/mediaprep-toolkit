@@ -11,7 +11,7 @@ from ..engine.recurring import detect_recurring, representative_member
 from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, bind_status_colors,
                           enable_file_drop, help_button)
 from .audition import _AuditionWindow
-from .common import _KIND_NAMES, _list_media, _template_stem
+from .common import _KIND_NAMES, _list_media, _template_stem, edge_is_approx, mark_edges
 from .cut_common import margin_widgets, mode_combobox, norm_margin, norm_tpl_margin
 from .. import jobs as jobreg
 from ..i18n import tr, N_
@@ -450,9 +450,13 @@ class TemplateDetectMixin:
                     rep = representative_member(c)
                     a, b = c["ranges"][rep]
                     iid = f"c{n}"
+                    # ⚠ before an edge placed by sound / a fade (approximate)
+                    es = (c.get("edge_src") or {}).get(rep) or {}
+                    sa = ("⚠ " if edge_is_approx(es.get("start")) else "") + fmt_time(a)
+                    sb = ("⚠ " if edge_is_approx(es.get("end")) else "") + fmt_time(b)
                     self.detect_tree.insert(
                         "", "end", iid=iid,
-                        values=(self._kind_disp(c), c["count"], fmt_time(a), fmt_time(b),
+                        values=(self._kind_disp(c), c["count"], sa, sb,
                                 f"{b - a:.1f}s", os.path.basename(rep)),
                         tags=("have",) if c.get("known") else ())
                     self._clusters[iid] = c
@@ -494,6 +498,7 @@ class TemplateDetectMixin:
         on.set(True)
         ef.set_value(a)
         et.set_value(b)          # engine end -> shows the last frame
+        mark_edges(ef, et, (c.get("edge_src") or {}).get(rep))   # ⚠ sound / fade edges
         self._refresh_markers()
         if loaded:
             self.player.seek_seconds(a)     # start reviewing at the boundary

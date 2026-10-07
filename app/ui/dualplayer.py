@@ -158,6 +158,10 @@ class DualPlayerTab(ttk.Frame):
         if self.pA.is_playing() or self.pB.is_playing():
             self.pA.pause()
             self.pB.pause()
+            # mpv: two processes pause independently and can stop a frame
+            # apart - once A's final frame is known, put B on A's time
+            if self.link_var.get() and "mpv" in (self.pA._engine, self.pB._engine):
+                self.after(150, self._align_b)
         else:
             # prime both soundtracks first, then start both sounds and both
             # picture clocks together so A and B begin in step
@@ -168,6 +172,17 @@ class DualPlayerTab(ttk.Frame):
             for p in ready:
                 p.start_prepared(t0)
         self._sync_both_label()
+
+    def _align_b(self):
+        a, b = self.pA, self.pB
+        if a.has_video() and b.has_video() and not (a.is_playing() or b.is_playing()):
+            sec = a.current_seconds() or 0.0
+            if abs((b.current_seconds() or 0.0) - sec) > 0.5 / (b.fps or 25.0):
+                self._mirroring = True
+                try:
+                    b.seek_seconds(sec, play=False)
+                finally:
+                    self._mirroring = False
 
     def _sync_both_label(self):
         """Keep the button label true to the players (playback can end by

@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "ऑटो (काली पट्टियाँ पहचानें)",
  "Auto (detect)": "ऑटो (पहचानें)",
  "Auto (match source)": "ऑटो (स्रोत जैसा)",
+ "Auto (mpv if available)": "स्वचालित (mpv उपलब्ध हो तो)",
  "Auto - CPU (match source)": "ऑटो - CPU (स्रोत जैसा)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "ऑटो - CPU हर स्रोत के कोडेक परिवार से मेल खाता एनकोडर चुनता है (HEVC स्रोत -> libx265, AV1 -> SVT-AV1, बाकी libx264) ताकि आउटपुट का आकार न फूले। ऑटो - GPU / NVENC यही काम NVIDIA एनकोडर से करता है (HEVC/AV1/VP9 -> H.265 NVENC, बाकी H.264 NVENC) — बहुत तेज़, समान क्वालिटी पर थोड़ी बड़ी फ़ाइलें; NVIDIA GPU के बिना PC पर CPU एनकोडर इस्तेमाल होता है। Plex-ready HEVC / H.264 = लगभग लॉसलेस HEVC या H.264, Plex-अनुकूल ऑडियो के साथ MKV में, वीडियो बिटरेट स्रोत से ठीक नीचे सीमित ताकि कट फ़ाइल कभी बड़ी न हो (Plex इसे बिना ट्रांसकोड किए सीधे चलाता है)।",
  "Auto - GPU / NVENC (match source)": "ऑटो - GPU / NVENC (स्रोत जैसा)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "ये पंक्तियाँ रोके गए डिटेक्ट से आई हैं। ऑटो-कट से पहले डिटेक्ट को अंत तक चलाएँ।",
  "These templates already exist:": "ये टेम्पलेट पहले से मौजूद हैं:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "इस बिल्ड के डिटेक्शन इंजन में अभी detect_segments() नहीं है — टूलकिट अपडेट करें।",
+ "This edge was placed by sound / a fade - check it in the player": "यह किनारा ध्वनि / फ़ेड के आधार पर रखा गया था - इसे प्लेयर में जाँचें",
  "This file is being cut right now\n- load it again when the run finishes": "यह फ़ाइल अभी काटी जा रही है\n- रन पूरा होने पर इसे फिर से लोड करें",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "यह Data\\temp\\trash से {days:g} दिन से पुराना {n} ट्रैश आइटम ({files} फ़ाइलें, {size}) स्थायी रूप से डिलीट करेगा।\n\nइसके बाद इसे वापस नहीं पाया जा सकेगा।\n\nडिलीट करें?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "वीडियो एन्कोडर",
  "Video file:": "वीडियो फ़ाइल:",
  "Video files": "वीडियो फ़ाइलें",
+ "Video player": "वीडियो प्लेयर",
  "Video player controls": "वीडियो प्लेयर नियंत्रण",
+ "Video player engine:": "वीडियो प्लेयर इंजन:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "वीडियो प्लेयर: सीक करने के लिए टाइमलाइन पर क्लिक/ड्रैग करें।  Space = चलाएँ/रोकें, Left/Right = 1 फ़्रेम, Shift+Left/Right = 10 फ़्रेम, Home/End = पहला/आख़िरी फ़्रेम, M = म्यूट। कुंजियाँ टैब पर कहीं भी काम करती हैं, सिवाय किसी बॉक्स में टाइप करते समय (डुअल प्लेयर: पहले किसी वीडियो पर क्लिक करें)। 'यहाँ जाएँ:' 21:30, 0:01:05.5 या 00:01:05:500 स्वीकार करता है। '⏏ अनलोड करें' फ़ाइल को छोड़ देता है ताकि उसे ले जाया जा सके। किसी सेक्शन के बगल का ▶ केवल वह शुरू→अंत रेंज चलाता है। समय बॉक्स HH : MM : SS : mmm हैं — ख़ाली बॉक्स 0 माना जाता है।",
  "Video tracks": "वीडियो ट्रैक",
  "Video unloaded\n(freed so the batch can move it)": "वीडियो अनलोड हुआ\n(छोड़ा गया ताकि बैच इसे ले जा सके)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "मीडियन {med:.1f} LUFS, फैलाव {spread:.1f}; {verdict}",
  "minutes": "मिनट",
  "missing or zero-byte file": "फ़ाइल गायब है या शून्य-बाइट की है",
+ "mpv found: {path}": "mpv मिला: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv नहीं मिला - OpenCV पूर्वावलोकन उपयोग किया जा रहा है",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv ग्राफ़िक्स कार्ड की मदद से सहज रूप से चलाता है और फ़्रेम-दर-फ़्रेम तेज़ी से आगे-पीछे जाता है, अपनी ध्वनि के साथ। OpenCV सरल बिल्ट-इन पूर्वावलोकन है। स्वचालित, mpv मिलने और शुरू होने पर उसे उपयोग करता है, अन्यथा OpenCV। बदलाव के बाद लोड किए गए वीडियो पर लागू होता है।",
  "needs a From time": "शुरू समय चाहिए",
  "needs a To time": "अंत समय चाहिए",
  "new:": "नया:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5-10% छोटा, ~2x धीमा",
  "≈ 8-12% smaller, ~4x slower": "≈ 8-12% छोटा, ~4x धीमा",
  "◀ Prev": "◀ पिछला",
+ "⚠ {seg} end approximate": "⚠ {seg} का अंत अनुमानित",
+ "⚠ {seg} start approximate": "⚠ {seg} की शुरुआत अनुमानित",
  "✔ {kind} (have)": "✔ {kind} (मौजूद)"
 }

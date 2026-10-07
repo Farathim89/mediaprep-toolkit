@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "Auto (tunnista mustat reunat)",
  "Auto (detect)": "Auto (tunnista)",
  "Auto (match source)": "Auto (kuten lähde)",
+ "Auto (mpv if available)": "Automaattinen (mpv, jos saatavilla)",
  "Auto - CPU (match source)": "Auto - CPU (kuten lähde)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "Auto - CPU valitsee enkooderin kunkin lähteen koodekkiperheen mukaan (HEVC-lähde -> libx265, AV1 -> SVT-AV1, muuten libx264), jottei tulos paisu. Auto - GPU / NVENC tekee saman NVIDIAn enkoodereilla (HEVC/AV1/VP9 -> H.265 NVENC, muuten H.264 NVENC) - paljon nopeampi, samalla laadulla hieman suuremmat tiedostot; palaa CPU-enkooderiin koneessa, jossa ei ole NVIDIA-GPU:ta. Plex-ready HEVC / H.264 = lähes häviötön HEVC tai H.264 Plex-ystävällisellä äänellä MKV:ssä, videon bittinopeus rajattuna juuri lähteen alle, joten leikattu tiedosto ei koskaan kasva (Plex toistaa sen suoraan ilman transkoodausta).",
  "Auto - GPU / NVENC (match source)": "Auto - GPU / NVENC (kuten lähde)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "Nämä rivit ovat pysäytetystä tunnistuksesta. Aja Tunnistus loppuun ennen automaattileikkausta.",
  "These templates already exist:": "Nämä mallit ovat jo olemassa:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "Tämän version tunnistusmoottorissa ei vielä ole detect_segments()-toimintoa - päivitä työkalu.",
+ "This edge was placed by sound / a fade - check it in the player": "Tämä raja asetettiin äänen / häivytyksen perusteella - tarkista se soittimessa",
  "This file is being cut right now\n- load it again when the run finishes": "Tätä tiedostoa leikataan parhaillaan\n- lataa se uudelleen, kun ajo valmistuu",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "Tämä poistaa PYSYVÄSTI {n} roskakorin kohteen ({files} tiedostoa, {size}), joka on yli {days:g} päivää vanha, kansiosta Data\\temp\\trash.\n\nSitä EI voi palauttaa jälkikäteen.\n\nPoistetaanko?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "Videoenkooderi",
  "Video file:": "Videotiedosto:",
  "Video files": "Videotiedostot",
+ "Video player": "Videosoitin",
  "Video player controls": "Videosoittimen ohjaimet",
+ "Video player engine:": "Videosoittimen moottori:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "Videosoitin: napsauta/vedä aikajanaa kelataksesi.  Space = toista/tauko, Left/Right = 1 ruutu, Shift+Left/Right = 10 ruutua, Home/End = ensimmäinen/viimeinen ruutu, M = mykistys. Näppäimet toimivat kaikkialla välilehdellä paitsi kenttään kirjoitettaessa (Kaksoissoitin: napsauta ensin videota). 'Siirry:' hyväksyy 21:30, 0:01:05.5 tai 00:01:05:500. '⏏ Vapauta' vapauttaa tiedoston, jotta sen voi siirtää. Osion vieressä oleva ▶ toistaa vain sen Alku→Loppu-välin. Aikakentät ovat muotoa HH : MM : SS : mmm - tyhjä kenttä on 0.",
  "Video tracks": "Videoraidat",
  "Video unloaded\n(freed so the batch can move it)": "Video vapautettu\n(jotta erä voi siirtää sen)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "mediaani {med:.1f} LUFS, hajonta {spread:.1f}; {verdict}",
  "minutes": "minuuttia",
  "missing or zero-byte file": "puuttuva tai tyhjä tiedosto",
+ "mpv found: {path}": "mpv löytyi: {path}",
+ "mpv not found - the OpenCV preview is used": "mpv:tä ei löytynyt - käytetään OpenCV-esikatselua",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv toistaa sulavasti ja siirtyy nopeasti ruutu kerrallaan näytönohjaimen avulla, omalla äänellään. OpenCV on yksinkertainen sisäänrakennettu esikatselu. Automaattinen käyttää mpv:tä, kun se löytyy ja käynnistyy, muuten OpenCV:tä. Koskee muutoksen jälkeen ladattuja videoita.",
  "needs a From time": "tarvitsee Alku-ajan",
  "needs a To time": "tarvitsee Loppu-ajan",
  "new:": "uusi:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5-10 % pienempi, ~2x hitaampi",
  "≈ 8-12% smaller, ~4x slower": "≈ 8-12 % pienempi, ~4x hitaampi",
  "◀ Prev": "◀ Edellinen",
+ "⚠ {seg} end approximate": "⚠ {seg}: loppu likimääräinen",
+ "⚠ {seg} start approximate": "⚠ {seg}: alku likimääräinen",
  "✔ {kind} (have)": "✔ {kind} (on jo)"
 }

@@ -158,6 +158,7 @@
  "Auto (detect black bars)": "Auto (wykryj czarne pasy)",
  "Auto (detect)": "Auto (wykryj)",
  "Auto (match source)": "Auto (jak źródło)",
+ "Auto (mpv if available)": "Automatycznie (mpv, jeśli dostępny)",
  "Auto - CPU (match source)": "Auto - CPU (jak źródło)",
  "Auto - CPU picks the encoder that matches each source's codec family (HEVC source -> libx265, AV1 -> SVT-AV1, else libx264) so the output doesn't balloon in size. Auto - GPU / NVENC does the same with the NVIDIA encoders (HEVC/AV1/VP9 -> H.265 NVENC, else H.264 NVENC) - much faster, slightly bigger files at the same quality; falls back to the CPU encoder on a PC without an NVIDIA GPU. Plex-ready HEVC / H.264 = near-lossless HEVC or H.264 with Plex-friendly audio in an MKV, with the video bitrate capped just below the source's so the cut file never grows (Plex direct-plays it without transcoding).": "Auto - CPU wybiera enkoder pasujący do rodziny kodeka każdego źródła (źródło HEVC -> libx265, AV1 -> SVT-AV1, w innym razie libx264), żeby wynik nie rozrósł się. Auto - GPU / NVENC robi to samo z enkoderami NVIDIA (HEVC/AV1/VP9 -> H.265 NVENC, w innym razie H.264 NVENC) - dużo szybciej, przy tej samej jakości nieco większe pliki; na PC bez GPU NVIDIA wraca do enkodera CPU. HEVC / H.264 gotowe dla Plex = prawie bezstratne HEVC lub H.264 z audio przyjaznym dla Plex w MKV, z bitrate wideo ograniczonym tuż poniżej źródła, więc wycięty plik nigdy nie rośnie (Plex odtwarza go bezpośrednio, bez transkodowania).",
  "Auto - GPU / NVENC (match source)": "Auto - GPU / NVENC (jak źródło)",
@@ -1096,6 +1097,7 @@
  "These rows come from a stopped detect. Run Detect to the end before Auto-cut.": "Te wiersze pochodzą z zatrzymanego wykrywania. Uruchom wykrywanie do końca przed Automatycznym cięciem.",
  "These templates already exist:": "Te szablony już istnieją:",
  "This build's detection engine has no detect_segments() yet - update the toolkit.": "Silnik wykrywania tej wersji nie ma jeszcze detect_segments() - zaktualizuj toolkit.",
+ "This edge was placed by sound / a fade - check it in the player": "Ta granica została ustawiona na podstawie dźwięku / przenikania - sprawdź ją w odtwarzaczu",
  "This file is being cut right now\n- load it again when the run finishes": "Ten plik jest właśnie wycinany\n- wczytaj go ponownie po zakończeniu",
  "This will PERMANENTLY delete {n} trash item ({files} files, {size}) older than {days:g} days from Data\\temp\\trash.\n\nThey can NOT be recovered afterwards.\n\nDelete them?": {
   "one": "To TRWALE usunie {n} element kosza (plików: {files}, {size}) starszy niż {days:g} dni z Data\\temp\\trash.\n\nNIE będzie można go potem odzyskać.\n\nUsunąć?",
@@ -1155,7 +1157,9 @@
  "Video encoder": "Enkoder wideo",
  "Video file:": "Plik wideo:",
  "Video files": "Pliki wideo",
+ "Video player": "Odtwarzacz wideo",
  "Video player controls": "Sterowanie odtwarzaczem wideo",
+ "Video player engine:": "Silnik odtwarzacza wideo:",
  "Video player: click/drag the timeline to seek.  Space = play/pause, Left/Right = 1 frame, Shift+Left/Right = 10 frames, Home/End = first/last frame, M = mute. Keys work anywhere on the tab except while typing in a box (Dual Player: click a video first). 'Go to:' accepts 21:30, 0:01:05.5 or 00:01:05:500. '⏏ Unload' releases the file so it can be moved. A ▶ next to a section plays just that From→To range. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.": "Odtwarzacz wideo: kliknij/przeciągnij oś czasu, aby przewinąć.  Space = odtwórz/pauza, Left/Right = 1 klatka, Shift+Left/Right = 10 klatek, Home/End = pierwsza/ostatnia klatka, M = wycisz. Klawisze działają w dowolnym miejscu karty, z wyjątkiem pisania w polu (Podwójny odtwarzacz: najpierw kliknij wideo). 'Idź do:' przyjmuje 21:30, 0:01:05.5 lub 00:01:05:500. '⏏ Zwolnij' zwalnia plik, aby można go było przenieść. ▶ obok sekcji odtwarza tylko ten zakres Od→Do. Pola czasu mają format HH : MM : SS : mmm - puste pole liczy się jako 0.",
  "Video tracks": "Ścieżki wideo",
  "Video unloaded\n(freed so the batch can move it)": "Wideo zwolnione\n(aby zadanie wsadowe mogło je przenieść)",
@@ -1239,6 +1243,9 @@
  "median {med:.1f} LUFS, spread {spread:.1f}; {verdict}": "mediana {med:.1f} LUFS, rozrzut {spread:.1f}; {verdict}",
  "minutes": "minut",
  "missing or zero-byte file": "brak pliku lub plik o rozmiarze zero",
+ "mpv found: {path}": "Znaleziono mpv: {path}",
+ "mpv not found - the OpenCV preview is used": "Nie znaleziono mpv - używany jest podgląd OpenCV",
+ "mpv plays smoothly and steps frames fast using the graphics card, with its own sound. OpenCV is the simple built-in preview. Auto uses mpv when it is found and starts, else OpenCV. Applies to videos loaded after the change.": "mpv odtwarza płynnie i szybko przechodzi klatka po klatce dzięki karcie graficznej, z własnym dźwiękiem. OpenCV to prosty wbudowany podgląd. Automatycznie używa mpv, gdy zostanie znaleziony i się uruchomi, w przeciwnym razie OpenCV. Dotyczy filmów wczytanych po zmianie.",
  "needs a From time": "wymaga czasu Od",
  "needs a To time": "wymaga czasu Do",
  "new:": "nowy:",
@@ -1369,5 +1376,7 @@
  "≈ 5-10% smaller, ~2x slower": "≈ 5-10% mniejszy, ~2x wolniej",
  "≈ 8-12% smaller, ~4x slower": "≈ 8-12% mniejszy, ~4x wolniej",
  "◀ Prev": "◀ Wstecz",
+ "⚠ {seg} end approximate": "⚠ {seg}: koniec przybliżony",
+ "⚠ {seg} start approximate": "⚠ {seg}: początek przybliżony",
  "✔ {kind} (have)": "✔ {kind} (jest)"
 }
