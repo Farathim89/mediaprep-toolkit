@@ -450,10 +450,35 @@ _add_block("folders", N_(
     "kept in a 'mediaprep-data' folder next to the exe instead (created on first "
     "start), so the whole thing can live on a USB stick."))
 
+_add_block("folders", N_(
+    "Installed version (MediaPrep-Toolkit-Setup-....exe, for all users in Program "
+    "Files): Media\\ and Data\\ are next to the app in the install folder as well; "
+    "the installer lets every user of the PC write to these two folders only. "
+    "Uninstalling asks whether to delete them too (default: keep)."))
+
+HELP["updates"] = (N_("Updates"), (
+    N_("Once a day at startup the app asks GitHub whether a newer release exists "
+       "(Settings -> Updates: switch it off, or 'Check now'; Help -> 'Check for "
+       "updates' checks right away). A bar at the top then offers Update now, "
+       "Release notes and Later."),
+    N_("Update now downloads the matching file of the release with a progress window "
+       "(Cancel stops it) to Data\\temp\\update and checks its SHA-256 checksum "
+       "against the one GitHub lists - a damaged or changed file is deleted and "
+       "nothing is installed. While a job runs the app doesn't update; it offers to "
+       "update when the job has finished (the queue is paused until then)."),
+    N_("Installed version: the new Setup runs silently over the current install "
+       "(Windows asks once for administrator permission), the app closes and starts "
+       "again as the new version. Portable version: the new portable exe is put next "
+       "to the old one and started; it sets itself up, and then offers to move the "
+       "old exe to Data\\temp\\trash. Zip / folder version: the release page opens - "
+       "extract the new zip over the old folder. In every case Media\\ and Data\\ "
+       "(videos, outputs, templates, settings) are kept.")))
+
 HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager",
               "cut_auto", "cut_manual", "cut_multi", "convert", "theme",
               "gain_single", "gain_batch", "dual", "compare_tracks",
-              "compare_quality", "check", "log", "cleanup", "queue", "folders")
+              "compare_quality", "check", "log", "cleanup", "queue", "folders",
+              "updates")
 
 
 def get(key):

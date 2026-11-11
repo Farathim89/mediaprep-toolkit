@@ -1,4 +1,4 @@
-MEDIAPREP TOOLKIT v2.0.1
+MEDIAPREP TOOLKIT v2.1.0
 ========================
 (intro/credits cutting, chapter markers, theme audio, loudness, compare & check)
 

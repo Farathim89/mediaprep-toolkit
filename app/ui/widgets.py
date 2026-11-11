@@ -883,9 +883,10 @@ def _theme_colors(_widget=None):
     return p["bg"], p["fg"], p["field"], p["fg"], p["accent"]
 
 
-def _open_help_window(parent, wkey, title, sections, index=False):
+def _open_help_window(parent, wkey, title, sections, index=False, buttons=None):
     """Themed, scrollable help window (re-used/raised if already open).
-    sections = [(heading, text)]; index=True adds a clickable topic list."""
+    sections = [(heading, text)]; index=True adds a clickable topic list;
+    buttons = [(text, command(window))] at the bottom left."""
     old = _HELP_WINDOWS.get(wkey)
     if old is not None:
         try:
@@ -922,6 +923,9 @@ def _open_help_window(parent, wkey, title, sections, index=False):
     bar = ttk.Frame(outer)
     bar.pack(side="bottom", fill="x", pady=themes.pad(12, 0))
     ttk.Button(bar, text=tr("Close"), command=win.destroy).pack(side="right")
+    for btext, bcmd in buttons or ():
+        ttk.Button(bar, text=btext, command=lambda c=bcmd: c(win)).pack(
+            side="left", padx=themes.pad(0, 6))
 
     body = ttk.Frame(outer)
     body.pack(fill="both", expand=True)
@@ -1003,11 +1007,12 @@ def show_help(parent, key):
                              [(title, body)])
 
 
-def show_help_index(parent):
-    """Open (or raise) the help window listing every tab's help."""
+def show_help_index(parent, buttons=None):
+    """Open (or raise) the help window listing every tab's help.
+    buttons = extra [(text, command(window))] (e.g. Check for updates)."""
     from .. import helpdocs
     return _open_help_window(parent, "help:index", tr("{app} – Help", app="MediaPrep Toolkit"),
-                             helpdocs.sections(), index=True)
+                             helpdocs.sections(), index=True, buttons=buttons)
 
 
 def help_button(parent, key, text="?"):
@@ -1034,7 +1039,7 @@ class InfoBar(tk.Frame):
     _ICONS = {"error": "error", "warn": "warning", "info": "info"}
 
     def __init__(self, master, text, kind="info", link_text=None, on_link=None,
-                 closable=True, on_close=None):
+                 closable=True, on_close=None, links=None):
         super().__init__(master, borderwidth=0, highlightthickness=1)
         from .icons import glyph
         self.kind = kind
@@ -1055,12 +1060,21 @@ class InfoBar(tk.Frame):
         else:
             self.close_lbl = None
         self.link = None
+        # links = [(text, callback), ...] shown left to right; link_text /
+        # on_link is the older single-link form
+        items = list(links or ())
         if link_text:
-            self.link = tk.Label(self, text=link_text, cursor="hand2", borderwidth=0,
-                                 font="MPSemibold", padx=themes.px(6))
-            self.link.pack(side="right", anchor="n", pady=themes.px(8))
-            if on_link is not None:
-                self.link.bind("<Button-1>", lambda e: on_link())
+            items.append((link_text, on_link))
+        self.links = []
+        for text_, cb in reversed(items):           # packed from the right
+            lbl = tk.Label(self, text=text_, cursor="hand2", borderwidth=0,
+                           font="MPSemibold", padx=themes.px(6))
+            lbl.pack(side="right", anchor="n", pady=themes.px(8))
+            if cb is not None:
+                lbl.bind("<Button-1>", lambda e, cb=cb: cb())
+            self.links.insert(0, lbl)
+        if self.links:
+            self.link = self.links[-1]
         self.msg = tk.Label(self, text=text, justify="left", anchor="w", borderwidth=0,
                             font="TkDefaultFont")
         self.msg.pack(side="left", fill="x", expand=True, pady=themes.px(8))
@@ -1076,8 +1090,8 @@ class InfoBar(tk.Frame):
         self.edge.configure(bg=acc)
         self.icon.configure(bg=bg, fg=acc)
         self.msg.configure(bg=bg, fg=fg)
-        if self.link is not None:
-            self.link.configure(bg=bg, fg=fg, font="MPSemibold")
+        for lbl in self.links:
+            lbl.configure(bg=bg, fg=fg, font="MPSemibold")
         if self.close_lbl is not None:
             self.close_lbl.configure(bg=bg, fg=fg)
 

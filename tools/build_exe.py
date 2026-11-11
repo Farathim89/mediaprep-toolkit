@@ -24,6 +24,15 @@ starts it (user data: mediaprep-data/Media + Data, see app/config.py).
 
 --portable-onefile builds the older PyInstaller one-file exe instead (unpacks
 to %TEMP%/_MEIxxxx on every start - slow; kept just in case).
+
+--installer builds the Windows installer <out>/release/MediaPrep-Toolkit-
+Setup-<version>.exe from the folder build (<out>/dist; --reuse-build skips
+PyInstaller when it exists) with NSIS (tools/installer/MediaPrep.nsi;
+makensis from --makensis, MEDIAPREP_MAKENSIS, PATH or the electron-builder
+cache). Silent use: Setup.exe /S [/D=<folder>] [/RUN] - see the .nsi.
+
+--version-override X (tests only) packs the installer / portable exe under
+another version string (the app inside keeps config.APP_VERSION).
 """
 import argparse
 import glob
@@ -194,6 +203,38 @@ def pack_portable(app_dir, version, work, target, level=PAYLOAD_LEVEL):
     return length, count
 
 
+# ======================= installer (NSIS) =======================
+INSTALLER_NSI = os.path.join(ROOT, "tools", "installer", "MediaPrep.nsi")
+MAKENSIS_CANDIDATES = (
+    os.path.expandvars(r"%LOCALAPPDATA%\electron-builder\Cache\nsis\nsis-3.0.4.1\makensis.exe"),
+    r"C:\Program Files (x86)\NSIS\makensis.exe",
+    r"C:\Program Files\NSIS\makensis.exe",
+)
+
+
+def find_makensis(explicit=""):
+    for cand in (explicit, os.environ.get("MEDIAPREP_MAKENSIS", ""), shutil.which("makensis"),
+                 *MAKENSIS_CANDIDATES):
+        if cand and os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def build_installer(app_dir, version, out_dir, makensis):
+    """makensis tools/installer/MediaPrep.nsi -> out_dir/MediaPrep-Toolkit-Setup-
+    <version>.exe (written as .part, then swapped in). Returns its path."""
+    os.makedirs(out_dir, exist_ok=True)
+    target = os.path.join(out_dir, f"MediaPrep-Toolkit-Setup-{version}.exe")
+    tmp = target + ".part.exe"
+    cmd = [makensis, "/V2", "/INPUTCHARSET", "UTF8",
+           f"/DVERSION={version}", f"/DVERSION4={_version4(version)}",
+           f"/DSRCDIR={app_dir}", f"/DOUTFILE={tmp}", f"/DROOT={ROOT}", INSTALLER_NSI]
+    print(" ".join(f'"{c}"' if " " in c else c for c in cmd))
+    subprocess.check_call(cmd)
+    os.replace(tmp, target)
+    return target
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ffmpeg-bin", default=_default_ffmpeg_bin())
@@ -205,10 +246,18 @@ def main():
                       help="build the portable exe (launcher + unpack-once payload)")
     mode.add_argument("--portable-onefile", action="store_true",
                       help="build the old PyInstaller one-file portable exe")
+    mode.add_argument("--installer", action="store_true",
+                      help="build the NSIS installer MediaPrep-Toolkit-Setup-<version>.exe")
     ap.add_argument("--portable-dir", default=PORTABLE_DIR,
                     help="where the portable exe is copied to (only the exe)")
     ap.add_argument("--reuse-build", action="store_true",
-                    help="--portable: reuse an existing folder build (skip PyInstaller)")
+                    help="--portable / --installer: reuse an existing folder build "
+                         "(skip PyInstaller)")
+    ap.add_argument("--makensis", default="", help="makensis.exe to use (--installer)")
+    ap.add_argument("--version-override", default="",
+                    help="tests: package the installer / portable exe as this version")
+    ap.add_argument("--payload-level", type=int, default=PAYLOAD_LEVEL,
+                    help="zlib level of the portable payload (tests: 1 = fast)")
     args = ap.parse_args()
 
     ff_bin = args.ffmpeg_bin
@@ -237,12 +286,17 @@ def main():
     suffix = ("_portable" if args.portable else
               "_portable_onefile" if args.portable_onefile else "")
     work, dist = os.path.join(out, "work" + suffix), os.path.join(out, "dist" + suffix)
-    version = _app_version()
+    version = args.version_override or _app_version()
     portable_name = f"MediaPrep-Toolkit-Portable-{version}"
     app_dir = os.path.join(dist, NAME)
     mpv_short = mpv_version.split(" Copyright")[0] if mpv_version else "no mpv"
+    makensis = ""
+    if args.installer:
+        makensis = find_makensis(args.makensis)
+        if not makensis:
+            sys.exit("makensis.exe (NSIS 3) not found - use --makensis FILE")
 
-    if not (args.reuse_build and args.portable
+    if not (args.reuse_build and (args.portable or args.installer)
             and os.path.isfile(os.path.join(app_dir, NAME + ".exe"))):
         env = dict(os.environ, MEDIAPREP_FFMPEG_BIN=ff_bin, MEDIAPREP_FFMPEG_VERSION=ff_version,
                    MEDIAPREP_MPV_EXE=mpv_exe or "", MEDIAPREP_MPV_VERSION=mpv_version or "",
@@ -273,9 +327,16 @@ def main():
         os.makedirs(args.portable_dir, exist_ok=True)
         target = os.path.join(args.portable_dir, portable_name + ".exe")
         length, count = pack_portable(app_dir, version, os.path.join(out, "pack_portable"),
-                                      target)
+                                      target, level=args.payload_level)
         print(f"\nBuilt: {target}  ({os.path.getsize(target) / 2**20:.0f} MB, {count} files "
               f"/ {_dir_size(app_dir) / 2**20:.0f} MB unpacked, ffmpeg {ff_version}, "
+              f"{mpv_short})")
+        return
+
+    if args.installer:
+        target = build_installer(app_dir, version, os.path.join(out, "release"), makensis)
+        print(f"\nBuilt: {target}  ({os.path.getsize(target) / 2**20:.0f} MB, "
+              f"{_dir_size(app_dir) / 2**20:.0f} MB installed, ffmpeg {ff_version}, "
               f"{mpv_short})")
         return
 

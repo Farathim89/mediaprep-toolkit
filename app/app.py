@@ -499,7 +499,9 @@ def main():
                                                     restart=_restart),
                        tip=tr("Language, theme, notifications, update check and log "
                               "retention"))
-    sidebar.add_action("help", "help", tr("Help"), lambda: show_help_index(root),
+    _help_buttons = {"list": None}      # (Check for updates - set further down)
+    sidebar.add_action("help", "help", tr("Help"),
+                       lambda: show_help_index(root, buttons=_help_buttons["list"]),
                        tip=tr("Help for every tab"))
     sidebar.pack(side="left", fill="y")
     content.pack(side="left", fill="both", expand=True)
@@ -709,15 +711,86 @@ def main():
     # ---- update info bar (shown only when a newer release exists) ----
     _banner_w = {"w": None}
 
-    def show_update(ver, url):
+    def _close_update_banner():
         if _banner_w["w"] is not None:
             try:
                 _banner_w["w"].destroy()
             except tk.TclError:
                 pass
+            _banner_w["w"] = None
+
+    def update_now():
+        """'Update now': download + install the latest release (ui/update_dialog)."""
+        from tkinter import messagebox as _mbox
+        from .ui.update_dialog import start_update
+        try:
+            start_update(root, updater.latest_release(), persist, _any_busy, on_close)
+        except Exception as exc:          # never let a failed update take the app down
+            applog.record(f"[update] failed: {exc!r}")
+            _mbox.showerror(tr("Update"), tr("The update failed: {error}", error=exc),
+                            parent=root)
+
+    def show_update(ver, url):
+        _close_update_banner()
         _banner_w["w"] = _banner(
-            tr("Version {new} is available (you have {old}).", new=ver, old=APP_VERSION),
-            "info", link_text=tr("Open download page"), on_link=lambda: _open_url(url))
+            tr("{app} {version} is available (you have {old}).", app=APP_NAME, version=ver,
+               old=APP_VERSION),
+            "info", links=[(tr("Update now"), update_now),
+                           (tr("Release notes"), lambda: _open_url(url)),
+                           (tr("Later"), _close_update_banner)])
+        if updater.auto_flag():           # test hook (MEDIAPREP_UPDATE_AUTO)
+            root.after(500, update_now)
+
+    def check_for_updates(parent=None):
+        """Help -> Check for updates: a forced check with a reply either way."""
+        from tkinter import messagebox as _mbox
+
+        def done(text):
+            rel = updater.latest_release()
+            par = parent if parent is not None and parent.winfo_exists() else root
+            if rel and updater.is_newer(rel["version"]):
+                if _mbox.askyesno(tr("Check for updates"), tr(
+                        "{app} {version} is available (you have {old}).\n\nUpdate now?",
+                        app=APP_NAME, version=rel["version"], old=APP_VERSION), parent=par):
+                    update_now()
+            else:
+                _mbox.showinfo(tr("Check for updates"), text, parent=par)
+        updater.check_async(PREFS, on_newer=lambda v, url: _call_tk(lambda: show_update(v, url)),
+                            on_done=lambda text: _call_tk(lambda: done(text)), force=True,
+                            save=lambda: _call_tk(persist))
+
+    _help_buttons["list"] = [(tr("Check for updates"), check_for_updates)]
+
+    # the previous run started an update: say how it went (and, portable,
+    # offer to move the old exe out of the way - never deleted)
+    _pend = updater.take_pending()
+    if _pend:
+        if _pend.get("done"):
+            applog.record(f"[update] updated from {_pend.get('from')} to {APP_VERSION}")
+            old = str(_pend.get("old_exe") or "")
+            cur = updater.launcher_path() if _pend.get("kind") == "portable" else ""
+            if old and os.path.isfile(old) and cur and not updater.same_dir(old, cur):
+                holder = {}
+
+                def _trash_old():
+                    try:
+                        dest = updater.move_to_trash(old)
+                        applog.record(f"[update] moved the old version to {dest}")
+                    except OSError as exc:
+                        applog.record(f"[update] could not move {old}: {exc}")
+                    holder["bar"].close()
+                holder["bar"] = _banner(
+                    tr("Updated to version {version}. Move the old {name} to "
+                       "Data\\temp\\trash?", version=APP_VERSION, name=os.path.basename(old)),
+                    "info", links=[(tr("Move to trash"), _trash_old),
+                                   (tr("Keep it"), lambda: holder["bar"].close())])
+            else:
+                _banner(tr("Updated to version {version}.", version=APP_VERSION), "info")
+        else:
+            applog.record(f"[update] the update to {_pend.get('to')} did not finish "
+                          f"(still {APP_VERSION})")
+            _banner(tr("The update to version {new} did not finish - you still have "
+                       "{old}.", new=_pend.get("to"), old=APP_VERSION), "warn")
 
     def persist():
         d = prefs_snapshot()                # app-wide prefs (notify / update / logs)
@@ -791,7 +864,8 @@ def main():
     # handles for scripted UI checks (tools / tests drive the window with them)
     root._mp_app = dict(show_page=show_page, sidebar=sidebar, pages=_main_pages,
                         sub_books=_sub_books, persist=persist, restart=_restart,
-                        show_update=show_update, stop_all=_stop_all_jobs, is_busy=_any_busy,
+                        show_update=show_update, update_now=update_now,
+                        check_for_updates=check_for_updates, stop_all=_stop_all_jobs, is_busy=_any_busy,
                         page_view=page_view, footer=footer,
                         tabs=dict(templates=template_tab, cut=remover_tab, convert=convert_tab,
                                   theme=theme_tab,

@@ -9,7 +9,9 @@
 // unpacked build. When its ".complete" marker is there the launcher just
 // starts "MediaPrep Toolkit.exe" from it (MEDIAPREP_PORTABLE_DATA = the data
 // folder, command line passed through) and exits - only "--selftest" waits
-// and returns the app's exit code. Otherwise (first start / new version) it
+// and returns the app's exit code. The app also gets MEDIAPREP_LAUNCHER = this
+// exe's path (the in-app updater puts a new portable exe next to it).
+// MEDIAPREP_BACKGROUND=1 (scripted tests) unpacks without a window. Otherwise (first start / new version) it
 // shows a small progress window, checks the payload, unpacks it to
 // "<name>.tmp", renames that into place and removes older runtime folders.
 // Media\ and Data\ are never touched.
@@ -169,11 +171,21 @@ namespace MediaPrepPortable
 
             string runtimeDir = Path.Combine(dataDir, "runtime");
             string target = Path.Combine(runtimeDir, p.Version + "-" + p.Hash8);
+            // Windows' 260-char path limit: the deepest file inside the app is
+            // ~105 chars below its folder. If this exe sits in a deeply nested
+            // folder, unpack the PROGRAM to a short per-user path instead (the
+            // user data still stays in <exe folder>\mediaprep-data).
+            if (target.Length + ".tmp\\".Length + DeepestRelPath > 259)
+            {
+                runtimeDir = Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData), "MediaPrep", "rt");
+                target = Path.Combine(runtimeDir, p.Version + "-" + p.Hash8);
+            }
 
             // fast path: already unpacked
             if (IsReady(target))
             {
-                int rc = Launch(target, dataDir, args, selftest);
+                int rc = Launch(exe, target, dataDir, args, selftest);
                 CleanupOld(runtimeDir, Path.GetFileName(target), dataDir, false);
                 return rc;
             }
@@ -204,12 +216,22 @@ namespace MediaPrepPortable
             return cl.Substring(i).TrimStart();
         }
 
-        private static int Launch(string target, string dataDir, string args, bool wait)
+        // longest file path inside the unpacked app, relative to its folder
+        // (sklearn ...\_radius_neighbors_classmode.cp310-win_amd64.pyd = 103) + margin
+        private const int DeepestRelPath = 115;
+
+        private static int Launch(string exe, string target, string dataDir, string args, bool wait)
         {
+            // lets the app find its data folder even when started by hand from
+            // the short fallback runtime folder (see app/config.py)
+            try { File.WriteAllText(Path.Combine(target, "portable-data.txt"), dataDir, Encoding.UTF8); }
+            catch (Exception) { }
             ProcessStartInfo si = new ProcessStartInfo(Path.Combine(target, AppExe), args);
             si.UseShellExecute = false;
             si.WorkingDirectory = Environment.CurrentDirectory;
             si.EnvironmentVariables["MEDIAPREP_PORTABLE_DATA"] = dataDir;
+            // the in-app updater puts a new portable exe next to this one
+            si.EnvironmentVariables["MEDIAPREP_LAUNCHER"] = Path.GetFullPath(exe);
             try
             {
                 using (Process proc = Process.Start(si))
@@ -225,8 +247,21 @@ namespace MediaPrepPortable
             }
         }
 
+        // MEDIAPREP_BACKGROUND=1 (scripted test runs, see app/ui/bgmode.py):
+        // unpack without showing the progress window, errors only to stderr
+        internal static bool Background()
+        {
+            string v = (Environment.GetEnvironmentVariable("MEDIAPREP_BACKGROUND") ?? "").Trim();
+            return v.Length > 0 && v != "0";
+        }
+
         internal static int Fail(string msg)
         {
+            if (Background())
+            {
+                Console.Error.WriteLine(msg);
+                return 1;
+            }
             MessageBox.Show(msg, AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
@@ -264,14 +299,17 @@ namespace MediaPrepPortable
                         Application.EnableVisualStyles();
                         Application.SetCompatibleTextRenderingDefault(false);
                         SetupForm form = new SetupForm(exe, p, dataDir, runtimeDir, target);
-                        Application.Run(form);
+                        if (Background())
+                            form.RunHidden();           // scripted test run: no window
+                        else
+                            Application.Run(form);
                         if (form.Error != null) return Fail(form.Error);
                         if (!IsReady(target)) return 1;           // cancelled
                     }
                 }
                 finally { m.ReleaseMutex(); }
             }
-            int rc = Launch(target, dataDir, args, selftest);
+            int rc = Launch(exe, target, dataDir, args, selftest);
             CleanupOld(runtimeDir, Path.GetFileName(target), dataDir, false);
             return rc;
         }
@@ -426,6 +464,12 @@ namespace MediaPrepPortable
         private string DataNameShort()
         {
             return Path.Combine(Path.GetFileName(Path.GetDirectoryName(dataDir)) ?? "", Program.DataName);
+        }
+
+        // the same work on this thread, without ever showing the window
+        public void RunHidden()
+        {
+            Work();
         }
 
         protected override void OnShown(EventArgs e)

@@ -8,7 +8,7 @@ import sys
 from .i18n import N_
 
 # ======================= version =======================
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 APP_NAME = "MediaPrep Toolkit"
 # GitHub repo whose latest release the update check looks at
 UPDATE_REPO = "Farathim89/mediaprep-toolkit"
@@ -47,10 +47,22 @@ def _portable_root():
     # env var names <data>; without it (exe started by hand) the folder
     # layout itself tells
     runtime = os.path.dirname(exe_dir)
+    env = os.environ.get("MEDIAPREP_PORTABLE_DATA", "").strip()
+    if os.path.basename(runtime).lower() == "rt":
+        # launcher fallback for a deeply nested exe folder (path limit): the
+        # program sits in %LOCALAPPDATA%\MediaPrep\rt\<version>-<hash>\ and
+        # the data folder comes from the env var or the marker file it writes
+        if env:
+            return env
+        try:
+            with open(os.path.join(exe_dir, "portable-data.txt"), encoding="utf-8") as f:
+                marked = f.read().strip()
+            return marked or None
+        except OSError:
+            return None
     if os.path.basename(runtime).lower() != "runtime":
         return None
     data = os.path.dirname(runtime)
-    env = os.environ.get("MEDIAPREP_PORTABLE_DATA", "").strip()
     if env and os.path.normcase(os.path.abspath(env)) == os.path.normcase(data):
         return data
     return data if os.path.basename(data).lower() == PORTABLE_DATA else None
