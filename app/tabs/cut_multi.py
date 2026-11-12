@@ -833,12 +833,22 @@ class MultiCutMixin:
             self.log(f"[MULTI] cutting {n} file(s), each with its own sections")
             for ln in skip_lines:
                 self.log(ln)
+            # every file's length up front, so the "all" part of the progress
+            # text covers the whole list (weighted by duration), not one file
+            durs = {}
+            for path, _d in jobs:
+                if stop.is_set():
+                    break
+                durs[path] = probe_duration(path) or 0.0
+            batch = {"done": 0.0, "total": sum(durs.values()), "t0": time.time()}
             for i, (path, drops) in enumerate(jobs, 1):
                 if stop.is_set():
                     break
+                if i > 1:
+                    batch["done"] += durs.get(jobs[i - 2][0], 0.0)
                 name = os.path.basename(path)
                 try:
-                    total = probe_duration(path)
+                    total = durs.get(path) or probe_duration(path)
                     if not total:
                         self.log(f"  [{i}/{n}] [FAIL] could not read {name}")
                         n_fail += 1
@@ -868,7 +878,8 @@ class MultiCutMixin:
                         continue
                     removed = ", ".join(f"{fmt_time(a)}->{fmt_time(b)}" for a, b in rngs)
                     self.log(f"  [{i}/{n}] {name}  remove {removed}")
-                    cfg = dict(base_cfg, video=path, job_label=f"[{i}/{n}]")
+                    cfg = dict(base_cfg, video=path, job_label=f"[{i}/{n}]",
+                               batch=dict(batch))
                     t0 = time.time()
                     # no output may replace another source of this run
                     res = run_manual(cfg, keep, self, stop,

@@ -850,14 +850,25 @@ def run_manual(cfg, keep, ui, stop_event, protect=None):
         ui.log(f"   Source timestamps start at {start_time:.3f}s - cut points"
                " count from the file start")
 
+    # Multi cut runs one run_manual per file: cfg["batch"] = {"done": seconds
+    # of source already handled, "total": seconds of the whole run, "t0":
+    # wall-clock start of the run} makes the "all" part of the text cover the
+    # WHOLE list (weighted by duration), not just this file
+    batch = cfg.get("batch") or None
+    this_sec = src_total or 0.0
+
     def overall_progress(base, span):
         """One 0-1 bar for the whole job instead of resetting per segment."""
         def _cb(frac, text):
             f = min(1.0, base + frac * span)
-            elapsed = time.time() - video_wall
-            left = (format_seconds(elapsed * (1 - f) / f)
-                    if f > 0.003 and elapsed > 5 else "--:--")
-            ui.progress(f, f"{text} | all {f * 100:.0f}% ~{left}")
+            if batch and batch.get("total"):
+                fa = min(1.0, (batch.get("done", 0.0) + f * this_sec) / batch["total"])
+                elapsed = time.time() - batch.get("t0", video_wall)
+            else:
+                fa, elapsed = f, time.time() - video_wall
+            left = (format_seconds(elapsed * (1 - fa) / fa)
+                    if fa > 0.003 and elapsed > 5 else "--:--")
+            ui.progress(f, f"{text} | all {fa * 100:.0f}% ~{left}")
         return _cb
 
     subs_lang = {s.lower() for s in cfg["subs_langs"]} if cfg.get("subs_langs") else None
