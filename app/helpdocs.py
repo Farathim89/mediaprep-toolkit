@@ -1,6 +1,6 @@
 """One source of help text for every tab and sub-tab.
 
-HELP[key] = (title, text). The "?" buttons (widgets.help_button(parent, key))
+HELP[key] = (title, text). The "?" buttons (helpwin.help_button(parent, key))
 and the Info tab's tab list both read from here, so they never drift apart.
 HELP_ORDER is the order the help index / Info tab lists them in.
 
@@ -402,12 +402,12 @@ HELP = {
            "install (videos\\, input\\, logs\\, toolkit_settings.json ... next to "
            "the app) is moved into these folders automatically at startup - "
            "nothing is deleted, and the Log tab lists every move."),
-        N_("Theme (Settings, or the sun / moon button at the bottom of the "
-           "sidebar for a quick Light / Dark switch): Light, Dark, High Contrast, "
-           "Plex, Gold on Dark, Midnight Blue, Nord, Dracula, Solarized Light / "
-           "Dark, Forest, Sepia - or Follow Windows, which switches Light / Dark "
-           "together with the Windows app mode. A change applies to every open "
-           "window at once and is remembered."))),
+        N_("Theme: in Settings, or with the 'Theme:' item at the bottom of the "
+           "sidebar - a left click opens the list of all themes with colour "
+           "swatches, a right click switches between your light and dark theme. "
+           "Follow Windows switches Light / Dark together with the Windows app "
+           "mode. A change applies to every open window at once and is "
+           "remembered."))),
 }
 
 # later additions, appended to their pages as their own blocks
@@ -446,7 +446,7 @@ _add_block("queue", N_(
     "encodes are hardly affected. It applies to the next job; the audio analysis "
     "libraries pick it up after a restart."))
 _add_block("folders", N_(
-    "Portable version (MediaPrep-Toolkit-Portable-....exe): Media\ and Data\ are "
+    "Portable version (MediaPrep-Toolkit-Portable.exe): Media\\ and Data\\ are "
     "kept in a 'mediaprep-data' folder next to the exe instead (created on first "
     "start), so the whole thing can live on a USB stick."))
 
@@ -462,16 +462,18 @@ HELP["updates"] = (N_("Updates"), (
        "updates' checks right away). A bar at the top then offers Update now, "
        "Release notes and Later."),
     N_("Update now downloads the matching file of the release with a progress window "
-       "(Cancel stops it) to Data\\temp\\update and checks its SHA-256 checksum "
+       "(Cancel stops it) to your private %TEMP% folder and checks its SHA-256 checksum "
        "against the one GitHub lists - a damaged or changed file is deleted and "
        "nothing is installed. While a job runs the app doesn't update; it offers to "
        "update when the job has finished (the queue is paused until then)."),
     N_("Installed version: the new Setup runs silently over the current install "
        "(Windows asks once for administrator permission), the app closes and starts "
-       "again as the new version. Portable version: the new portable exe is put next "
-       "to the old one and started; it sets itself up, and then offers to move the "
-       "old exe to Data\\temp\\trash. Zip / folder version: the release page opens - "
-       "extract the new zip over the old folder. In every case Media\\ and Data\\ "
+       "again as the new version. Portable version: the new exe replaces the portable "
+       "exe in place (same name and folder, so shortcuts keep working), the app "
+       "closes and the new version starts and sets itself up (the previous exe stays "
+       "next to it with '.old' added to its name until the next start). Zip / folder "
+       "version: the release page opens - extract the new zip over the old folder. "
+       "In every case Media\\ and Data\\ "
        "(videos, outputs, templates, settings) are kept.")))
 
 HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager",

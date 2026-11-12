@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 from .i18n import N_
 
@@ -35,6 +36,59 @@ UPDATE_REPO = "Farathim89/mediaprep-toolkit"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))          # the app/ package
 PORTABLE_DATA = "mediaprep-data"
 
+# messages from the import of this module (the session log isn't open yet);
+# applog.init() records them (take_notes)
+_NOTES = []
+
+
+def take_notes():
+    """The startup messages collected so far (the list is emptied)."""
+    out = list(_NOTES)
+    del _NOTES[:]
+    return out
+
+
+def _rt_marked_data(exe_dir):
+    """The data folder for a program in the shared fallback runtime
+    (%LOCALAPPDATA%\\MediaPrep\\rt\\<version>-<hash>) started BY HAND (no
+    MEDIAPREP_PORTABLE_DATA). Several portable copies of the same version
+    share that folder, so the launcher writes one marker per data folder:
+    owners\\<sha8 of the data folder>.txt (its path, re-written at every
+    start -> the newest file = the copy used most recently). Older launchers
+    wrote a single portable-data.txt (UTF-8 with BOM). A marker must name an
+    existing absolute folder, else it is skipped; none -> None."""
+    cands = []
+    odir = os.path.join(exe_dir, "owners")
+    try:
+        names = os.listdir(odir)
+    except OSError:
+        names = []
+    for n in names:
+        if n.lower().endswith(".txt"):
+            p = os.path.join(odir, n)
+            try:
+                cands.append((os.path.getmtime(p), p))
+            except OSError:
+                pass
+    cands.sort(reverse=True)
+    cands.append((0.0, os.path.join(exe_dir, "portable-data.txt")))     # legacy
+    valid = []
+    for _mt, p in cands:
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                d = f.read().strip()
+        except (OSError, ValueError):
+            continue
+        if d and os.path.isabs(d) and os.path.isdir(d):
+            valid.append(os.path.normpath(d))
+    if not valid:
+        return None
+    if len(set(os.path.normcase(v) for v in valid)) > 1:
+        _NOTES.append(f"[portable] started without the launcher: {len(valid)} portable "
+                      f"copies use this program folder - using the data folder of the "
+                      f"one used most recently: {valid[0]}")
+    return valid[0]
+
 
 def _portable_root():
     """The mediaprep-data folder of a portable build, else None."""
@@ -52,14 +106,9 @@ def _portable_root():
         # launcher fallback for a deeply nested exe folder (path limit): the
         # program sits in %LOCALAPPDATA%\MediaPrep\rt\<version>-<hash>\ and
         # the data folder comes from the env var or the marker file it writes
-        if env:
-            return env
-        try:
-            with open(os.path.join(exe_dir, "portable-data.txt"), encoding="utf-8") as f:
-                marked = f.read().strip()
-            return marked or None
-        except OSError:
-            return None
+        if env and os.path.isabs(env):
+            return os.path.normpath(env)
+        return _rt_marked_data(exe_dir)
     if os.path.basename(runtime).lower() != "runtime":
         return None
     data = os.path.dirname(runtime)
@@ -91,6 +140,25 @@ def resource_path(rel):
         return os.path.join(base, "app", rel)
     return os.path.join(APP_DIR, rel)
 
+
+def _bundled_exe(sub, name):
+    """Absolute path of a program bundled with the frozen build
+    (<bundle>\\<sub>\\<name>), else None."""
+    if not getattr(sys, "frozen", False):
+        return None
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(sys.executable))
+    p = os.path.join(base, sub, name)
+    return p if os.path.isfile(p) else None
+
+
+# the programs the app runs. Frozen: ABSOLUTE paths of the bundled copies
+# (resolved once), so a planted ffmpeg.exe in the working folder can never
+# win; from source: the bare names (PATH). Code that still runs the bare
+# names is covered by intro_credits_toolkit._frozen_setup (bundled folder
+# first on PATH + NoDefaultCurrentDirectoryInExePath=1).
+FFMPEG = _bundled_exe("ffmpeg", "ffmpeg.exe") or "ffmpeg"
+FFPROBE = _bundled_exe("ffmpeg", "ffprobe.exe") or "ffprobe"
+MPV_BUNDLED = _bundled_exe("mpv", "mpv.exe")          # None = not bundled
 
 MEDIA_DIR = os.path.join(APP_ROOT, "Media")
 DATA_DIR = os.path.join(APP_ROOT, "Data")
@@ -367,32 +435,146 @@ def relativize_paths(d):
     return d
 
 
+# Data\settings.json is written via settings.json.tmp (swapped in, so a
+# crash mid-write can't truncate it) and then copied to settings.json.bak
+# (= the last good save). A settings.json that can't be parsed is renamed to
+# settings.json.corrupt-<date-time> (kept for the user) and the .bak is
+# restored - never silently replaced by the defaults. Problems are logged
+# (applog) and kept for the UI:
+#   settings_load_problem() -> message about a damaged settings file found at
+#                              startup (and what was done), else None
+#   settings_save_error()   -> the error of the LAST save, None = it worked
+# (app.py can show either; save_settings() itself never raises.)
+SETTINGS_BAK = SETTINGS_FILE + ".bak"
+_SETTINGS_STATE = {"load_problem": None, "save_error": None, "load_info": None}
+
+
+def settings_load_problem():
+    """A message when the settings file was damaged / unreadable at startup
+    (and what was done about it), else None."""
+    return _SETTINGS_STATE["load_problem"]
+
+
+def settings_load_info():
+    """The same for the UI as a dict, else None: kind = "restored" (the last
+    good save was put back), "reset" (no usable backup: the defaults) or
+    "unreadable" (left alone, the defaults this session); kept = the name
+    the damaged file was kept under ("" when it couldn't be moved aside);
+    error = the reason."""
+    return _SETTINGS_STATE["load_info"]
+
+
+def settings_save_error():
+    """The error text of the last save_settings() (None = saved fine)."""
+    return _SETTINGS_STATE["save_error"]
+
+
+def _log(msg):
+    """Record a message in the session log (applog keeps it in memory until
+    the log file is open). Never raises."""
+    try:
+        from . import applog
+        applog.record(msg)
+    except Exception:
+        pass
+
+
+def _read_settings_file(path):
+    """The dict in `path`. Raises FileNotFoundError / OSError (can't read) /
+    ValueError (not valid JSON / UTF-8, or not an object)."""
+    with open(path, "r", encoding="utf-8-sig") as f:
+        d = json.load(f)
+    if not isinstance(d, dict):
+        raise ValueError("not a JSON object")
+    return d
+
+
+def _write_atomic(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def load_settings():
     try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f)
-    except (OSError, ValueError):
+        d = _read_settings_file(SETTINGS_FILE)
+    except FileNotFoundError:
         return {}
-    if not isinstance(d, dict):
+    except ValueError as exc:
+        d = _recover_settings(f"it is damaged ({exc})")
+    except OSError as exc:
+        # there but unreadable (locked / no permission): leave it alone,
+        # start with the defaults and say so
+        msg = f"[settings] could not read {SETTINGS_FILE}: {exc} - using the defaults"
+        _SETTINGS_STATE["load_problem"] = msg
+        _SETTINGS_STATE["load_info"] = {"kind": "unreadable", "kept": "", "error": str(exc)}
+        _log(msg)
         return {}
     # relative folder values mean "next to the app", not "wherever the
     # working directory happens to be"
     return resolve_paths(d)
 
 
-def save_settings(d):
-    # write a temp file and swap it in, so a crash mid-write can't leave a
-    # truncated (unloadable) settings file behind
-    tmp = SETTINGS_FILE + ".tmp"
+def _recover_settings(why):
+    """settings.json can't be parsed: move it aside and fall back to the last
+    good save (.bak, restored as settings.json). Returns the dict ({} when
+    there is no usable backup)."""
+    bad = f"{SETTINGS_FILE}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
     try:
+        os.replace(SETTINGS_FILE, bad)
+        kept = f"kept as {os.path.basename(bad)}"
+        kept_name = os.path.basename(bad)
+    except OSError as exc:
+        kept = f"could not be moved aside ({exc})"
+        kept_name = ""
+    try:
+        d = _read_settings_file(SETTINGS_BAK)
+    except (OSError, ValueError):
+        d = None
+    name = os.path.basename(SETTINGS_FILE)
+    restored = d is not None
+    if d is not None:
+        try:
+            _write_atomic(SETTINGS_FILE, json.dumps(d, indent=2))
+        except OSError:
+            pass
+        msg = (f"[settings] {name} could not be loaded - {why}; {kept}. Restored the "
+               f"last good save ({os.path.basename(SETTINGS_BAK)}).")
+    else:
+        d = {}
+        msg = (f"[settings] {name} could not be loaded - {why}; {kept}. No usable "
+               "backup - starting with the default settings.")
+    _SETTINGS_STATE["load_problem"] = msg
+    _SETTINGS_STATE["load_info"] = {"kind": "restored" if restored else "reset",
+                                    "kept": kept_name, "error": why}
+    _log(msg)
+    return d
+
+
+def save_settings(d):
+    """Write the settings (see the comment above). Returns True when saved;
+    never raises - an error is logged and kept for settings_save_error()."""
+    try:
+        text = json.dumps(relativize_paths(d), indent=2)
         os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(relativize_paths(d), f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, SETTINGS_FILE)
+        _write_atomic(SETTINGS_FILE, text)
+    except (OSError, TypeError, ValueError) as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        if _SETTINGS_STATE["save_error"] != err:        # each new error once
+            _log(f"[settings] saving {SETTINGS_FILE} failed: {err}")
+        _SETTINGS_STATE["save_error"] = err
+        return False
+    try:
+        _write_atomic(SETTINGS_BAK, text)               # = the last good save
     except OSError:
         pass
+    if _SETTINGS_STATE["save_error"]:
+        _log("[settings] saving the settings works again")
+    _SETTINGS_STATE["save_error"] = None
+    return True
 
 
 # app-wide preferences (notifications, update check, log retention) - kept in
@@ -411,6 +593,7 @@ PREF_DEFAULTS = {
     "player_engine": "auto",      # video preview engine: auto (mpv if found) / mpv / opencv
     "cpu_limit": True,            # Limit CPU use: low-priority ffmpeg/mpv + thread caps
     "cpu_threads": "auto",        # thread cap: a CPU_THREAD_CHOICES key
+    "font_scale": 1.0,            # UI font size factor (ui/themes.FONT_SCALES), at startup
 }
 PREFS = dict(PREF_DEFAULTS)
 

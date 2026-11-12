@@ -14,11 +14,14 @@ from ..ui.frametime import file_fps
 from ..ui.playback import AudioPlayer
 from ..i18n import N_, tr
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (info_icon, KeyedCombobox, ScrollFrame, TimeEntry, add_tooltip,
-                          build_log_tab, enable_file_drop, enable_file_drop_deep,
-                          trim_text_lines)
-from .audio_common import (LUFS_RANGE, _TrackPicker, _check_range, _discard_partial,
-                           _first_number, _mtime, _nb_help, _same_file, media_types)
+from ..ui.timeentry import TimeEntry
+from ..ui.tooltips import info_icon, add_tooltip
+from ..ui.widgets import (KeyedCombobox, ScrollFrame, build_log_tab, enable_file_drop,
+                          enable_file_drop_deep, trim_text_lines)
+from ..ui.tkthread import _call_tk
+from .audio_common import (LUFS_RANGE, _TrackPicker, _check_range, _first_number, _nb_help,
+                           _same_file, ask_existing, commit_part, free_path, media_types,
+                           part_path)
 from .. import applog, jobs
 from ..ui import icons
 
@@ -187,6 +190,9 @@ class ThemeAudioTab(ttk.Frame):
         self._prev_audio = None      # AudioPlayer while a preview plays
         self._prev_file = None       # its temp WAV
         self._prev_job = None        # after() id that ends the preview
+        self._prev_poll = None       # after() id watching for Stop all while it plays
+        # closing the window must not leave the preview sound playing
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
         # left: player (Set / Go buttons live next to the time boxes on the right,
         # like the other tools)
@@ -293,7 +299,7 @@ class ThemeAudioTab(ttk.Frame):
             trim_text_lines(self.logbox)
             self.logbox.see("end")
             self.logbox.configure(state="disabled")
-        self.after(0, _a)
+        _call_tk(_a)
 
     def _checked_range(self):
         """Validate file, From/To, fades and the normalize target (shared by
@@ -372,6 +378,14 @@ class ThemeAudioTab(ttk.Frame):
             messagebox.showerror(tr("Error"), tr("The output would overwrite the input file.\n"
                                                  "Change the name or the output folder."))
             return
+        if os.path.exists(out):
+            choice = ask_existing(self, out)
+            if choice == "both":
+                out = free_path(out, {os.path.normcase(os.path.abspath(video))})
+            elif choice != "over":
+                return
+            if self.stop_btn.instate(["!disabled"]):
+                return          # a preview / export started while the dialog was open
         self._end_preview(None)
         picked = self.track_picker.track_for(video)
         self.stop_event.clear()
@@ -444,9 +458,9 @@ class ThemeAudioTab(ttk.Frame):
             jobs.end(jid, ok=play or stopped,
                      summary=tr("Previewing {sec:.1f} s", sec=e - s) if play else msg)
             if play:
-                self.after(0, lambda: self._play_preview(tmp, e - s))
+                _call_tk(lambda: self._play_preview(tmp, e - s))
             else:
-                self.after(0, lambda: self._end_preview(msg, tmp))
+                _call_tk(lambda: self._end_preview(msg, tmp))
 
     def _play_preview(self, tmp, dur):
         if self.stop_event.is_set() or tmp != self._prev_file:
@@ -466,16 +480,38 @@ class ThemeAudioTab(ttk.Frame):
         self.status_var.set(tr("Previewing {sec:.1f} s ... (Stop ends it)", sec=dur))
         self._prev_job = self.after(int(dur * 1000) + 600,
                                     lambda: self._end_preview(tr("Preview finished.")))
+        self._prev_poll = self.after(250, self._watch_preview)
+
+    def _watch_preview(self):
+        """While the preview sound plays: Stop all (the app's / Queue window's)
+        sets the stop event - end the sound then too."""
+        self._prev_poll = None
+        if self._prev_audio is None:
+            return
+        if self.stop_event.is_set():
+            self._end_preview(tr("Preview stopped."))
+            return
+        self._prev_poll = self.after(250, self._watch_preview)
+
+    def _on_destroy(self, e):
+        if e.widget is self and self._prev_audio is not None:
+            try:
+                self._prev_audio.stop()
+            except Exception:
+                pass
+            self._prev_audio = None
 
     def _end_preview(self, msg, tmp=None):
         """Stop a preview (if any), delete its temp file, re-enable the buttons.
         msg=None: silent cleanup before another job starts."""
-        if self._prev_job is not None:
-            try:
-                self.after_cancel(self._prev_job)
-            except (tk.TclError, ValueError):
-                pass
-            self._prev_job = None
+        for attr in ("_prev_job", "_prev_poll"):
+            aid = getattr(self, attr, None)
+            if aid is not None:
+                try:
+                    self.after_cancel(aid)
+                except (tk.TclError, ValueError):
+                    pass
+                setattr(self, attr, None)
         if self._prev_audio is not None:
             self._prev_audio.stop()
             self._prev_audio = None
@@ -502,7 +538,7 @@ class ThemeAudioTab(ttk.Frame):
 
     def _progress(self, frac, _text=""):
         v = int(max(0.0, min(1.0, frac)) * 1000)
-        self.after(0, lambda: self.bar.configure(value=v))
+        _call_tk(lambda: self.bar.configure(value=v))
 
     def _worker(self, video, out, s, e, codec, extra, fin, fout, picked=None, norm=None):
         done = tr("Failed - see log.")
@@ -514,24 +550,26 @@ class ThemeAudioTab(ttk.Frame):
             self.log(f"[THEME] {fmt_time(s)} -> {fmt_time(e)}  (audio track #{track + 1}"
                      + (f", normalize {norm:g} LUFS stereo" if norm is not None else "")
                      + f")  ->  {out}")
-            before = _mtime(out)
-            rc, _err = export_audio_clip(video, out, s, e, codec, extra,
+            # written as <name>.part<ext>: an older file of that name is only
+            # replaced by a finished export (Stop / a failure leaves it alone)
+            part = part_path(out)
+            rc, _err = export_audio_clip(video, part, s, e, codec, extra,
                                          fade_in=fin, fade_out=fout, track=track,
                                          normalize=norm, tp=THEME_TP,
                                          stop_event=self.stop_event,
                                          on_progress=self._progress, on_log=self.log)
             if self.stop_event.is_set() or rc == -1:
+                commit_part(False, part, out, self.log)
                 self.log("  [STOPPED]")
                 done = tr("Stopped.")
                 failed = False
-                _discard_partial(out, before, self.log)
-            elif rc == 0:
+            elif rc == 0 and commit_part(True, part, out, self.log):
                 self.log("  [OK] saved")
                 done = tr("Done.")
                 failed = False
             else:
+                commit_part(False, part, out, self.log)
                 self.log("  [FAIL] export failed")
-                _discard_partial(out, before, self.log)
         except Exception as ex:
             self.log(f"  [FAIL] {ex}")
         finally:
@@ -541,4 +579,4 @@ class ThemeAudioTab(ttk.Frame):
                 self.status_var.set(done)
                 self._set_running(False)
                 self.bar.configure(value=0)
-            self.after(0, _f)
+            _call_tk(_f)

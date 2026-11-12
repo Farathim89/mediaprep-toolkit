@@ -1,6 +1,6 @@
 """GUI themes: one colour palette per theme, everything else derived from it.
 
-    PALETTES[name]   the base colours of a theme (see _BASE_KEYS)
+    PALETTES[name]   the colours of a theme (ui/palettes.py - the data)
     THEME_NAMES      what the theme pickers list ("Follow Windows" first)
     init(root)       create the shared theme variable + start the Windows watch
     theme_var()      the tk.StringVar both pickers (top bar, Settings) share -
@@ -15,9 +15,9 @@ created later, and walks ALL existing widgets (incl. open Toplevels, combobox
 drop-downs and menus) to recolour the plain-tk ones.
 
 Look: Windows 11 / Fluent. Each palette's base colours are extended with
-derived design tokens in _complete() (card = surface_alt, stroke, control /
-hover / pressed fills, accent hover, focus ring, sidebar, info bars ...);
-ui/fluent.py draws the rounded ttk element images from them (Pillow), the
+derived design tokens in palettes._complete() (card = surface_alt, stroke,
+control / hover / pressed fills, accent hover, focus ring, sidebar, info
+bars ...; the colour maths is ui/colors.py); ui/fluent.py draws the rounded ttk element images from them (Pillow), the
 flat 'clam' styling below stays as the fallback when Pillow is missing.
 Widgets inside a Labelframe ("card") get the Card.<style> variant of their
 style, so they sit on the card colour (see _cardify)."""
@@ -25,244 +25,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from ..i18n import N_, tr
-
-FOLLOW_WINDOWS = "Follow Windows"
-DEFAULT_THEME = "Dark"
-
-# keys every palette defines; the rest is derived in _complete()
-_BASE_KEYS = ("bg", "panel", "field", "fg", "muted", "accent", "accent_fg",
-              "select_bg", "select_fg", "border", "ok", "warn", "error")
-
-_MARKERS_LIGHT = dict(marker_preintro="#d9771f", marker_intro="#2f6fd6",
-                      marker_credits="#2f9a4c", marker_aftercredits="#8e4fc8")
-_MARKERS_DARK = dict(marker_preintro="#f0a050", marker_intro="#5b9bff",
-                     marker_credits="#58d07a", marker_aftercredits="#b88af0")
-
-PALETTES = {
-    "Light": dict(
-        bg="#f3f3f3", panel="#e9e9e9", field="#ffffff", fg="#1b1b1b", muted="#5d5d5d",
-        accent="#005fb8", accent_fg="#ffffff", select_bg="#cce4f7", select_fg="#1b1b1b",
-        border="#c4c4c4", ok="#0f7b0f", warn="#8a4b00", error="#c42b1c",
-        card="#fbfbfb", sidebar_bg="#ebebeb", playhead="#d81b1b", **_MARKERS_LIGHT),
-    "Dark": dict(
-        bg="#202020", panel="#2d2d2d", field="#1b1b1b", fg="#ffffff", muted="#c5c5c5",
-        accent="#60cdff", accent_fg="#000000", select_bg="#1e4e78", select_fg="#ffffff",
-        border="#4a4a4a", ok="#6ccb5f", warn="#fce100", error="#ff99a4",
-        card="#2b2b2b", sidebar_bg="#1a1a1a", dark=True, **_MARKERS_DARK),
-    "High Contrast": dict(
-        bg="#000000", panel="#1a1a1a", field="#000000", fg="#ffffff", muted="#00ffff",
-        accent="#ffff00", accent_fg="#000000", select_bg="#ffff00", select_fg="#000000",
-        border="#ffffff", ok="#00ff00", warn="#ffb000", error="#ff5c5c",
-        hover="#333333", pressed="#4d4d4d", dark=True, hc=True, playhead="#ff00ff",
-        card="#000000", sidebar_bg="#000000", stroke="#ffffff", stroke_subtle="#8f8f8f",
-        card_stroke="#ffffff", control="#000000", control_hover="#333333",
-        control_pressed="#4d4d4d", control_disabled="#000000", control_bottom="#ffffff",
-        field_bottom="#ffffff", check_stroke="#ffffff", check_fill="#000000",
-        check_fill_hover="#333333", scroll_thumb="#ffffff", scroll_thumb_hover="#ffff00",
-        progress_track="#8f8f8f", heading_bg="#000000", heading_hover="#333333",
-        focus="#ffff00", card_alt="#000000", tree_alt="#000000",
-        sidebar_hover="#333333", sidebar_sel="#1a1a1a",
-        marker_preintro="#ff9900", marker_intro="#00b0ff", marker_credits="#00ff00",
-        marker_aftercredits="#ff66ff"),
-    "Plex": dict(
-        bg="#141414", panel="#252525", field="#0b0b0b", fg="#ececec", muted="#a3a3a3",
-        accent="#e5a00d", accent_fg="#000000", select_bg="#e5a00d", select_fg="#000000",
-        border="#3d3d3d", ok="#62c96a", warn="#ff9f43", error="#ff6161",
-        dark=True, **dict(_MARKERS_DARK, marker_intro="#e5a00d",
-                          marker_preintro="#ff7b39")),
-    "Gold on Dark": dict(
-        bg="#121110", panel="#24201a", field="#0a0908", fg="#ffd100", muted="#c8ad6e",
-        accent="#ffb400", accent_fg="#000000", select_bg="#ffd100", select_fg="#000000",
-        border="#6b5a2e", ok="#7ed957", warn="#ff9a3c", error="#ff5f5f",
-        tooltip_bg="#24201a", tooltip_fg="#ffd100", dark=True,
-        **dict(_MARKERS_DARK, marker_intro="#ffd100")),
-    "Midnight Blue": dict(
-        bg="#0f1a2e", panel="#1b2b47", field="#0a1222", fg="#e1e8f5", muted="#9fb2d0",
-        accent="#5aa9ff", accent_fg="#04101f", select_bg="#2e5fa8", select_fg="#ffffff",
-        border="#2f4670", ok="#5fd38d", warn="#ffc35a", error="#ff7a7a",
-        dark=True, **_MARKERS_DARK),
-    "Nord": dict(
-        bg="#2e3440", panel="#3b4252", field="#242933", fg="#eceff4", muted="#b4bccb",
-        accent="#88c0d0", accent_fg="#2e3440", select_bg="#4a6a96", select_fg="#ffffff",
-        border="#4c566a", ok="#a3be8c", warn="#ebcb8b", error="#e5868f",
-        dark=True, marker_preintro="#d08770", marker_intro="#81a1c1",
-        marker_credits="#a3be8c", marker_aftercredits="#b48ead"),
-    "Dracula": dict(
-        bg="#282a36", panel="#383a4a", field="#21222c", fg="#f8f8f2", muted="#b1b8d8",
-        accent="#bd93f9", accent_fg="#21222c", select_bg="#6c4fb0", select_fg="#ffffff",
-        border="#6272a4", ok="#50fa7b", warn="#ffb86c", error="#ff6e6e",
-        dark=True, playhead="#ff79c6", marker_preintro="#ffb86c",
-        marker_intro="#8be9fd", marker_credits="#50fa7b", marker_aftercredits="#bd93f9"),
-    "Solarized Light": dict(
-        bg="#fdf6e3", panel="#eee8d5", field="#fffcf4", fg="#073642", muted="#4f646b",
-        accent="#1b6ea8", accent_fg="#ffffff", select_bg="#1b6ea8", select_fg="#ffffff",
-        border="#c9c0a6", ok="#4f6600", warn="#9a4a00", error="#b8262a",
-        playhead="#d33682", marker_preintro="#cb4b16", marker_intro="#268bd2",
-        marker_credits="#859900", marker_aftercredits="#6c71c4"),
-    "Solarized Dark": dict(
-        bg="#002b36", panel="#073642", field="#00212b", fg="#eee8d5", muted="#a0acac",
-        accent="#4aa3e8", accent_fg="#00212b", select_bg="#1d5f8f", select_fg="#ffffff",
-        border="#2a5866", ok="#a4c400", warn="#e3a72f", error="#ff6f61",
-        dark=True, playhead="#d33682", marker_preintro="#cb4b16",
-        marker_intro="#268bd2", marker_credits="#859900", marker_aftercredits="#6c71c4"),
-    "Forest": dict(
-        bg="#1c2a1e", panel="#283c2b", field="#132015", fg="#e3eedf", muted="#a9c2a5",
-        accent="#8fd16a", accent_fg="#0f1f0e", select_bg="#3e7a39", select_fg="#ffffff",
-        border="#3e5c41", ok="#7ee08a", warn="#f0c05a", error="#ff7f6e",
-        dark=True, **_MARKERS_DARK),
-    "Sepia": dict(
-        bg="#f4ecd8", panel="#e6d9bb", field="#fbf7ec", fg="#3b2f1e", muted="#5f5038",
-        accent="#8b4513", accent_fg="#ffffff", select_bg="#8b5a2b", select_fg="#ffffff",
-        border="#b5a27c", ok="#3d6a1d", warn="#8a4f00", error="#a8231b",
-        playhead="#c0392b", marker_preintro="#c76a1c", marker_intro="#2f6fa8",
-        marker_credits="#4f8a2b", marker_aftercredits="#8a4fa8"),
-}
-
-THEME_NAMES = [FOLLOW_WINDOWS] + list(PALETTES)
-
-# the theme names as the pickers SHOW them (translated); the settings and
-# theme_var() keep the English key. Listed here for the string extractor.
-_THEME_LABELS = (N_("Follow Windows"), N_("Light"), N_("Dark"), N_("High Contrast"),
-                 N_("Plex"), N_("Gold on Dark"), N_("Midnight Blue"), N_("Nord"),
-                 N_("Dracula"), N_("Solarized Light"), N_("Solarized Dark"),
-                 N_("Forest"), N_("Sepia"))
-
-
-def label(name):
-    """A theme name as shown in the pickers (translated)."""
-    return tr(name)
-
-
-# ---------------------------------------------------------------- colour maths
-def _rgb(c):
-    c = c.lstrip("#")
-    if len(c) == 3:
-        c = "".join(ch * 2 for ch in c)
-    return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
-
-
-def _hex(rgb):
-    return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v)))) for v in rgb)
-
-
-def mix(a, b, t):
-    """Colour a blended toward b by t (0 = a, 1 = b)."""
-    ra, rb = _rgb(a), _rgb(b)
-    return _hex([x + (y - x) * t for x, y in zip(ra, rb)])
-
-
-def luminance(c):
-    def ch(v):
-        v /= 255.0
-        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
-    r, g, b = (ch(v) for v in _rgb(c))
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-
-def contrast(a, b):
-    """WCAG contrast ratio of two colours (1 .. 21)."""
-    la, lb = luminance(a), luminance(b)
-    hi, lo = max(la, lb), min(la, lb)
-    return (hi + 0.05) / (lo + 0.05)
-
-
-def on_color(bg):
-    """Black or white - whichever reads better on bg."""
-    return "#000000" if contrast(bg, "#000000") >= contrast(bg, "#ffffff") else "#ffffff"
-
-
-def _readable(c, bgs, target=4.5, toward=None):
-    """c nudged toward `toward` until it reaches `target` contrast on every
-    colour in bgs (WCAG body text)."""
-    for _i in range(20):
-        if all(contrast(c, b) >= target for b in bgs):
-            return c
-        c = mix(c, toward, 0.12)
-    return c
-
-
-def _complete(p):
-    """Fill the derived keys (design tokens) of a base palette."""
-    p = dict(p)
-    dark = p.setdefault("dark", luminance(p["bg"]) < 0.2)
-    p.setdefault("hc", False)
-    bg, fg, field = p["bg"], p["fg"], p["field"]
-    ink = "#000000" if not dark else "#ffffff"      # 'more contrast' direction
-    p.setdefault("hover", mix(p["panel"], fg, 0.14))
-    p.setdefault("pressed", mix(p["panel"], fg, 0.26))
-    p.setdefault("disabled_fg", mix(fg, bg, 0.5))
-    # ---- surfaces: content (bg) / cards (surface_alt) / sidebar + status bar
-    p.setdefault("card", mix(bg, fg, 0.05) if dark else mix(bg, "#ffffff", 0.7))
-    card = p["card"]
-    p.setdefault("surface", bg)
-    p.setdefault("surface_alt", card)
-    p.setdefault("sidebar_bg", mix(bg, "#000000", 0.16) if dark else mix(bg, "#000000", 0.035))
-    p.setdefault("card_alt", mix(card, fg, 0.03))           # a card inside a card
-    # ---- strokes
-    p.setdefault("stroke", mix(card, fg, 0.13 if dark else 0.12))
-    p.setdefault("stroke_subtle", mix(card, fg, 0.07))
-    p.setdefault("card_stroke", p["stroke"])
-    # ---- control fills (buttons, read-only drop-downs)
-    p.setdefault("control", mix(card, fg, 0.06) if dark else mix(card, "#ffffff", 0.8))
-    ctl = p["control"]
-    p.setdefault("control_hover", mix(ctl, fg, 0.05) if dark else mix(ctl, "#000000", 0.025))
-    p.setdefault("control_pressed", mix(ctl, bg, 0.45) if dark else mix(ctl, "#000000", 0.045))
-    p.setdefault("control_disabled", mix(card, fg, 0.025) if dark else mix(card, "#000000", 0.02))
-    p.setdefault("control_bottom", p["stroke"] if dark else mix(p["stroke"], fg, 0.2))
-    p.setdefault("field_hover", mix(field, fg, 0.03))
-    p.setdefault("field_bottom", mix(field, fg, 0.5))
-    # input boxes: a 1 px border with >= 3:1 against the page and card
-    # surfaces (WCAG 1.4.11 non-text contrast), still lighter than the text
-    p.setdefault("field_border", _readable(mix(field, fg, 0.3), (bg, card), 3.0, toward=fg))
-    # ---- accent states, focus ring
-    # hover / pressed accent fills: toward the page colour, unless that would
-    # take the on-accent text below 4.5:1 - then toward more contrast
-    away = "#000000" if luminance(p["accent_fg"]) > 0.5 else "#ffffff"
-    for k, t in (("accent_hover", 0.12), ("accent_pressed", 0.24)):
-        c = mix(p["accent"], bg, t)
-        if contrast(p["accent_fg"], c) < 4.5:
-            c = mix(p["accent"], away, t * 0.8)
-        p.setdefault(k, c)
-    p.setdefault("accent_edge", mix(p["accent"], "#000000" if not dark else "#ffffff", 0.1))
-    p.setdefault("focus", p["accent"])
-    p.setdefault("radius", 4)
-    # ---- check boxes, scrollbars, progress, list headers, zebra rows
-    p.setdefault("check_stroke", _readable(mix(card, fg, 0.5), (bg, card), 3.0, toward=fg))
-    p.setdefault("check_fill", mix(card, "#000000", 0.12) if dark else mix(card, "#000000", 0.02))
-    p.setdefault("check_fill_hover", mix(card, fg, 0.08))
-    p.setdefault("scroll_thumb", mix(bg, fg, 0.38))
-    p.setdefault("scroll_thumb_hover", mix(bg, fg, 0.58))
-    p.setdefault("progress_track", mix(card, fg, 0.22))
-    p.setdefault("heading_bg", field)
-    p.setdefault("heading_hover", mix(field, fg, 0.05))
-    p.setdefault("tree_alt", mix(field, fg, 0.03))
-    # ---- sidebar navigation
-    p.setdefault("sidebar_hover", mix(p["sidebar_bg"], fg, 0.06))
-    p.setdefault("sidebar_sel", mix(p["sidebar_bg"], fg, 0.095))
-    # captions / secondary text stay WCAG-readable on every surface
-    p["muted"] = _readable(p["muted"], (bg, card, p["sidebar_bg"], field), toward=fg)
-    p.setdefault("tooltip_bg", "#ffffe0" if not dark else p["panel"])
-    p.setdefault("tooltip_fg", "#1a1a1a" if not dark else p["fg"])
-    p.setdefault("timeline_bg", p["field"])
-    p.setdefault("timeline_track", mix(p["border"], p["fg"], 0.3))
-    p.setdefault("playhead", "#ff3b3b" if dark else "#d81b1b")
-    p.setdefault("video_bg", "#000000" if dark else "#1b1b1b")
-    for k, v in (_MARKERS_DARK if dark else _MARKERS_LIGHT).items():
-        p.setdefault(k, v)
-    # info bars / banners (missing ffmpeg, missing packages, update available):
-    # a tinted card with a coloured accent strip + icon, normal text colour
-    p.setdefault("banner_error_accent", p["error"])
-    p.setdefault("banner_warn_accent", p["warn"])
-    p.setdefault("banner_info_accent", p["accent"])
-    for k in ("error", "warn", "info"):
-        p.setdefault(f"banner_{k}_bg", mix(card, p[f"banner_{k}_accent"], 0.14 if dark else 0.1)
-                     if not p["hc"] else bg)
-        p.setdefault(f"banner_{k}_fg", _readable(fg, (p[f"banner_{k}_bg"],), toward=ink))
-    return p
-
-
-PALETTES = {name: _complete(p) for name, p in PALETTES.items()}
+from .colors import _rgb, mix
+from .palettes import DEFAULT_THEME, FOLLOW_WINDOWS, PALETTES, THEME_NAMES
 
 
 # ---------------------------------------------------------------- Windows mode
@@ -302,8 +66,10 @@ class _State:
     listeners = []
     watching = False
     scale = 1.0                   # display DPI factor (1.0 = 100 %)
+    font_scale = 1.0              # the user's font size (Settings, 1.0 = 100 %)
     fonts = {}                    # role -> font family in use
     font_objs = {}                # the app's own named fonts (kept alive)
+    px_fonts = {}                 # pixel-sized named font -> (size, at scale, last set)
     card_styles = set()           # Card.<style> variants created so far
     last_light = "Light"          # the sidebar's sun/moon toggle goes back to these
     last_dark = DEFAULT_THEME
@@ -326,13 +92,31 @@ def is_dark():
 
 
 def scale():
-    """The display DPI factor (1.0 at 100 %, 1.5 at 150 % ...)."""
+    """The display DPI factor (1.0 at 100 %, 1.5 at 150 % ...) - of the
+    monitor the app is on; it changes when the window moves to a monitor
+    with another scaling (ui/dpi.py)."""
     return _S.scale
 
 
 def px(n):
     """n pixels at 100 % scaling -> pixels at the current DPI (ints)."""
     return max(0, int(round(n * _S.scale))) if n else 0
+
+
+# Settings -> Font size: every UI font (and what is sized from text: list
+# rows and columns) grows / shrinks by this factor. Applied at startup.
+FONT_SCALES = (0.9, 1.0, 1.1, 1.2, 1.3)
+
+
+def font_scale():
+    """The font size factor in use (1.0 = 100 %)."""
+    return _S.font_scale
+
+
+def fpx(n):
+    """Like px(), for sizes that hold text (list rows / columns): also
+    follows the font size setting."""
+    return px(n * _S.font_scale) if n else 0
 
 
 def pad(*vals):
@@ -396,6 +180,8 @@ def _setup_fonts(root):
     mono = pick["mono"] or "Courier"
 
     def named(name, **kw):
+        if "size" in kw:            # the font size setting (whole points)
+            kw["size"] = max(6, int(round(kw["size"] * _S.font_scale)))
         try:
             tkfont.nametofont(name, root=root).configure(**kw)
         except tk.TclError:
@@ -426,6 +212,43 @@ def _setup_fonts(root):
     named("MPIconLarge", family=icons, size=16)
 
 
+def _refresh_fonts(ratio):
+    """'tk scaling' changed (ui/dpi.py): realise every named font again, so
+    its point size gives the new pixel size (Tk keeps the old pixels until
+    a font is reconfigured). A font given in pixels (negative size) is
+    scaled by ratio - from the size it started at, so no drift."""
+    root = _S.root
+    try:
+        names = root.tk.splitlist(root.tk.call("font", "names"))
+    except tk.TclError:
+        return
+    for name in names:
+        try:
+            size = int(root.tk.call("font", "configure", name, "-size"))
+            if size < 0:
+                rec = _S.px_fonts.get(name)
+                if rec is None or rec[2] != size:
+                    rec = (size, _S.scale / ratio, size)      # taken at the old scale
+                size = min(-1, int(round(rec[0] * _S.scale / rec[1])))
+                _S.px_fonts[name] = (rec[0], rec[1], size)
+            root.tk.call("font", "configure", name, "-size", size)
+        except (tk.TclError, ValueError):
+            pass
+
+
+def rescale(scale):
+    """The display DPI changed and 'tk scaling' was set for it (ui/dpi.py):
+    the px() factor, every font and every style for the new scale (factor
+    1.0 = 100 %)."""
+    old = _S.scale
+    _S.scale = scale
+    if _S.root is None:
+        return
+    _refresh_fonts(scale / old if old else 1.0)
+    if _S.style is not None:
+        apply(_S.root, _S.style, _S.applied)
+
+
 def font_family(role):
     """Installed family for a role (body / semibold / display / mono /
     icons), or None when none of the candidates is installed."""
@@ -434,17 +257,22 @@ def font_family(role):
 
 def mono_font(size=9):
     """(family, size) of the log / monospace font (Cascadia Mono -> Consolas)."""
-    return (_S.fonts.get("mono") or "Consolas", size)
+    return (_S.fonts.get("mono") or "Consolas", max(6, int(round(size * _S.font_scale))))
 
 
 def has_icon_font():
     return bool(_S.fonts.get("icons"))
 
 
-def init(root, name=DEFAULT_THEME):
+def init(root, name=DEFAULT_THEME, font_scale=1.0):
     """Create the shared theme variable, apply `name` and start the Windows
-    watch. Returns the StringVar the theme pickers bind to."""
+    watch. font_scale = the font size setting (FONT_SCALES). Returns the
+    StringVar the theme pickers bind to."""
     _S.root = root
+    try:
+        _S.font_scale = min(max(float(font_scale), FONT_SCALES[0]), FONT_SCALES[-1])
+    except (TypeError, ValueError):
+        _S.font_scale = 1.0
     _S.style = ttk.Style(root)
     try:
         _S.scale = max(1.0, float(root.winfo_fpixels("1i")) / 96.0)
@@ -452,6 +280,7 @@ def init(root, name=DEFAULT_THEME):
         _S.scale = 1.0
     _setup_fonts(root)
     _install_tree_striping()
+    _install_tree_columns()
     if name not in THEME_NAMES:
         name = DEFAULT_THEME
     _S.var = tk.StringVar(master=root, value=name)
@@ -460,7 +289,8 @@ def init(root, name=DEFAULT_THEME):
     # every new window (dialogs, help, tooltips) gets the palette once it's
     # mapped - covers its plain-tk children and the title bar colours
     root.bind_class("Toplevel", "<Map>", _on_map, add="+")
-    root.bind("<Map>", _on_root_map, add="+")
+    from .widgets import bind_window
+    bind_window(root, "<Map>", _on_root_map)      # the window itself, not every widget
     # widgets mapped later inside a card get their Card.<style> variant
     for cls in _CARD_CLASSES:
         root.bind_class(cls, "<Map>", _on_widget_map, add="+")
@@ -619,7 +449,7 @@ def _style_flat(style, p):
               foreground=[("selected", fg), ("active", fg), ("disabled", dis)])
     style.configure("Treeview", background=field, fieldbackground=field, foreground=fg,
                     bordercolor=border, lightcolor=field, darkcolor=field,
-                    rowheight=px(28))
+                    rowheight=fpx(28))
     style.map("Treeview", background=[("selected", sb)], foreground=[("selected", sf)])
     style.configure("Treeview.Heading", background=p["heading_bg"], foreground=p["muted"],
                     bordercolor=border, lightcolor=p["heading_bg"],
@@ -663,7 +493,7 @@ def _style_common(style, p):
     style.configure("Subtitle.TLabel", background=bg, foreground=fg, font="MPSubtitle")
     style.configure("Strong.TLabel", background=bg, foreground=fg, font="MPSemibold")
     style.configure("Mono.TLabel", background=bg, foreground=fg, font="MPMono")
-    # the ⓘ info icons (widgets.info_icon): muted, accent on hover / focus
+    # the ⓘ info icons (tooltips.info_icon): muted, accent on hover / focus
     style.configure("Info.TLabel", background=bg, foreground=muted, padding=pad(4, 0))
     style.map("Info.TLabel", foreground=[("active", p["accent"]), ("focus", p["accent"])])
     # the window chrome: sidebar + status bar surface
@@ -950,6 +780,26 @@ def _install_tree_striping():
         return method
     for n in orig:
         setattr(ttk.Treeview, n, wrap(n))
+
+
+def _install_tree_columns():
+    """Column widths given to ttk.Treeview.column() follow the font size
+    setting (the columns hold text): width / minwidth are scaled once, when
+    they are set."""
+    if getattr(ttk.Treeview, "_mp_cols", False):
+        return
+    ttk.Treeview._mp_cols = True
+    orig = ttk.Treeview.column
+
+    def column(self, column, option=None, **kw):
+        f = _S.font_scale
+        if f != 1.0:
+            for k in ("width", "minwidth"):
+                if isinstance(kw.get(k), int):
+                    kw[k] = int(round(kw[k] * f))
+        return orig(self, column, option, **kw)
+    column.__doc__ = orig.__doc__
+    ttk.Treeview.column = column
 
 
 # ---------------------------------------------------------------- the walk

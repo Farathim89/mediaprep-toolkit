@@ -11,13 +11,16 @@ from ..engine.loudness import (change_gain, measure_loudness, normalize_loudness
                                peak_normalize, probe_volume)
 from ..engine.probe import video_kind
 from ..i18n import N_, tr
-from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, auto_wrap, build_log_tab,
-                          enable_file_drop, trim_text_lines)
+from ..ui.tkthread import _call_tk
+from ..ui.tooltips import info_icon, add_tooltip
+from ..ui.widgets import KeyedCombobox, auto_wrap, build_log_tab, enable_file_drop, trim_text_lines
 from .audio_common import (DEFAULT_TP, GAIN_RANGE, GAIN_WARN, LUFS_RANGE, PEAK_RANGE,
                            TP_RANGE, TRACK_SCOPES, _TrackPicker,
-                           _check_range, _discard_partial, _first_number,
-                           _job_tracks, _mtime, _nb_help, _same_file,
-                           media_types)
+                           _check_range, _first_number,
+                           _job_tracks, _nb_help, _same_file, ask_existing,
+                           ask_from_worker, commit_part, free_path, media_types, part_path,
+                           path_key)
+from .common import opt_kwargs
 from .audio_gain_batch import BatchGainMixin
 from .. import applog, jobs
 from ..ui import icons
@@ -50,13 +53,22 @@ def _output_ext(src, kind, audio_out):
     return _CODEC_EXT.get(codec, ext)
 
 
+_BAD_NAME_CHARS = '<>:"/\\|?*'
+
+
 def _join_tag(extra):
     """The optional extra name tag, joined with '_' unless it already starts
-    with a separator."""
-    extra = (extra or "").strip()
+    with a separator. Characters Windows forbids in a file name become '_'
+    (a ':' would otherwise write an NTFS alternate data stream)."""
+    extra = "".join("_" if (c in _BAD_NAME_CHARS or ord(c) < 32) else c
+                    for c in (extra or "").strip()).rstrip(" .")
     if extra and extra[0] not in "_-. ":
         extra = "_" + extra
     return extra
+
+
+class _AnalyzeStopped(Exception):
+    """Single-file Analyze was stopped."""
 
 
 # ======================= Audio Gain (volume / normalise) =======================
@@ -94,6 +106,7 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         self._list_token = 0          # bumps on every Refresh file list
         self._compress_rows = set()   # rows whose LUFS gain will make loudnorm compress
         self._analyzing = False       # single-file Analyze running
+        self._an_stop = threading.Event()   # stops it (Queue window / Stop all / Stop)
         self._an_token = 0            # bumps when the single file changes
         self._jid = None              # jobs registry id of the running job
         self.columnconfigure(0, weight=1)
@@ -251,16 +264,16 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
             trim_text_lines(self.logbox)
             self.logbox.see("end")
             self.logbox.configure(state="disabled")
-        self.after(0, _a)
+        _call_tk(_a)
 
     def status(self, text):
-        self.after(0, lambda: self.status_var.set(text))
+        _call_tk(lambda: self.status_var.set(text))
 
     def progress(self, frac, text=""):
         def _a():
             self.bar["value"] = int(frac * 1000)
             self.pct_var.set(text)
-        self.after(0, _a)
+        _call_tk(_a)
 
     # ---- single-file analyze ----
     @staticmethod
@@ -288,18 +301,24 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         self._analyzing = True
         self.an_btn.configure(state="disabled")
         self.analysis_var.set(tr("Analyzing..."))
-        jid = jobs.begin(tr("Audio Gain analyze"), stop_event=None, tab=self)
+        stop = self._an_stop = threading.Event()
+        jid = jobs.begin(tr("Audio Gain analyze"), stop_event=stop, tab=self)
         threading.Thread(target=self._analyze_worker,
-                         args=(f, self._an_token, self.track_picker.track_for(f), jid),
+                         args=(f, self._an_token, self.track_picker.track_for(f), jid, stop),
                          daemon=True).start()
 
-    def _analyze_worker(self, f, token, picked=None, jid=None):
+    def _analyze_worker(self, f, token, picked=None, jid=None, stop=None):
         txt = tr("Analysis failed - see log.")
         failed = True
+        stop = stop or self._an_stop
         try:
             track = self.track_picker.resolve_track(f, picked)
-            mean, mx = probe_volume(f, track)
-            lufs, tp = measure_loudness(f, track)
+            mean, mx = probe_volume(f, track, **opt_kwargs(probe_volume, stop_event=stop))
+            if stop.is_set():
+                raise _AnalyzeStopped()
+            lufs, tp = measure_loudness(f, track, stop)
+            if stop.is_set():
+                raise _AnalyzeStopped()
             parts = []
             if lufs is not None:
                 parts.append(f"{lufs:.1f} LUFS")
@@ -312,6 +331,9 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
             txt = (tr("Track #{n}: {levels}", n=track + 1, levels=", ".join(parts)) if parts
                    else tr("Could not read levels (no audio?)."))
             failed = False
+        except _AnalyzeStopped:
+            txt = tr("Analysis stopped.")
+            failed = False
         except Exception as e:
             self.log(f"[FAIL] analyze {os.path.basename(f)}: {e}")
         finally:
@@ -322,7 +344,7 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
                 self.an_btn.configure(state="normal")
                 if token == self._an_token:      # file not changed meanwhile
                     self.analysis_var.set(txt)
-            self.after(0, _done)
+            _call_tk(_done)
 
     # ---- single-file apply ----
     @staticmethod
@@ -430,6 +452,15 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
                 self.log(f"[FAIL] {os.path.basename(f)}: the output would overwrite the input.")
                 msg = tr("Failed - the output would overwrite the input.")
                 return
+            if os.path.exists(out):
+                choice = ask_from_worker(lambda o=out: ask_existing(self, o), self.stop_event)
+                if choice == "both":
+                    out = free_path(out, {path_key(f)})
+                elif choice != "over":
+                    self.log(f"  [SKIP] {os.path.basename(out)} exists already")
+                    msg = tr("Skipped - the output exists already.")
+                    failed = False
+                    return
             self.log(f"  output: {out}")
             track = self.track_picker.resolve_track(f, picked)
             tracks = _job_tracks(scope, keep, track)
@@ -438,31 +469,34 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
                      + ("" if keep else " (audio-only output)"))
             cb = dict(stop_event=self.stop_event, on_progress=self.progress, on_log=self.log,
                       tracks=tracks)
-            before = _mtime(out)
+            # written as <name>.part<ext>: an older output of that name is only
+            # replaced by a finished file (Stop / a failure leaves it alone)
+            part = part_path(out)
             if mode == "lufs":
                 self.log(f"[NORM] {os.path.basename(f)} -> {target} LUFS, TP {tp} ({tag})")
-                rc, err = normalize_loudness(f, out, target, keep, tp=tp,
+                rc, err = normalize_loudness(f, part, target, keep, tp=tp,
                                              audio_out=audio_out, **cb)
             elif mode == "peak":
                 self.log(f"[PEAK] {os.path.basename(f)} -> {target} dB peak ({tag})")
-                rc, err = peak_normalize(f, out, target, keep, audio_out=audio_out, **cb)
+                rc, err = peak_normalize(f, part, target, keep, audio_out=audio_out, **cb)
             else:
                 self.log(f"[GAIN] {os.path.basename(f)} volume={target}dB ({tag})")
-                rc, err = change_gain(f, out, f"volume={target}dB", keep, audio_out=audio_out, **cb)
+                rc, err = change_gain(f, part, f"volume={target}dB", keep, audio_out=audio_out,
+                                      **cb)
             if self.stop_event.is_set() or rc == -1:
+                commit_part(False, part, out, self.log)
                 self.log("  [STOPPED]")
                 msg = tr("Stopped.")
                 failed = False
-                _discard_partial(out, before, self.log)
-            elif rc == 0:
+            elif rc == 0 and commit_part(True, part, out, self.log):
                 self.log(f"  [OK] {out}")
                 msg = tr("Done.")
                 failed = False
             else:
-                for ln in err.strip().splitlines()[-4:]:
+                commit_part(False, part, out, self.log)
+                for ln in (err or "").strip().splitlines()[-4:]:
                     self.log(f"    | {ln}")
                 self.log("  [FAIL]")
-                _discard_partial(out, before, self.log)
         except Exception as e:
             self.log(f"  [FAIL] {e}")
         finally:
@@ -471,10 +505,12 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
             def _f():
                 self._brunning(False, msg)
                 self.bar.configure(value=0)
-            self.after(0, _f)
+            _call_tk(_f)
 
     def stop(self):
         self.stop_event.set()
+        if self._analyzing:
+            self._an_stop.set()
         self.log("Stopping (the file in progress is abandoned)...")
 
     def snapshot(self):

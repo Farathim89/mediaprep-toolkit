@@ -9,11 +9,14 @@ from ..config import AUDIOGAIN_INPUT, AUDIOGAIN_OUTPUT, AUDIO_OUT_CHOICES
 from ..engine.loudness import (change_gain, measure_loudness, normalize_loudness,
                                peak_normalize, probe_volume)
 from ..engine.probe import probe_audio_tracks
+from .common import opt_kwargs
 from ..i18n import N_, ntr, tr
-from ..ui.widgets import (info_icon, KeyedCombobox, ScrollFrame, Tooltip, add_tooltip,
-                          bind_status_colors, enable_file_drop)
-from .audio_common import (DEFAULT_TP, GAIN_RANGE, TRACK_SCOPES, _discard_partial,
-                           _first_number, _job_tracks, _mtime, _track_by_lang)
+from ..ui.tkthread import _call_tk
+from ..ui.tooltips import info_icon, Tooltip, add_tooltip
+from ..ui.widgets import KeyedCombobox, ScrollFrame, bind_status_colors, enable_file_drop
+from .audio_common import (DEFAULT_TP, GAIN_RANGE, TRACK_SCOPES, _first_number, _job_tracks,
+                           _track_by_lang, ask_existing, ask_from_worker, commit_part,
+                           free_path, part_path, path_key)
 from .. import jobs
 from ..ui import icons
 
@@ -82,7 +85,9 @@ class BatchGainMixin:
         mf = ttk.Frame(bleft)
         mf.grid(row=5, column=0, sticky="we", pady=(2, 10))
         mf.columnconfigure(1, weight=1)
-        self.bmatch_var = tk.StringVar(value=saved.get("ag_match", "lufs"))
+        _match = saved.get("ag_match")
+        self.bmatch_var = tk.StringVar(value=_match if _match in ("lufs", "peak", "gain")
+                                       else "lufs")
         rl = ttk.Radiobutton(mf, text=tr("Loudness (LUFS)"), variable=self.bmatch_var, value="lufs")
         rl.grid(row=0, column=0, sticky="w")
         add_tooltip(rl, tr("Best for matching a season: brings every file to the same perceived "
@@ -288,7 +293,7 @@ class BatchGainMixin:
                     self._ftracks[f] = probe_audio_tracks(f)
                 except Exception:
                     self._ftracks[f] = []
-        self.after(0, lambda: self._langs_ready(tok))
+        _call_tk(lambda: self._langs_ready(tok))
 
     def _langs_ready(self, tok):
         if tok != self._list_token:
@@ -463,7 +468,10 @@ class BatchGainMixin:
         lufs, tp = measure_loudness(path, track, self.stop_event)
         if self.stop_event.is_set():
             return None
-        mean, mx = probe_volume(path, track)
+        mean, mx = probe_volume(path, track, **opt_kwargs(probe_volume,
+                                                          stop_event=self.stop_event))
+        if self.stop_event.is_set():
+            return None
         m = self._meas[(path, track)] = (lufs, mx, tp, mean)
         vals = tuple(f"{v:.1f}" if v is not None else "?" for v in (lufs, mx, mean))
 
@@ -473,7 +481,7 @@ class BatchGainMixin:
             self.tree.set(p, "lufs", v[0])
             self.tree.set(p, "peak", v[1])
             self.tree.set(p, "mean", v[2])
-        self.after(0, _set)
+        _call_tk(_set)
         return m
 
     def _analyze_all_worker(self, files, lang=""):
@@ -504,9 +512,16 @@ class BatchGainMixin:
         except Exception as e:
             self.log(f"[FAIL] analysis: {e}")
         finally:
-            self.after(0, lambda: self._finish_analyze(done, n, stopped, jid))
+            ended = threading.Event()
+            _call_tk(lambda: self._finish_analyze(done, n, stopped, jid, ended))
+            # the summary with the outlier verdict is made on the Tk thread; if
+            # that never runs (window closing) the job still ends here
+            if not ended.wait(5.0):
+                jobs.end(jid, ok=True, summary=(
+                    tr("Stopped - analyzed {done}/{n}", done=done, n=n) if stopped
+                    else ntr("Analyzed {n} file", "Analyzed {n} files", done)))
 
-    def _finish_analyze(self, done, n, stopped, jid=None):
+    def _finish_analyze(self, done, n, stopped, jid=None, ended=None):
         # the summary needs the Tk-side outlier verdict, so the job ends here
         # (scheduled from the worker's finally)
         head = (tr("Stopped - analyzed {done}/{n}", done=done, n=n) if stopped
@@ -519,6 +534,8 @@ class BatchGainMixin:
             self._brunning(False, text)
         finally:
             jobs.end(jid, ok=True, summary=text)
+            if ended is not None:
+                ended.set()
 
     def _flag_outliers(self, log=False):
         """Compare each analyzed file to the season's median loudness, fill the
@@ -665,7 +682,7 @@ class BatchGainMixin:
             self.log(f"[BATCH] [FAIL] {e}")
         finally:
             jobs.end(jid, ok=not failed, summary=summary)
-            self.after(0, lambda: self._brunning(False, summary))
+            _call_tk(lambda: self._brunning(False, summary))
 
     def _skip_check(self, f, mode, target, track, tol):
         """'Only fix outliers' for one file (worker thread). Measures the file
@@ -686,7 +703,7 @@ class BatchGainMixin:
             if self.tree.exists(f):
                 self.tree.set(f, "gain", tr("skip"))
                 self.tree.item(f, tags=("skipped",))
-        self.after(0, _a)
+        _call_tk(_a)
 
     def _batch_run(self, files, outdir, spec, tag, audio_out, tp=DEFAULT_TP, opts=None):
         opts = opts or {}
@@ -699,6 +716,12 @@ class BatchGainMixin:
         n = len(files)
         ok = skipped = 0
         stopped = False
+        # outputs of this run: two files never write the same name (ep1.mkv +
+        # ep1.mp4 -> one .ac3), and no output replaces a source of the run
+        sources = {path_key(f) for f in files}
+        claimed = set()
+        exist_choice = None        # Overwrite / Keep both / Skip - asked once
+        n_exist = 0
         if mode == "gain":
             self.log(f"[BATCH] {n} file(s) -> apply {target:+g} dB gain to each")
         else:
@@ -734,8 +757,28 @@ class BatchGainMixin:
             if out is None:
                 self.log(f"  [{i}/{n}] {name}  [FAIL] output would overwrite the input - skipped")
                 continue
+            if path_key(out) in claimed or path_key(out) in sources:
+                out = free_path(out, claimed | sources)
+                self.log(f"  [{i}/{n}] {name}: another file of this batch has the same output "
+                         f"name - writing {os.path.basename(out)}")
+            elif os.path.exists(out):
+                if exist_choice is None:
+                    exist_choice = ask_from_worker(
+                        lambda o=out: ask_existing(self, o, batch=True),
+                        self.stop_event) or "cancel"
+                if exist_choice == "cancel":
+                    stopped = True
+                    self.log("[BATCH] cancelled - outputs exist already.")
+                    break
+                if exist_choice == "skip":
+                    n_exist += 1
+                    self.log(f"  [{i}/{n}] {name}  [SKIP] {os.path.basename(out)} exists already")
+                    self.progress(i / n, f"{i}/{n}")
+                    continue
+                if exist_choice == "both":
+                    out = free_path(out, claimed | sources)
+            claimed.add(path_key(out))
             tracks = _job_tracks(scope, keep, track)
-            before = _mtime(out)
             self.log(f"  [{i}/{n}] {name}  ({label})  ->  {os.path.basename(out)}")
             if lang and not found:
                 self.log(f"       no '{lang}' track - using track #1")
@@ -749,27 +792,35 @@ class BatchGainMixin:
 
             cb = dict(stop_event=self.stop_event, on_progress=_pcb, on_log=self.log,
                       tracks=tracks)
+            # written as <name>.part<ext>: an older output is only replaced by a
+            # finished file (Stop / a failure leaves it alone)
+            part = part_path(out)
             if mode == "lufs":
-                rc, err = normalize_loudness(f, out, target, keep, tp=tp, audio_out=audio_out, **cb)
+                rc, err = normalize_loudness(f, part, target, keep, tp=tp, audio_out=audio_out,
+                                             **cb)
             elif mode == "peak":
-                rc, err = peak_normalize(f, out, target, keep, audio_out=audio_out, **cb)
+                rc, err = peak_normalize(f, part, target, keep, audio_out=audio_out, **cb)
             else:
-                rc, err = change_gain(f, out, f"volume={target}dB", keep, audio_out=audio_out, **cb)
+                rc, err = change_gain(f, part, f"volume={target}dB", keep, audio_out=audio_out,
+                                      **cb)
             if self.stop_event.is_set() or rc == -1:
                 stopped = True
+                commit_part(False, part, out, self.log)
                 self.log("       [STOPPED]")
-                _discard_partial(out, before, self.log)
                 break
-            if rc == 0:
+            if rc == 0 and commit_part(True, part, out, self.log):
                 ok += 1
                 self.log("       [OK]")
             else:
-                for ln in err.strip().splitlines()[-3:]:
+                commit_part(False, part, out, self.log)
+                for ln in (err or "").strip().splitlines()[-3:]:
                     self.log(f"         | {ln}")
                 self.log("       [FAIL]")
-                _discard_partial(out, before, self.log)
             self.progress(i / n, f"{i}/{n}")
         sk = f", {skipped} skipped (already on target)" if skipped else ""
+        if n_exist:
+            sk += f", {n_exist} skipped (output exists)"
+        skipped += n_exist
         self.log(f"[BATCH] finished: {ok}/{n} ok{sk}  ->  {outdir}")
         return ((tr("Stopped - {ok}/{n} done", ok=ok, n=n) if stopped
                  else tr("Done - {ok}/{n} OK", ok=ok, n=n))

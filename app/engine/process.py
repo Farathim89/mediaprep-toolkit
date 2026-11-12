@@ -1,5 +1,6 @@
 """Subprocess runners: power-throttling exemption, stoppable capture
 and ffmpeg with a live progress callback."""
+import itertools
 import os
 import subprocess
 import threading
@@ -7,6 +8,16 @@ import time
 
 from ..config import limit_cmd, popen_flags, TEMP_DIR
 from .formatting import format_seconds
+
+# unique numbers for temp file names. next() on an itertools.count is atomic
+# in CPython, so threads running ffmpeg at the same time (detect_crop uses 4)
+# never share a progress / stderr file - a `global n; n += 1` could.
+_tmp_ids = itertools.count(1)
+
+
+def temp_tag():
+    """'<pid>_<n>': a process- and thread-unique tag for temp file names."""
+    return f"{os.getpid()}_{next(_tmp_ids)}"
 
 
 def _set_no_power_throttle(handle):
@@ -85,10 +96,8 @@ def _run_capture_stoppable(cmd, stop_event=None):
     stderr goes to a temp FILE, not a pipe: ffmpeg emits a lot of stderr on a
     long file, and an unread pipe fills its OS buffer and deadlocks ffmpeg (the
     'starts but nothing happens' hang). A file never blocks the writer."""
-    global _progress_file_counter
-    _progress_file_counter += 1
     os.makedirs(TEMP_DIR, exist_ok=True)
-    errpath = os.path.join(TEMP_DIR, f"meas_{os.getpid()}_{_progress_file_counter}.log")
+    errpath = os.path.join(TEMP_DIR, f"meas_{temp_tag()}.log")
     text, rc = "", -1
     try:
         errfh = open(errpath, "w", encoding="utf-8", errors="replace")
@@ -129,8 +138,6 @@ def _run_capture_stoppable(cmd, stop_event=None):
 
 
 # ======================= ffmpeg runner (v18 progress engine) =======================
-_progress_file_counter = 0
-
 def run_ffmpeg_with_progress(cmd, duration_sec, fps=None, expected_offset=0.0,
                              on_progress=None, on_log=None, stop_event=None,
                              stderr_out=None):
@@ -144,9 +151,7 @@ def run_ffmpeg_with_progress(cmd, duration_sec, fps=None, expected_offset=0.0,
     stderr_out: optional list - ffmpeg's full stderr text is appended to it
     (e.g. to read loudnorm's report). Returns ffmpeg's return code (-1 if stopped).
     """
-    global _progress_file_counter
-    _progress_file_counter += 1
-    tag = f"{os.getpid()}_{_progress_file_counter}"
+    tag = temp_tag()
     progress_file = os.path.join(TEMP_DIR, f"progress_{tag}.tmp")
     stderr_file = os.path.join(TEMP_DIR, f"stderr_{tag}.log")
     os.makedirs(TEMP_DIR, exist_ok=True)

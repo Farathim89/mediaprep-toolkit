@@ -2,19 +2,17 @@
 the page header + pages (the tabs), theme handling, the window icon, the
 status bar (job registry / queue badge / version) and the info bars (update
 available, missing ffmpeg / packages).
-The Queue / Settings dialogs live in ui/dialogs.py."""
-import importlib.util
+The Queue / Settings dialogs live in ui/dialogs.py; the window's shell
+helpers (geometry, icon, restart) in window.py, the info bars in banners.py,
+the status bar in statusbar.py."""
 import os
-import re
-import shutil
 import subprocess
-import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
 
 from .config import (APP_NAME, APP_VERSION, LOGS_DIR, PREFS, WORK_DIRS, load_prefs,
-                     load_settings, prefs_snapshot, resource_path, save_settings)
+                     load_settings, prefs_snapshot, save_settings)
 from .tabs.audio_gain import AudioGainTab
 from .tabs.check import CheckTab
 from .tabs.compare import CompareTab
@@ -24,15 +22,18 @@ from .tabs.log import LogTab
 from .tabs.templates import TemplateTab
 from .tabs.theme_audio import ThemeAudioTab
 from .ui.cleanup import CleanupDialog
-from .ui.dialogs import QueueDialog, SettingsDialog, _fmt_elapsed, install_default_parent
-from .ui import bgmode, themes
+from .ui.dialogs import SettingsDialog, install_default_parent
+from .ui import bgmode, dpi, palettes, themepicker, themes
 from .ui.dualplayer import DualPlayerTab
-from .ui.icons import decorate
-from .ui.pageview import PageView
+from .ui.pageview import PageView, fast_resize
 from .ui.sidebar import Sidebar
 from .ui.tkthread import _call_tk, _drain_tk_calls
-from .ui.widgets import (InfoBar, InfoTab, RecommendedTab, ScrollFrame, add_tooltip,
-                         make_root, show_help_index)
+from .ui.helpwin import InfoTab, RecommendedTab, show_help_index
+from .ui.widgets import ScrollFrame, bind_window, make_root
+from .banners import Banners
+from .statusbar import StatusBar
+from .window import (_enable_dpi_awareness, _geo_rect, _restart_command, _restart_env,
+                     _restore_geometry, _set_window_icon)
 from . import applog, i18n, jobs, migrate, notify, updater
 from .i18n import N_, tr
 
@@ -46,88 +47,6 @@ from .i18n import N_, tr
 # ==========================================================================
 WINDOW_SIZE = "1280x760"
 MIN_SIZE = (900, 600)
-
-# optional Python packages: (import name, what breaks without it)
-_OPTIONAL_PACKAGES = (
-    ("tkinterdnd2", N_("drag & drop")),
-    ("cv2", N_("video preview")),
-    ("PIL", N_("video preview")),
-    ("sounddevice", N_("preview sound")),
-    ("librosa", N_("intro/credits detection, auto-align")),
-    ("numpy", N_("detection")),
-    ("scipy", N_("detection")),
-)
-
-
-def _enable_dpi_awareness():
-    """Tell Windows the app handles DPI itself, so text is sharp instead of a
-    blurry bitmap-stretched window on scaled (125%/150%) displays. Must run
-    before the Tk root exists. Tk then sizes its point-based fonts from the
-    real DPI on its own; pixel sizes are scaled in main()."""
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)   # system DPI aware
-    except Exception:
-        pass
-
-
-def _missing_packages():
-    """[(name, purpose)] of optional packages that aren't installed (checked
-    once at startup without importing them)."""
-    out = []
-    for name, why in _OPTIONAL_PACKAGES:
-        try:
-            if importlib.util.find_spec(name) is None:
-                out.append((name, why))
-        except (ImportError, ValueError):
-            out.append((name, why))
-    return out
-
-
-def _restore_geometry(root, saved, default_size):
-    """Re-open at the saved size/position (clamped onto the current screen);
-    first run or an unusable value -> centred at default_size. Returns the
-    normal (un-maximized) geometry string it set."""
-    m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", str(saved.get("window_geometry", "")))
-    if not m:
-        return _center_window(root, default_size)
-    w, h, x, y = (int(v) for v in m.groups())
-    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    mw, mh = root.minsize()
-    w = max(min(w, sw), min(mw, sw))
-    h = max(min(h, sh), min(mh, sh))
-    x = min(max(0, x), max(0, sw - w))
-    y = min(max(0, y), max(0, sh - h))
-    geo = f"{w}x{h}+{x}+{y}"
-    root.geometry(geo)
-    if saved.get("window_zoomed"):
-        def _zoom():
-            try:
-                root.state("zoomed")
-            except tk.TclError:
-                pass
-        root.after(50, _zoom)     # once the window is up
-    return geo
-
-
-def _set_window_icon(root):
-    """Prefer the .ico (best on Windows); fall back to the .png everywhere else."""
-    ico = resource_path("assets/icon.ico")      # app/assets (or the exe bundle)
-    png = resource_path("assets/icon.png")
-    try:
-        if os.path.exists(ico):
-            root.iconbitmap(ico)
-            root.iconbitmap(default=ico)    # dialogs + help windows too
-            return
-    except Exception:
-        pass
-    try:
-        if os.path.exists(png):
-            root._icon_img = tk.PhotoImage(file=png)   # keep a ref so it survives
-            root.iconphoto(True, root._icon_img)
-    except Exception:
-        pass
-
 
 # page key -> (sidebar icon, title, one-line description shown under the title)
 _PAGES = (
@@ -145,54 +64,6 @@ _PAGES = (
     ("info", "info", N_("Info"),
      N_("Encoding notes, recommended settings and the help of every page.")),
 )
-
-
-def _center_window(root, size):
-    """Place the window of the given "WIDTHxHEIGHT" size in the screen centre."""
-    try:
-        w, h = (int(v) for v in size.lower().split("x"))
-    except ValueError:
-        root.geometry(size)
-        return None
-    root.update_idletasks()
-    sw = root.winfo_screenwidth()
-    sh = root.winfo_screenheight()
-    x = max(0, (sw - w) // 2)
-    y = max(0, (sh - h) // 2 - 50)   # 50px above dead centre
-    root.geometry(f"{w}x{h}+{x}+{y}")
-    return f"{w}x{h}+{x}+{y}"
-
-
-def _restart_command():
-    """argv that starts this app again (frozen exe or python + launcher)."""
-    if getattr(sys, "frozen", False):
-        return [sys.executable] + sys.argv[1:]
-    script = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
-    if not script or not os.path.isfile(script):
-        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                              "intro_credits_toolkit.py")
-    return [sys.executable, script] + sys.argv[1:]
-
-
-def _restart_env():
-    """Environment for the restarted copy. A one-file (portable) build must
-    start as a NEW independent instance that unpacks its own bundle - not
-    reuse this run's _MEI folder, which is deleted when this one exits."""
-    env = dict(os.environ)
-    if getattr(sys, "frozen", False):
-        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-        for k in list(env):
-            if k.startswith("_PYI_") or k == "_MEIPASS2":
-                env.pop(k, None)
-    return env
-
-
-def _open_url(url):
-    try:
-        import webbrowser
-        webbrowser.open(url)
-    except Exception:
-        pass
 
 
 def main():
@@ -224,6 +95,9 @@ def main():
     root.title(f"{APP_NAME} v{APP_VERSION}")
     _set_window_icon(root)
     root.resizable(True, True)
+    # follow each monitor's scaling (ui/dpi.py); the UI is built at the
+    # system DPI and rescaled when the window is on another monitor
+    dpi.install(root)
     # pixel sizes are given for 100% scaling - grow them with the display DPI
     # (tk's own font scaling is left alone)
     try:
@@ -236,6 +110,11 @@ def main():
     default_size = (f"{min(dw, root.winfo_screenwidth())}x"
                     f"{min(dh, root.winfo_screenheight() - 80)}")
     start_geo = _restore_geometry(root, saved, default_size)
+    # saved on a monitor with another scaling: rescale once everything is
+    # built (below) - hidden until then, so it never shows at the wrong size
+    start_dpi = dpi.startup_dpi(_geo_rect(start_geo))
+    if start_dpi and not bgmode.enabled():
+        root.withdraw()
     if bgmode.enabled():
         # scripted test run: open off-screen and never steal the user's focus
         root.withdraw()
@@ -250,16 +129,22 @@ def main():
     normal_geo = {"g": start_geo}
 
     def _track_geometry(e):
-        if e.widget is root and root.state() == "normal" and root.winfo_width() > 200 \
-                and not bgmode.enabled():          # don't remember the off-screen spot
+        if e.widget is not root:
+            return
+        if (root.state() == "normal" and root.winfo_width() > 200
+                and not bgmode.enabled()):         # don't remember the off-screen spot
             normal_geo["g"] = root.geometry()
-        if e.widget is root and "page_view" in _late:
+        if "page_view" in _late:
+            fast_resize(root)        # once the window frame exists (no-op after)
             _late["page_view"].window_resized((e.width, e.height))
     _late = {}                # widgets made further down that the binding uses
-    root.bind("<Configure>", _track_geometry, add="+")
+    # (the window itself only - root.bind() would run this for every widget
+    # inside it that is laid out)
+    bind_window(root, "<Configure>", _track_geometry)
 
     # themes + fonts first: everything below is built with them
-    theme_var = themes.init(root, saved.get("theme", themes.DEFAULT_THEME))
+    theme_var = themes.init(root, saved.get("theme", palettes.DEFAULT_THEME),
+                            font_scale=PREFS.get("font_scale", 1.0))
     px = themes.px
     # message boxes / file dialogs without parent= open over the active
     # window (e.g. over Clean up), not behind it
@@ -271,28 +156,7 @@ def main():
     notify.install(root, _call_tk)
 
     # ---- status bar (bottom): running job + progress, queue badge, version ----
-    status = ttk.Frame(root, style="Chrome.TFrame", padding=themes.pad(14, 3, 8, 3))
-    status.pack(side="bottom", fill="x")
-    status_line = tk.Frame(root, height=1, borderwidth=0)
-    status_line.pack(side="bottom", fill="x")
-    themes.on_palette(status_line, lambda p: status_line.configure(bg=p["stroke"]))
-    status_var = tk.StringVar(value=tr("Idle"))
-    ttk.Label(status, text=f"v{APP_VERSION}", style="Chrome.Hint.TLabel").pack(
-        side="right", padx=themes.pad(10, 6))
-    queue_btn = ttk.Button(status, text=tr("Queue..."), style="Chrome.Subtle.TButton",
-                           command=lambda: QueueDialog.open_(root, _stop_all_jobs))
-    decorate(queue_btn, "queue")
-    queue_btn.pack(side="right")
-    add_tooltip(queue_btn, tr("Jobs waiting to run one after another - remove, reorder, "
-                              "pause/resume, Stop all"))
-    badge = tk.Label(status, text="", font="MPSemiboldSmall", borderwidth=0,
-                     padx=px(6), pady=0)
-    themes.on_palette(badge, lambda p: badge.configure(bg=p["accent"], fg=p["accent_fg"]))
-    status_prog = ttk.Progressbar(status, style="Chrome.Horizontal.TProgressbar",
-                                  mode="indeterminate", length=px(110))
-    ttk.Label(status, textvariable=status_var, style="Chrome.TLabel", anchor="w").pack(
-        side="left", fill="x", expand=True)
-    _status_ui = {"busy": False, "n": 0}
+    status_bar = StatusBar(root, stop_all=lambda: _stop_all_jobs())
 
     # ---- shell: sidebar | content (info bars, page header, pages) ----
     shell = ttk.Frame(root)
@@ -327,29 +191,11 @@ def main():
     footer.pack_propagate(False)
     _footer = {"strip": None, "h": 0}
 
-    def _banner(text, kind, **kw):
-        bar = InfoBar(banners, text, kind, **kw)
-        bar.pack(fill="x", padx=themes.pad(20, 16), pady=themes.pad(10, 0))
-        return bar
-
-    # warn up front if ffmpeg/ffprobe are missing (most actions need them)
-    # and which optional packages aren't installed (checked once)
-    missing = [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
-    missing_pkgs = _missing_packages()
-    if missing:
-        tools = " and ".join(missing)
-        applog.record(f"[startup] {tools} not found on PATH - install ffmpeg (ffmpeg.org) "
-                      "so cutting and detection work.")
-        _banner(tr("{tools} not found on PATH - install ffmpeg (ffmpeg.org) so cutting and "
-                   "detection work.", tools=" / ".join(missing)), "error")
-    if missing_pkgs:
-        names = ", ".join(n for n, _w in missing_pkgs)
-        whats = ", ".join(dict.fromkeys(w for _n, w in missing_pkgs))
-        applog.record(f"[startup] Optional packages missing: {names} ({whats} won't work) - "
-                      "run Install Requirements.bat.")
-        whats = ", ".join(dict.fromkeys(tr(w) for _n, w in missing_pkgs))
-        _banner(tr("Optional packages missing: {names} ({features} won't work) - run "
-                   "Install Requirements.bat.", names=names, features=whats), "warn")
+    # the info bars (app/banners.py); warn up front if ffmpeg/ffprobe are
+    # missing and which optional packages aren't installed (checked once)
+    infobars = Banners(root, banners, persist=lambda: persist(), any_busy=lambda: _any_busy(),
+                       on_close=lambda: on_close())
+    infobars.startup_problems()
 
     # main pages grouped by workflow: Templates, Cut / Edit, Audio
     # (Theme Audio, Audio Gain), Inspect (Dual Player, Compare, Check), Log,
@@ -488,7 +334,12 @@ def main():
                       title=APP_NAME)
     for key, icon, title, _desc in _PAGES:
         sidebar.add_page(key, icon, tr(title))
-    sidebar.add_action("theme", "sun", tr("Light theme"), themes.toggle_dark)
+    _theme_tip = tr("Choose a theme - right-click: switch between your light and dark theme")
+    # left click opens the theme list (with colour swatches) under the mouse
+    sidebar.add_action("theme", "palette", tr("Theme:"),
+                       lambda: themepicker.popup(sidebar, sidebar.winfo_pointerx(),
+                                                 sidebar.winfo_pointery()),
+                       tip=_theme_tip, context=lambda _x, _y: themes.toggle_dark())
     sidebar.add_action("cleanup", "broom", tr("Clean up folders..."),
                        lambda: CleanupDialog(root, is_busy=_any_busy),
                        tip=tr("Empty the template/videos/output/temp folders - contents are "
@@ -507,9 +358,9 @@ def main():
     content.pack(side="left", fill="both", expand=True)
 
     def _theme_item(_name=None, pal=None):
-        dark = (pal or themes.current()).get("dark")
-        sidebar.set_item("theme", icon="sun" if dark else "moon",
-                         label=tr("Light theme") if dark else tr("Dark theme"))
+        sidebar.set_item("theme", icon="palette",
+                         label=f"{tr('Theme:')} {palettes.label(themes.theme_var().get())}",
+                         tip=_theme_tip)
     _theme_item()
     themes.subscribe(_theme_item)
 
@@ -656,141 +507,18 @@ def main():
     # the queue must also wait for jobs of tabs that don't register yet
     jobs.set_busy_check(lambda: bool(_legacy_busy_tabs()))
 
-    def _update_status():
-        try:
-            run = jobs.running()
-            names = [j["name"] for j in run]
-            reg_tabs = {id(j.get("tab")) for j in run}
-            for t in _legacy_busy_tabs():
-                if id(t) not in reg_tabs:
-                    names.append(tr("{tab} job", tab=_tab_titles.get(t) or tr("a tab")))
-            nq = len(jobs.queued())
-            if names:
-                txt = "\u25b6 " + tr("Running: {jobs}", jobs=", ".join(dict.fromkeys(names)))
-                if run:
-                    txt += f"  ({_fmt_elapsed(max(j['elapsed'] for j in run))})"
-            else:
-                txt = tr("Idle")
-            if nq:
-                txt += "  (" + (tr("{n} more queued, PAUSED", n=nq) if jobs.is_paused()
-                                else tr("{n} more queued", n=nq)) + ")"
-            status_var.set(txt)
-            busy = bool(names)
-            if busy != _status_ui["busy"]:
-                _status_ui["busy"] = busy
-                if busy:
-                    status_prog.pack(side="right", padx=themes.pad(10, 10), after=queue_btn)
-                    status_prog.start(18)
-                else:
-                    status_prog.stop()
-                    status_prog.pack_forget()
-            if nq != _status_ui["n"]:
-                _status_ui["n"] = nq
-                if nq:
-                    badge.configure(text=str(nq))
-                    badge.pack(side="right", padx=themes.pad(0, 2), before=queue_btn)
-                else:
-                    badge.pack_forget()
-            jobs.pump()      # start the next queued job once legacy tabs are idle
-        except Exception:
-            pass
-        root.after(1000, _update_status)
-
-    def _on_job_event(event, info):
-        if event == "begin" and info:
-            applog.record(f"[jobs] started: {info['name']}")
-        elif event == "end" and info:
-            state = ("stopped" if info.get("stopped") else
-                     "finished" if info.get("ok") else "FAILED")
-            summ = f" - {info['summary']}" if info.get("summary") else ""
-            applog.record(f"[jobs] {state}: {info['name']} after "
-                          f"{_fmt_elapsed(info.get('elapsed', 0))}{summ}")
-    jobs.subscribe(_on_job_event)
-    root.after(500, _update_status)
+    status_bar.start(_legacy_busy_tabs, _tab_titles)
 
     # ---- update info bar (shown only when a newer release exists) ----
-    _banner_w = {"w": None}
-
-    def _close_update_banner():
-        if _banner_w["w"] is not None:
-            try:
-                _banner_w["w"].destroy()
-            except tk.TclError:
-                pass
-            _banner_w["w"] = None
-
-    def update_now():
-        """'Update now': download + install the latest release (ui/update_dialog)."""
-        from tkinter import messagebox as _mbox
-        from .ui.update_dialog import start_update
-        try:
-            start_update(root, updater.latest_release(), persist, _any_busy, on_close)
-        except Exception as exc:          # never let a failed update take the app down
-            applog.record(f"[update] failed: {exc!r}")
-            _mbox.showerror(tr("Update"), tr("The update failed: {error}", error=exc),
-                            parent=root)
-
-    def show_update(ver, url):
-        _close_update_banner()
-        _banner_w["w"] = _banner(
-            tr("{app} {version} is available (you have {old}).", app=APP_NAME, version=ver,
-               old=APP_VERSION),
-            "info", links=[(tr("Update now"), update_now),
-                           (tr("Release notes"), lambda: _open_url(url)),
-                           (tr("Later"), _close_update_banner)])
-        if updater.auto_flag():           # test hook (MEDIAPREP_UPDATE_AUTO)
-            root.after(500, update_now)
-
-    def check_for_updates(parent=None):
-        """Help -> Check for updates: a forced check with a reply either way."""
-        from tkinter import messagebox as _mbox
-
-        def done(text):
-            rel = updater.latest_release()
-            par = parent if parent is not None and parent.winfo_exists() else root
-            if rel and updater.is_newer(rel["version"]):
-                if _mbox.askyesno(tr("Check for updates"), tr(
-                        "{app} {version} is available (you have {old}).\n\nUpdate now?",
-                        app=APP_NAME, version=rel["version"], old=APP_VERSION), parent=par):
-                    update_now()
-            else:
-                _mbox.showinfo(tr("Check for updates"), text, parent=par)
-        updater.check_async(PREFS, on_newer=lambda v, url: _call_tk(lambda: show_update(v, url)),
-                            on_done=lambda text: _call_tk(lambda: done(text)), force=True,
-                            save=lambda: _call_tk(persist))
-
+    show_update = infobars.show_update
+    update_now = infobars.update_now
+    check_for_updates = infobars.check_for_updates
     _help_buttons["list"] = [(tr("Check for updates"), check_for_updates)]
 
-    # the previous run started an update: say how it went (and, portable,
-    # offer to move the old exe out of the way - never deleted)
-    _pend = updater.take_pending()
-    if _pend:
-        if _pend.get("done"):
-            applog.record(f"[update] updated from {_pend.get('from')} to {APP_VERSION}")
-            old = str(_pend.get("old_exe") or "")
-            cur = updater.launcher_path() if _pend.get("kind") == "portable" else ""
-            if old and os.path.isfile(old) and cur and not updater.same_dir(old, cur):
-                holder = {}
-
-                def _trash_old():
-                    try:
-                        dest = updater.move_to_trash(old)
-                        applog.record(f"[update] moved the old version to {dest}")
-                    except OSError as exc:
-                        applog.record(f"[update] could not move {old}: {exc}")
-                    holder["bar"].close()
-                holder["bar"] = _banner(
-                    tr("Updated to version {version}. Move the old {name} to "
-                       "Data\\temp\\trash?", version=APP_VERSION, name=os.path.basename(old)),
-                    "info", links=[(tr("Move to trash"), _trash_old),
-                                   (tr("Keep it"), lambda: holder["bar"].close())])
-            else:
-                _banner(tr("Updated to version {version}.", version=APP_VERSION), "info")
-        else:
-            applog.record(f"[update] the update to {_pend.get('to')} did not finish "
-                          f"(still {APP_VERSION})")
-            _banner(tr("The update to version {new} did not finish - you still have "
-                       "{old}.", new=_pend.get("to"), old=APP_VERSION), "warn")
+    # the previous run started an update: say how it went; the settings
+    # file was damaged at startup - say so once
+    infobars.last_update()
+    infobars.settings_damaged()
 
     def persist():
         d = prefs_snapshot()                # app-wide prefs (notify / update / logs)
@@ -813,6 +541,10 @@ def main():
         except tk.TclError:
             pass
         save_settings(d)  # theme + settings + last video + window geometry
+        try:
+            infobars.check_save_error()    # a failed save: one banner per new error
+        except Exception:
+            pass
 
     # re-walk now that every tab exists, then persist each later theme change
     # (from the top bar, the Settings dialog or Follow Windows)
@@ -872,4 +604,12 @@ def main():
                                   gain=gain_tab, dual=dual_tab, compare=compare_tab,
                                   check=check_tab))
     root.protocol("WM_DELETE_WINDOW", on_close)
+    if start_dpi:
+        # the window opens on a monitor with another scaling than the one
+        # the UI was built for: rescale before it is shown
+        dpi.manager.rescale(start_dpi)
+        if not bgmode.enabled():
+            root.deiconify()
+    # safety net: the UI follows the monitor the window really opened on
+    root.after(1500, dpi.manager.check_main)
     root.mainloop()

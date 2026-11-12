@@ -13,7 +13,7 @@ the theme.
 """
 import os
 
-from . import themes
+from . import colors, themes
 
 # name -> code point (identical in Segoe Fluent Icons and Segoe MDL2 Assets)
 GLYPHS = {
@@ -25,7 +25,7 @@ GLYPHS = {
     "volume": "\ue767", "mute": "\ue74f", "folder": "\ued25", "load": "\ue8e5",
     "detect": "\uf4a5", "snap": "\ue8af", "set": "\ue718", "queue": "\ue8fd",
     "trash": "\ue74d", "add": "\ue710", "remove": "\ue738", "refresh": "\ue72c",
-    "save": "\ue74e", "export": "\uede1", "sun": "\ue706", "moon": "\ue708",
+    "save": "\ue74e", "export": "\uede1", "sun": "\ue706", "moon": "\ue708", "palette": "\ue790",
     "close": "\ue711", "warning": "\ue7ba", "error": "\uea39", "success": "\ue930",
     "broom": "\uea99", "check": "\ue73e", "shield": "\uea18", "compare": "\ue8ab",
     "eject": "\uf847", "go": "\ue72a", "up": "\ue70e", "down": "\ue70d",
@@ -40,8 +40,10 @@ _FONT_FILES = ("SegoeIcons.ttf", "segmdl2.ttf")
 class _State:
     font_path = None
     checked = False
-    images = {}          # key -> (PhotoImage, name, color_key, size)
+    images = {}          # key -> (PhotoImage, name, color_key, size, gap, back)
     subscribed = False
+    fonts = {}           # pixel size -> PIL ImageFont
+    rendered = {}        # (name, colour, px, gap, back) -> PNG data (theme / DPI back and forth)
 
 
 _S = _State()
@@ -81,10 +83,22 @@ def _render(name, color, size_px, gap_px=0, back=None):
     """PNG (base64) of the glyph; on an opaque `back` colour when given (an
     opaque photo is a plain blit for Tk - alpha ones are blended per pixel
     on every redraw)."""
+    ck = (name, color, size_px, gap_px, back)
+    data = _S.rendered.get(ck)
+    if data is None:
+        if len(_S.rendered) > 4000:
+            _S.rendered.clear()
+        data = _S.rendered[ck] = _render_png(name, color, size_px, gap_px, back)
+    return data
+
+
+def _render_png(name, color, size_px, gap_px=0, back=None):
     import base64
     import io
     from PIL import Image, ImageDraw, ImageFont
-    font = ImageFont.truetype(_font_path(), size_px)
+    font = _S.fonts.get(size_px)
+    if font is None:
+        font = _S.fonts[size_px] = ImageFont.truetype(_font_path(), size_px)
     im = Image.new("RGBA", (size_px + gap_px, size_px), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     d.text((size_px / 2.0, size_px / 2.0), GLYPHS[name], font=font, fill=color, anchor="mm")
@@ -103,7 +117,7 @@ def _color(pal, spec):
         return None
     if isinstance(spec, tuple):
         a, b, t = spec
-        return themes.mix(pal.get(a, a), pal.get(b, b), t)
+        return colors.mix(pal.get(a, a), pal.get(b, b), t)
     return pal.get(spec, spec)
 
 
@@ -123,26 +137,52 @@ def image(name, color_key="fg", size=16, gap=0, back=None):
     if hit is not None:
         return hit[0]
     pal = themes.current()
-    px = max(8, themes.px(size))
-    gp = themes.px(gap)
     try:
-        ph = tk.PhotoImage(name="mpi_" + key,
-                           data=_render(name, pal.get(color_key, color_key), px, gp,
-                                        _color(pal, back)))
+        ph = tk.PhotoImage(name="mpi_" + key, data=_draw(name, color_key, size, gap, back, pal))
     except Exception:
         return None
-    _S.images[key] = (ph, name, color_key, px, gp, back)
+    _S.images[key] = (ph, name, color_key, size, gap, back)
     if not _S.subscribed:
         _S.subscribed = True
         themes.subscribe(_recolor)
     return ph
 
 
+def _draw(name, color_key, size, gap, back, pal):
+    """PNG data of an icon image at the current DPI (size / gap in 100 % px)."""
+    return _render(name, pal.get(color_key, color_key), max(8, themes.px(size)),
+                   themes.px(gap), _color(pal, back))
+
+
 def _recolor(_name, pal):
-    for ph, name, color_key, px, gp, back in list(_S.images.values()):
+    for ph, name, color_key, size, gap, back in list(_S.images.values()):
         try:
-            ph.configure(data=_render(name, pal.get(color_key, color_key), px, gp,
-                                      _color(pal, back)))
+            ph.configure(data=_draw(name, color_key, size, gap, back, pal))
+        except Exception:
+            pass
+
+
+def rescale():
+    """The display DPI changed (ui/dpi.py): every icon image redrawn in
+    place at its size for the new DPI (the widgets showing it follow)."""
+    _recolor(None, themes.current())
+
+
+def prewarm(scale):
+    """Draw every icon in use for DPI factor `scale` into the render cache
+    only (no Tk call - safe in a worker thread; ui/dpi.py)."""
+    pal = themes.current()
+
+    def px(n):
+        return max(0, int(round(n * scale))) if n else 0
+    try:
+        items = list(_S.images.values())
+    except RuntimeError:
+        return
+    for _ph, name, color_key, size, gap, back in items:
+        try:
+            _render(name, pal.get(color_key, color_key), max(8, px(size)), px(gap),
+                    _color(pal, back))
         except Exception:
             pass
 

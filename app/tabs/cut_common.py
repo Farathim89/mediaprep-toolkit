@@ -3,8 +3,10 @@ import os
 from tkinter import ttk
 
 from ..config import CODECS
+from ..engine.encode import PLEX_PRESETS
 from ..i18n import N_, tr
-from ..ui.widgets import KeyedCombobox, add_tooltip, info_icon
+from ..ui.tooltips import add_tooltip, info_icon
+from ..ui.widgets import KeyedCombobox
 from .common import _KIND_NAMES
 
 # tr() for a variable key whose literals are marked with N_() / tr() elsewhere
@@ -121,6 +123,42 @@ def _resolve_rng(key, fr, to, dur=None):
     if to is not None and to <= fr:
         return None, None, N_("To is not after From")
     return fr, to, None
+
+
+def manual_output(cfg, video, exact=False):
+    """Where run_manual writes the cut of `video`: <output>\\<name><ext>, the
+    source's extension - except Plex-ready, which always writes .mkv.
+    exact=True also asks the engine whether the container can hold the
+    chosen codecs (else it writes .mkv) - that probes the file (slow)."""
+    name, ext = os.path.splitext(os.path.basename(video))
+    if cfg.get("encoder") in PLEX_PRESETS:
+        ext = ".mkv"
+    elif exact:
+        try:
+            from ..engine import cut as _cut
+            from ..engine.probe import probe_video_info
+            plan = getattr(_cut, "_plan_output_ext", None)
+            if plan is not None:
+                ext = plan(cfg.get("encoder"), "cut", video, ext, probe_video_info(video))
+        except Exception:
+            pass
+    return os.path.join(cfg.get("output_dir") or "", name + ext)
+
+
+def manual_result(res, cfg, video, t0):
+    """(produced, output path | None) of a run_manual call: its (produced,
+    path) return value; for an older engine (bool / nothing) whether the
+    expected output was written during this run (mtime >= t0)."""
+    if isinstance(res, tuple) and len(res) == 2:
+        return bool(res[0]), (res[1] if res[0] else None)
+    final = manual_output(cfg, video)
+    if isinstance(res, bool):
+        return res, (final if res else None)
+    try:
+        ok = os.path.getmtime(final) >= t0 - 2
+    except OSError:
+        ok = False
+    return ok, (final if ok else None)
 
 
 def _is_plex(codec_label):

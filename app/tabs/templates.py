@@ -15,11 +15,14 @@ from ..engine.formatting import fmt_time
 from ..engine.probe import audio_track_for_lang
 from ..ui.frametime import file_fps
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (ScrollFrame, TimeEntry, add_tooltip, build_log_tab, info_icon,
-                          enable_file_drop, enable_file_drop_deep, help_button,
+from ..ui.tkthread import _call_tk
+from ..ui.helpwin import help_button
+from ..ui.timeentry import TimeEntry
+from ..ui.tooltips import add_tooltip, info_icon
+from ..ui.widgets import (ScrollFrame, build_log_tab, enable_file_drop, enable_file_drop_deep,
                           trim_text_lines)
 from .common import (_KIND_NAMES, _MEDIA_EXTS, _VIDEO_TYPES, _existing_template,
-                     _snap_in_thread, _template_stem)
+                     _same_file, _snap_in_thread, _template_stem)
 from .cut_common import _ask_choice, _src_label
 from .cut_common import mode_combobox
 from .templates_autodetect import TemplateAutoMixin
@@ -46,8 +49,65 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         ("credits",      "Credits",                       True,  False),
         ("aftercredits", "After-credits (after credits)", False, False),
     ]
-    DIRMAP = {"preintro": PREINTRO_DIR, "intro": INTRO_DIR,
-              "credits": CREDITS_DIR, "aftercredits": AFTERCREDITS_DIR}
+    _DEFAULT_DIRS = {"preintro": PREINTRO_DIR, "intro": INTRO_DIR,
+                     "credits": CREDITS_DIR, "aftercredits": AFTERCREDITS_DIR}
+    # Cut / Edit -> Auto-detect's template-folder rows (its `dirs` keys)
+    _CUT_DIR_LABELS = {"preintro": "Pre-intro templates:", "intro": "Intro templates:",
+                       "credits": "Credits templates:",
+                       "aftercredits": "After-credits templates:"}
+
+    @property
+    def DIRMAP(self):
+        """The template folder of each kind: the folders Cut / Edit uses right
+        now (changed there or by a per-show preset - where the batch, Review
+        first and Multi cut look), else the default folders. Tk thread only."""
+        out = dict(self._DEFAULT_DIRS)
+        rt = self._find_remover_tab()
+        dirs = getattr(rt, "dirs", None) if rt is not None else None
+        if isinstance(dirs, dict):
+            for kind, label in self._CUT_DIR_LABELS.items():
+                try:
+                    v = dirs[label].get().strip().strip('"')
+                except (KeyError, AttributeError, tk.TclError):
+                    v = ""
+                if v:
+                    out[kind] = v
+        return out
+
+    def _find_remover_tab(self):
+        """The app's Cut / Edit tab (app.py may set .remover_tab), or None."""
+        rt = getattr(self, "remover_tab", None)
+        if rt is None:
+            try:
+                stack = [self.winfo_toplevel()]
+            except tk.TclError:
+                return None
+            while stack:
+                w = stack.pop()
+                d = getattr(w, "dirs", None)
+                if w is not self and isinstance(d, dict) and "Intro templates:" in d:
+                    rt = self.remover_tab = w
+                    break
+                try:
+                    stack.extend(w.winfo_children())
+                except tk.TclError:
+                    pass
+        if rt is not None and not getattr(self, "_dir_traced", False):
+            # the Templates manager follows when Cut / Edit's folders change
+            self._dir_traced = True
+            for label in self._CUT_DIR_LABELS.values():
+                try:
+                    rt.dirs[label].trace_add("write", lambda *_a: self._tm_refresh_soon())
+                except (KeyError, AttributeError, tk.TclError):
+                    pass
+        return rt
+
+    def _tm_refresh_soon(self):
+        if getattr(self, "_tm_refresh_job", None) is None:
+            def run():
+                self._tm_refresh_job = None
+                self._tm_refresh()
+            self._tm_refresh_job = self.after(400, run)
 
     def __init__(self, master, saved=None, bottom=None):
         super().__init__(master, padding=8)
@@ -55,7 +115,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         self.detect_stop = threading.Event()
-        self.cut_stop = threading.Event()   # stops the template-cut worker
+        self.cut_stop = threading.Event()   # stops the template cut / Auto-cut worker
+        self.tpl_detect_stop = threading.Event()   # stops Cut template -> Auto-detect
         self._clusters = {}                 # tree iid -> detected cluster
         self.save_hook = None               # set by app.py: persist settings
         # what's running - one place decides which buttons are enabled
@@ -379,7 +440,7 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             trim_text_lines(self.logbox)
             self.logbox.see("end")
             self.logbox.configure(state="disabled")
-        self.after(0, _a)
+        _call_tk(_a)
 
     # ---------------- cut templates (manual) ----------------
     def _det_lang(self):
@@ -506,7 +567,7 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                 if self.detect_tree.exists(iid):
                     self.detect_tree.set(iid, "kind", self._kind_disp(c))
                     self.detect_tree.item(iid, tags=("have",))
-        self.after(0, _mark)
+        _call_tk(_mark)
 
     def _sync_buttons(self):
         """Enable/disable the Template-tab buttons from what's running: a manual
@@ -515,7 +576,9 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         scanning = self._detecting or self._autocutting
         self.detect_btn.configure(state="disabled" if scanning else "normal")
         self.detect_stop_btn.configure(state="normal" if scanning else "disabled")
-        self.autocut_btn.configure(state="disabled" if (scanning or cutting or self._detect_partial)
+        # Auto-cut and Cut template -> Auto-detect never run at the same time
+        self.autocut_btn.configure(state="disabled" if (scanning or cutting or self._detect_partial
+                                                        or self._tpl_detecting)
                                    else "normal")
         busy = cutting or self._tpl_detecting
         self.cut_btn.configure(state="disabled" if busy else "normal")
@@ -559,15 +622,18 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
         if not jobs:
             messagebox.showerror(tr("Error"), tr("Enable at least one section first."))
             return
-        if self._autocutting or self._cutting:
+        if self._autocutting or self._cutting or self._tpl_detecting:
             return
         name = _template_stem(os.path.splitext(os.path.basename(video))[0])
-        plan = self._plan_outputs([(key, self.DIRMAP[key], f"{name}_{key}")
+        dirs = self.DIRMAP
+        plan = self._plan_outputs([(key, dirs[key], f"{name}_{key}")
                                    for key, _s, _e in jobs])
         jobs = [(key, s, e) + plan[key] for key, s, e in jobs if key in plan]
         if not jobs:
             self.status_var.set(tr("Nothing cut - every section was skipped."))
             return
+        if self._autocutting or self._cutting or self._tpl_detecting:
+            return          # something started while the dialog was open
         self.cut_stop.clear()
         self._cutting = True
         self._sync_buttons()
@@ -578,12 +644,16 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                          daemon=True).start()
 
     def stop_cut(self):
-        self.cut_stop.set()
+        # each job has its own stop event: stopping one never 'un-stops' or
+        # ends another
         if self._tpl_detecting:
+            self.tpl_detect_stop.set()
             self.log("[AUTO] stopping auto-detect...")
-        elif self._autocutting:
+        if self._autocutting:
+            self.cut_stop.set()
             self.log("[DETECT] stopping auto-cut after the current template...")
-        else:
+        elif self._cutting:
+            self.cut_stop.set()
             self.log("[CUT] stopping after the current section...")
 
     def worker(self, video, jobs, lang=None, jid=None):
@@ -620,7 +690,7 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
                 self._cutting = False
                 self._sync_buttons()
                 self._tm_refresh()
-            self.after(0, _f)
+            _call_tk(_f)
 
     # ---------------- snap to silence / black ----------------
     def _snap(self, key, which):
@@ -658,6 +728,11 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             if new_t is None:
                 self.log(f"{tag} {reason}")
                 self.status_var.set(tr("Snap: {reason}", reason=reason))
+                return
+            # the boxes belong to the loaded video - drop the result if
+            # another one was loaded while snapping
+            if not _same_file(getattr(self.player, "_path", None), video):
+                self.log(f"{tag} discarded - another video is loaded now")
                 return
             on.set(True)
             entry.set_value(new_t)

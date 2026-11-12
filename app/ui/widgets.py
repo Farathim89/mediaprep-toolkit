@@ -1,515 +1,15 @@
-"""Small shared widgets: the HH:MM:SS:mmm TimeEntry, the scrollable help tabs
-and the "?" help buttons / help windows."""
+"""Small shared widgets: translated drop-downs (KeyedCombobox), fixed-size
+labels, theme-aware status colours, the log tab, the page container
+(ScrollFrame), window-only bindings and file drag-and-drop.
+
+The other shared widgets: ui/timeentry.py (TimeEntry), ui/tooltips.py
+(Tooltip, add_tooltip, info_icon), ui/helpwin.py ("?" help buttons, help
+windows, the Info / Recommended pages), ui/infobar.py (InfoBar)."""
 import tkinter as tk
 from tkinter import ttk
 
 from . import themes
-from ..i18n import N_, tr
-
-
-class TimeEntry(ttk.Frame):
-    """Four boxes (HH : MM : SS : mmm) so times are easy to type.
-    Empty box counts as 0; the last box is milliseconds (a decimal seconds
-    value like 30.5 in the seconds box still works too).
-    All boxes empty = no time given (used for 'to end of file').
-
-    end=True makes it an inclusive "To" box: it SHOWS the last frame a
-    section removes, while get_value() / set_value() speak the engine's
-    exclusive end (the first frame kept) - one frame later on the grid of
-    `fps` (a number or a callable returning the file's fps, None = unknown).
-    A value put in with set_value() comes back exactly (no rounding drift)
-    as long as the boxes weren't edited. For a From box (end=False)
-    get_value() / set_value() are get_seconds() / set_seconds()."""
-
-    def __init__(self, master, on_focus=None, end=False, fps=None):
-        # one field box (border, accent on focus) with the four border-less
-        # boxes and their ':' separators inside
-        super().__init__(master, style="TimeBox.TFrame", padding=themes.pad(4, 2))
-        self._on_focus = on_focus          # called with self when a box is focused
-        self.is_end = bool(end)
-        self._fps = fps
-        self._raw_end = None               # (box texts, engine end) of the last set_value
-        self.h, self.m = tk.StringVar(), tk.StringVar()
-        self.s, self.ms = tk.StringVar(), tk.StringVar()
-        self.vars = (self.h, self.m, self.s, self.ms)
-        self._entries = []
-        # widths count '0' digits of the box font (so they follow the DPI and
-        # the font): 2 / 2 / 2 / 3 digits + one spare for the cursor
-        for i, (var, w) in enumerate(((self.h, 3), (self.m, 3), (self.s, 3), (self.ms, 4))):
-            e = ttk.Entry(self, textvariable=var, width=w, justify="center", style="Bare.TEntry")
-            e.grid(row=0, column=i * 2)
-            self._entries.append(e)
-            if i < 3:
-                ttk.Label(self, text=":", style="Bare.TLabel").grid(row=0, column=i * 2 + 1)
-            e.bind("<FocusIn>", lambda ev: self._focused(), add="+")
-            e.bind("<FocusOut>", lambda ev: self.after_idle(self._focus_left), add="+")
-        self.bind("<Enter>", lambda ev: self._state("hover", True), add="+")
-        self.bind("<Leave>", lambda ev: self._state("hover", False), add="+")
-        # auto-jump to the next box once its digits are typed (2 for H/M/S)
-        for i in range(3):
-            self._entries[i].bind(
-                "<KeyRelease>",
-                lambda ev, i=i: self._advance(ev, i))
-        self._warn = None                  # the ⚠ label (set_warning), made on demand
-        self._warn_texts = None            # box texts the warning was given for
-        for var in self.vars:
-            var.trace_add("write", lambda *_a: self._warn_check())
-
-    # ---- "approximate edge" warning ----
-    def set_warning(self, text=None):
-        """Show a small ⚠ after the boxes with `text` as its tooltip (e.g. a
-        boundary detection placed by sound / a fade, not on an exact frame);
-        None hides it. Call it after filling the box: the mark goes away by
-        itself as soon as the value changes (Set, Snap, typing, a new fill)."""
-        if not text:
-            if self._warn is not None:
-                self._warn.grid_remove()
-            self._warn_texts = None
-            return
-        if self._warn is None:
-            self._warn = ttk.Label(self, text="⚠", style="Bare.TLabel")
-            themes.on_palette(self._warn, lambda p: self._warn.configure(
-                foreground=p.get("warn", "#d08000")))
-            self._warn_tip = Tooltip(self._warn, text, delay=200)
-        self._warn_tip.text = text
-        self._warn.grid(row=0, column=7, padx=(themes.px(3), 0))
-        self._warn_texts = self._texts()
-
-    def _warn_check(self):
-        if self._warn_texts is not None and self._texts() != self._warn_texts:
-            self.set_warning(None)
-
-    def _state(self, flag, on):
-        try:
-            self.state([flag] if on else ["!" + flag])
-        except tk.TclError:
-            pass
-
-    def _focus_left(self):
-        try:
-            if self.focus_get() not in self._entries:
-                self._state("focus", False)
-                self._normalize()
-        except (tk.TclError, KeyError):
-            self._state("focus", False)
-
-    def _normalize(self):
-        """Once the box loses focus, show a typed value zero-padded
-        (4 -> 04, 30.5 s -> 30 : 500); an invalid entry is left as typed."""
-        sec, ok = self.get_seconds()
-        if ok and sec is not None:
-            self.set_seconds(sec)
-
-    def _focused(self):
-        self._state("focus", True)
-        if callable(self._on_focus):
-            self._on_focus(self)
-
-    def _advance(self, ev, i):
-        if ev.char.isdigit() and len(self._entries[i].get()) >= 2:
-            self._entries[i + 1].focus_set()
-            self._entries[i + 1].icursor("end")
-
-    def set_seconds(self, sec):
-        """Fill the H:M:S:ms boxes from a float second count (frame-precise),
-        always zero-padded: 124.958 -> 00 : 02 : 04 : 958."""
-        if sec is None or sec < 0:
-            sec = 0.0
-        ms = int(round(sec * 1000))
-        h, ms = divmod(ms, 3600_000)
-        m, ms = divmod(ms, 60_000)
-        s, ms = divmod(ms, 1000)
-        for var, text in ((self.h, f"{h:02d}"), (self.m, f"{m:02d}"),
-                          (self.s, f"{s:02d}"), (self.ms, f"{ms:03d}")):
-            if var.get() != text:
-                var.set(text)
-
-    # ---- engine values (exclusive end for a To box) ----
-    def fps(self):
-        f = self._fps() if callable(self._fps) else self._fps
-        try:
-            f = float(f) if f else None
-        except (TypeError, ValueError):
-            f = None
-        return f if f and f > 0 else None
-
-    def _texts(self):
-        return tuple(v.get() for v in self.vars)
-
-    def shown(self, t):
-        """Engine time -> the time this box shows for it."""
-        if not self.is_end or t is None:
-            return t
-        from .frametime import excl_to_shown
-        return excl_to_shown(t, self.fps())
-
-    def engine(self, t):
-        """A shown time (e.g. the player frame) -> this box's engine value."""
-        if not self.is_end or t is None:
-            return t
-        from .frametime import shown_to_excl
-        return shown_to_excl(t, self.fps())
-
-    def set_value(self, t):
-        """Fill the box from an engine time (None = empty)."""
-        if t is None:
-            self.clear()
-            return
-        self.set_seconds(self.shown(t))
-        self._raw_end = (self._texts(), float(t)) if self.is_end else None
-
-    def get_value(self):
-        """(engine seconds | None, ok) - like get_seconds(), but a To box
-        returns the exclusive end (the frame after the one shown)."""
-        sec, ok = self.get_seconds()
-        if not self.is_end or sec is None or not ok:
-            return sec, ok
-        raw = self._raw_end
-        if raw is not None and raw[0] == self._texts():
-            return raw[1], True
-        return self.engine(sec), True
-
-    def clear(self):
-        """Empty all four boxes (= no time given)."""
-        for var in self.vars:
-            if var.get():
-                var.set("")
-
-    def nudge(self, delta):
-        """Shift the current time by delta seconds (can be negative), clamped at
-        0. An empty box counts as 0 so a nudge gives it a value. Helper for
-        nudging a boundary that is off by a small amount (kept for reuse)."""
-        cur, ok = self.get_seconds()
-        if not ok:
-            return
-        base = cur if cur is not None else 0.0
-        self.set_seconds(max(0.0, base + delta))
-        self.flash()
-
-    def flash(self):
-        """Briefly highlight the boxes to confirm a value was captured."""
-        for e in self._entries:
-            try:
-                e.select_range(0, "end")
-            except Exception:
-                pass
-        self.after(500, self._unflash)
-
-    def _unflash(self):
-        for e in self._entries:
-            try:
-                e.selection_clear()
-            except Exception:
-                pass
-
-    def get_seconds(self):
-        """Returns (seconds_or_None, ok). None+ok=True means 'left empty'."""
-        h = self.h.get().strip()
-        m = self.m.get().strip()
-        s = self.s.get().strip()
-        ms = self.ms.get().strip()
-        if not (h or m or s or ms):
-            return None, True
-        try:
-            h = int(h) if h else 0
-            m = int(m) if m else 0
-            s = float(s) if s else 0.0
-            # a bare "5" in the ms box means 5 ms, not 500 ms - plain int
-            ms = int(ms) if ms else 0
-            if h < 0 or not 0 <= m < 60 or not 0 <= s < 60 or not 0 <= ms < 1000:
-                raise ValueError
-            return h * 3600 + m * 60 + s + ms / 1000.0, True
-        except ValueError:
-            return None, False
-
-
-# ======================= Info + Recommended help content =======================
-INFO_SECTIONS = [
-    (N_("Video codec"),
-     N_("H.264 (libx264) - plays on everything (TVs, phones, old devices). "
-     "Baseline choice. Biggest files of the modern codecs.\n\n"
-     "H.265 (libx265) - roughly 30-50% smaller files than H.264 at the same "
-     "visual quality. Needs a reasonably modern player/TV. Encoding is 2-4x "
-     "slower than H.264.\n\n"
-     "H.264 / H.265 NVENC - uses your NVIDIA GPU. 5-15x faster encoding, but "
-     "at the same file size the quality is a bit lower than the CPU (libx26x) "
-     "encoders. Great for bulk jobs where time matters more than megabytes.\n\n"
-     "AV1 (libsvtav1) - smallest files of all (~20-30% below H.265), but slow "
-     "to encode and only newer devices play it. Best for archiving on a "
-     "machine you can leave running.")),
-    (N_("Bit depth - 8 vs 10"),
-     N_("10-bit stores brightness/color in finer steps. Even for 8-bit sources, "
-     "encoding in 10-bit usually compresses ~5% BETTER (less rounding noise "
-     "inside the encoder) and strongly reduces banding in smooth gradients - "
-     "especially anime.\n\n"
-     "Catches: 10-bit H.264 (Hi10P) has almost no hardware decoding support, "
-     "so pair 10-bit with H.265 instead - modern devices decode HEVC main10 "
-     "in hardware. H.264 NVENC cannot do 10-bit at all (the tool falls back "
-     "to 8-bit and says so in the log).\n\n"
-     "Auto (recommended) matches the source: 10-bit source -> 10-bit output. "
-     "The log shows each source's codec, bit depth and bitrate before "
-     "encoding, and warns when your settings will likely inflate the file.")),
-    (N_("CRF / CQ - quality knob (0-51, LOWER = better quality = bigger file)"),
-     N_("Logarithmic scale: +6 roughly halves the file size.\n\n"
-     "H.264: 18 = visually lossless, 20-23 = great, 26+ = visible loss.\n"
-     "H.265: 20 = visually lossless, 22-26 = great (x265 numbers sit ~2-4 "
-     "higher than x264 for the same look).\n"
-     "NVENC: CQ works the same idea; use ~2 lower than you would for CPU.\n"
-     "AV1: 26-32 is the typical sweet spot.")),
-    (N_("Preset - speed knob (does NOT change quality, changes file size)"),
-     N_("With CRF, quality is fixed; the preset decides how hard the encoder "
-     "works to COMPRESS that quality. Slower preset = same look, smaller "
-     "file.\n\n"
-     "ultrafast = biggest files, instant.  medium = the balanced default.  "
-     "slow = ~5-10% smaller than medium at ~2x encode time (sweet spot).  "
-     "veryslow = diminishing returns, mostly not worth it.")),
-    (N_("Keyframe interval (Cut / Edit)"),
-     N_("0 (default): a clean keyframe is forced exactly at every cut point - "
-     "that is all a normal player needs. Set 2-5 s if your media server "
-     "scrubs/skips inside the Cold Open / Post Credits and you want every "
-     "seek frame-perfect.\n\n"
-     "It only applies to the SHORT pieces that get re-encoded (cold open, "
-     "post credits) - not to the main episode. Smaller interval = slightly "
-     "bigger file.")),
-    (N_("Min confidence (Cut / Edit)"),
-     N_("How strong the audio match must be to accept an intro/credits "
-     "detection.\n\n"
-     "0.32 (default) works for most shows. Raise to 0.40+ if it cuts things "
-     "it should not (false matches). Lower to ~0.25 if it misses intros it "
-     "should find - check the per-template scores in the log to see how "
-     "close it was.")),
-    (N_("Run modes (Cut / Edit)"),
-     N_("Cut: removes intro/credits, keeps cold open + post-credits, stitches "
-     "the rest back together.\n\n"
-     "Inject keyframes: keeps the whole video, only inserts keyframes at the "
-     "detected boundaries (for media servers with their own skip buttons). "
-     "Audio is copied as-is.\n\n"
-     "Add chapter markers: keeps the whole video and adds chapters at the "
-     "boundaries (Intro / Episode / Credits ...). Nothing is re-encoded - "
-     "video, audio and subtitles are copied, so it is fast and lossless.")),
-    (N_("Audio & subtitles (Cut / Edit)"),
-     N_("Audio is re-encoded at a high bitrate in its OWN codec and channel "
-     "layout (5.1 stays 5.1). The one exception is DTS: "
-     "ffmpeg's DTS encoder is experimental, so DTS becomes E-AC3 at 640k.\n\n"
-     "Subtitles are copied unchanged - unless the subtitle language filter is "
-     "on, then only the chosen languages are kept. Inject keyframes and "
-     "chapter markers copy the audio untouched.")),
-    (N_("Templates (Templates tab)"),
-     N_("Only the AUDIO of a template matters (matching is done on sound). "
-     "Templates are saved as .mkv.\n\n"
-     "IMPORTANT: Cut / Edit uses the template LENGTH as the cut length, so "
-     "cut the WHOLE intro/credits, not just a recognizable part. Trim and "
-     "Anchor change that length - re-check it after using them.")),
-]
-# per-tab help (Theme Audio, Audio Gain, Compare, Check, Log, Clean up, ...)
-# lives in helpdocs.HELP - the Info tab appends it, so Info and the "?"
-# buttons always show the same text
-
-
-RECOMMENDED_SECTIONS = [
-    (N_("Closest to original quality  (the tool's default)"),
-     N_("H.264,  CRF 18,  preset slow,  bit depth Auto\n\n"
-     "Visually indistinguishable from the source. The file lands near the "
-     "original's size - sometimes a bit over, which is the price of "
-     "re-encoding an already-compressed file. Use CRF 17 if you ever spot "
-     "a difference in very dark scenes.")),
-    (N_("Best balance  (recommended)"),
-     N_("H.265,  CRF 22,  preset slow\n\n"
-     "High quality + small files. Use preset 'medium' if encodes feel too slow.")),
-    (N_("Anime / 10-bit sources (Hi10P)"),
-     N_("H.265,  10-bit,  CRF 22-23,  preset slow\n\n"
-     "Matches the efficiency of typical fansub Hi10P H.264 encodes. Keeping "
-     "8-bit H.264 output for such sources can easily triple the file size.")),
-    (N_("Max compatibility"),
-     N_("H.264,  CRF 20,  preset medium\n\n"
-     "For old TVs/devices, or when unsure what will play the files.")),
-    (N_("Fast bulk job  (NVIDIA GPU)"),
-     N_("H.265 NVENC,  CQ 24,  preset slow\n\n"
-     "Encodes many episodes quickly with good (not maximal) efficiency.")),
-    (N_("Smallest archive"),
-     N_("AV1,  CRF 28,  preset slow\n\n"
-     "Leave it running overnight; check that your players support AV1.")),
-    (N_("Note on audio & subtitles"),
-     N_("Audio keeps its codec and channels (re-encoded at a high bitrate; "
-     "DTS becomes E-AC3 640k). Subtitles are copied "
-     "unless the language filter is on. None of the settings above touch "
-     "them.")),
-]
-
-
-class SectionList(ttk.Frame):
-    """Scrollable list of titled cards (LabelFrames), reflows on resize."""
-    def __init__(self, master, sections, height=430):
-        super().__init__(master, padding=themes.pad(8, 12, 4, 8))
-        canvas = tk.Canvas(self, height=height, width=660,
-                           highlightthickness=0, borderwidth=0)
-        scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-
-        self._labels = []
-        for title, body in sections:
-            # tr(): the module-level sections are N_()-marked English; the
-            # helpdocs ones arrive translated (tr of a translation = itself)
-            box = ttk.LabelFrame(inner, text=tr(title))
-            box.pack(fill="x", expand=True, padx=themes.px(4), pady=themes.pad(6, 8))
-            lbl = ttk.Label(box, text=tr(body), wraplength=580, justify="left")
-            lbl.pack(anchor="w", fill="x")
-            self._labels.append(lbl)
-
-        def on_inner(_e=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        inner.bind("<Configure>", on_inner)
-
-        # re-wrapping every card costs a full relayout - do it once the
-        # resize settles, and only when the width really changed
-        state = {"w": None, "job": None}
-
-        def rewrap():
-            state["job"] = None
-            w = state["w"]
-            canvas.itemconfigure(inner_id, width=w)
-            for lbl in self._labels:
-                lbl.configure(wraplength=max(300, w - themes.px(48)))
-
-        def on_canvas(e):
-            if e.width == state["w"]:
-                return
-            first = state["w"] is None
-            state["w"] = e.width
-            if first:
-                rewrap()
-            elif state["job"] is None:
-                state["job"] = canvas.after(80, rewrap)
-        canvas.bind("<Configure>", on_canvas)
-
-        # NOTE: no unbind_all here - that would kill the wheel binding of every
-        # other scrollable tab. On Windows the wheel event goes to the FOCUSED
-        # widget, so locate the widget under the pointer to decide if it's us.
-        def on_wheel(e):
-            try:
-                if not canvas.winfo_exists():
-                    return
-                w = canvas.winfo_containing(e.x_root, e.y_root)
-                if w is None:
-                    return
-                if w is not self and not str(w).startswith(str(self) + "."):
-                    return
-            except Exception:
-                return
-            canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
-        canvas.bind_all("<MouseWheel>", on_wheel, add="+")
-
-
-class InfoTab(SectionList):
-    """General encoding notes + the help of every tab (from helpdocs)."""
-    def __init__(self, master):
-        from .. import helpdocs
-        tab_help = [(tr("Tab help – {title}", title=t), body)
-                    for t, body in helpdocs.sections()]
-        super().__init__(master, INFO_SECTIONS + tab_help)
-
-
-class RecommendedTab(SectionList):
-    def __init__(self, master):
-        super().__init__(master, RECOMMENDED_SECTIONS)
-
-
-# ======================= hover tooltips =======================
-class Tooltip:
-    """A small hover tooltip for any widget. Shows after a short delay and
-    hides on leave or click. Tkinter has no built-in tooltip, so this is it."""
-
-    def __init__(self, widget, text, delay=450, follow=False):
-        self.widget = widget
-        self.text = text
-        self.delay = delay
-        self.follow = follow          # show at the pointer (per-cell tips)
-        self.tip = None
-        self._after = None
-        widget.bind("<Enter>", self._schedule, add="+")
-        widget.bind("<Leave>", self._hide, add="+")
-        widget.bind("<ButtonPress>", self._hide, add="+")
-
-    def _schedule(self, _e=None):
-        self._cancel()
-        self._after = self.widget.after(self.delay, self._show)
-
-    def _cancel(self):
-        if self._after is not None:
-            try:
-                self.widget.after_cancel(self._after)
-            except Exception:
-                pass
-            self._after = None
-
-    def _show(self):
-        if self.tip is not None or not self.text:
-            return
-        if self.follow:
-            x = self.widget.winfo_pointerx() + 14
-            y = self.widget.winfo_pointery() + 18
-        else:
-            x = self.widget.winfo_rootx() + 14
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
-        self.tip = tk.Toplevel(self.widget)
-        self.tip.wm_overrideredirect(True)      # no title bar
-        self.tip.wm_geometry(f"+{x}+{y}")
-        try:
-            self.tip.attributes("-topmost", True)
-        except Exception:
-            pass
-        pal = themes.current()
-        edge = tk.Frame(self.tip, background=pal["stroke"], borderwidth=0)
-        edge.pack()
-        tk.Label(edge, text=self.text, justify="left",
-                 background=pal["tooltip_bg"], foreground=pal["tooltip_fg"],
-                 borderwidth=0, highlightthickness=0, font="TkTooltipFont",
-                 padx=themes.px(8), pady=themes.px(5),
-                 wraplength=themes.px(360)).pack(padx=1, pady=1)
-
-    def _hide(self, _e=None):
-        self._cancel()
-        if self.tip is not None:
-            try:
-                self.tip.destroy()
-            except Exception:
-                pass
-            self.tip = None
-
-
-def add_tooltip(widget, text):
-    """Attach a hover tooltip to widget and return the widget (for chaining)."""
-    Tooltip(widget, text)
-    return widget
-
-
-def info_icon(parent, text):
-    """A small ⓘ (Segoe Fluent Icons 'Info', muted; accent on hover / focus)
-    that shows `text` - an explanation that doesn't need to be on screen all
-    the time - in the themed tooltip: on hover (after 300 ms, stays while
-    hovered), on keyboard focus (Tab) and on click. The caller places it."""
-    from .icons import glyph
-    g = glyph("info")
-    lbl = ttk.Label(parent, text=g or "ⓘ", style="Info.TLabel", takefocus=1,
-                    cursor="hand2", font="MPIconSmall" if g else "TkDefaultFont")
-    tip = Tooltip(lbl, text, delay=300)
-
-    def state(on):
-        try:
-            lbl.state(["active"] if on else ["!active"])
-        except tk.TclError:
-            pass
-    lbl.bind("<Enter>", lambda e: state(True), add="+")
-    lbl.bind("<Leave>", lambda e: state(False), add="+")
-    lbl.bind("<ButtonRelease-1>", lambda e: (lbl.focus_set(), tip._show()), add="+")
-    lbl.bind("<FocusIn>", lambda e: tip._show(), add="+")
-    lbl.bind("<FocusOut>", lambda e: tip._hide(), add="+")
-    lbl.bind("<Escape>", lambda e: tip._hide(), add="+")
-    return lbl
+from ..i18n import tr
 
 
 # ======================= translated drop-downs =======================
@@ -684,6 +184,19 @@ def trim_text_lines(text, max_lines=MAX_LOG_LINES, chunk=2000):
         pass
 
 
+def bind_window(top, sequence, fn):
+    """Bind fn to `sequence` of the toplevel `top` ITSELF. top.bind() fires
+    for every widget inside it as well (a toplevel's path is a bindtag of all
+    its children): a <Configure> binding there costs a Python call for each
+    widget laid out - hundreds when a page re-lays out. A private bindtag
+    that only the toplevel carries avoids that."""
+    tag = "MPWindow" + str(top).replace(".", "_")
+    tags = top.bindtags()
+    if tag not in tags:
+        top.bindtags((tag,) + tuple(tags))
+    top.bind_class(tag, sequence, fn, add="+")
+
+
 # ======================= vertically scrollable frame =======================
 def _wheel_should_pass(widget, own_canvas):
     """True if the mouse wheel over `widget` should be left to the widget
@@ -747,7 +260,7 @@ def fixed_label(parent, samples, style="TLabel", anchor="w", **kw):
     lbl = ttk.Label(holder, style=style, anchor=anchor, **kw)
     lbl.pack(fill="both", expand=True)
 
-    def measure(_p=None):
+    def measure(_p=None, idle=True):
         try:
             font = lbl.cget("font") or ttk.Style(lbl).lookup(style, "font") or "TkDefaultFont"
             f = tkfont.Font(root=lbl, font=font)
@@ -760,14 +273,24 @@ def fixed_label(parent, samples, style="TLabel", anchor="w", **kw):
             for s in (samples() if callable(samples) else samples):
                 w = max(w, max(f.measure("".join(d if ch.isdigit() else ch for ch in s))
                                for d in "0123456789"))
-            lbl.update_idletasks()
+            if idle:
+                lbl.update_idletasks()
             holder.configure(width=w + extra + themes.px(4),
                              height=max(f.metrics("linespace") + themes.px(2),
                                         lbl.winfo_reqheight()))
         except tk.TclError:
             pass
+
+    def on_theme(_p=None):
+        from . import dpi
+        if not dpi.manager.busy:        # a display scaling change: see below
+            measure()
     measure()
-    themes.on_palette(holder, measure)
+    themes.on_palette(holder, on_theme)
+    # another display scaling (ui/dpi.py): once the rescaled UI is laid out
+    # (one layout pass for all of them, not one per label)
+    from . import dpi
+    dpi.on_change(holder, lambda _r: measure(idle=False), late=True)
     holder.remeasure = measure
     return holder, lbl
 
@@ -792,12 +315,27 @@ def make_root():
     return tk.Tk()
 
 
-def _first_dropped_path(data):
-    parts = _re.findall(r"\{[^}]*\}|\S+", data or "")
-    if not parts:
-        return ""
-    p = parts[0]
-    return p[1:-1] if p.startswith("{") and p.endswith("}") else p
+def _dropped_paths(data, widget=None):
+    """The paths of a file drop. tkdnd hands them over as a Tcl list: a path
+    with spaces is braced, one with braces in it too - Plex-style names like
+    {C:/Show (2019) {tvdb-1}/ep.mkv} - or backslash-escaped, so Tcl itself
+    splits it (a regex can't follow nested braces)."""
+    if not data:
+        return []
+    try:
+        tkapp = widget.tk if widget is not None else tk._default_root.tk
+        return [str(p) for p in tkapp.splitlist(data)]
+    except (tk.TclError, AttributeError):
+        pass
+    out = []                    # not a valid Tcl list: best effort
+    for p in _re.findall(r"\{[^}]*\}|\S+", str(data)):
+        out.append(p[1:-1] if p.startswith("{") and p.endswith("}") else p)
+    return out
+
+
+def _first_dropped_path(data, widget=None):
+    parts = _dropped_paths(data, widget)
+    return parts[0] if parts else ""
 
 
 def enable_file_drop(widget, callback):
@@ -807,7 +345,8 @@ def enable_file_drop(widget, callback):
         return False
     try:
         widget.drop_target_register(_DND_FILES)
-        widget.dnd_bind("<<Drop>>", lambda e: callback(_first_dropped_path(e.data)))
+        widget.dnd_bind("<<Drop>>",
+                        lambda e: callback(_first_dropped_path(e.data, widget)))
         return True
     except Exception:
         return False
@@ -825,11 +364,8 @@ def enable_file_drop_deep(widget, callback):
     return True
 
 
-def _all_dropped_paths(data):
-    out = []
-    for p in _re.findall(r"\{[^}]*\}|\S+", data or ""):
-        out.append(p[1:-1] if p.startswith("{") and p.endswith("}") else p)
-    return out
+def _all_dropped_paths(data, widget=None):
+    return _dropped_paths(data, widget)
 
 
 def enable_paths_drop(widget, callback):
@@ -839,7 +375,8 @@ def enable_paths_drop(widget, callback):
         return False
     try:
         widget.drop_target_register(_DND_FILES)
-        widget.dnd_bind("<<Drop>>", lambda e: callback(_all_dropped_paths(e.data)))
+        widget.dnd_bind("<<Drop>>",
+                        lambda e: callback(_all_dropped_paths(e.data, widget)))
         return True
     except Exception:
         return False
@@ -871,234 +408,3 @@ def build_log_tab(notebook, text=None):
     decorate(ttk.Button(frame, text=tr("Clear log"), command=_clear), "trash").grid(
         row=1, column=0, sticky="w", pady=themes.pad(8, 0))
     return box
-
-
-# ======================= "?" help buttons / help windows =======================
-_HELP_WINDOWS = {}      # key -> open Toplevel (one window per key)
-
-
-def _theme_colors(_widget=None):
-    """(bg, fg, text_bg, text_fg, accent) of the current theme."""
-    p = themes.current()
-    return p["bg"], p["fg"], p["field"], p["fg"], p["accent"]
-
-
-def _open_help_window(parent, wkey, title, sections, index=False, buttons=None):
-    """Themed, scrollable help window (re-used/raised if already open).
-    sections = [(heading, text)]; index=True adds a clickable topic list;
-    buttons = [(text, command(window))] at the bottom left."""
-    old = _HELP_WINDOWS.get(wkey)
-    if old is not None:
-        try:
-            if old.winfo_exists():
-                old.deiconify()
-                old.lift()
-                old.focus_force()
-                return old
-        except tk.TclError:
-            pass
-    top = parent.winfo_toplevel()
-    bg, fg, _tbg, tfg, _acc = _theme_colors(top)
-    win = tk.Toplevel(top)
-    win.title(title)
-    win.configure(bg=bg)
-    win.transient(top)
-    try:
-        dpi = max(1.0, win.winfo_fpixels("1i") / 96.0)
-    except tk.TclError:
-        dpi = 1.0
-    w, h = int((760 if index else 560) * dpi), int((560 if index else 460) * dpi)
-    try:
-        x = top.winfo_rootx() + max(0, (top.winfo_width() - w) // 2)
-        y = top.winfo_rooty() + max(0, (top.winfo_height() - h) // 3)
-        win.geometry(f"{w}x{h}+{x}+{y}")
-    except tk.TclError:
-        win.geometry(f"{w}x{h}")
-    win.minsize(int(320 * dpi), int(220 * dpi))
-
-    outer = ttk.Frame(win, padding=themes.pad(16, 12, 16, 12))
-    outer.pack(fill="both", expand=True)
-    ttk.Label(outer, text=title, style="Subtitle.TLabel").pack(anchor="w",
-                                                             pady=themes.pad(0, 10))
-    bar = ttk.Frame(outer)
-    bar.pack(side="bottom", fill="x", pady=themes.pad(12, 0))
-    ttk.Button(bar, text=tr("Close"), command=win.destroy).pack(side="right")
-    for btext, bcmd in buttons or ():
-        ttk.Button(bar, text=btext, command=lambda c=bcmd: c(win)).pack(
-            side="left", padx=themes.pad(0, 6))
-
-    body = ttk.Frame(outer)
-    body.pack(fill="both", expand=True)
-    p0 = themes.current()
-    text = tk.Text(body, wrap="word", bg=p0["card"], fg=tfg, relief="flat",
-                   font="TkDefaultFont", padx=themes.px(16), pady=themes.px(12),
-                   borderwidth=0, highlightthickness=1, highlightbackground=p0["stroke"],
-                   highlightcolor=p0["stroke"], selectbackground=p0["select_bg"],
-                   insertbackground=tfg, cursor="arrow", spacing2=themes.px(2),
-                   selectforeground=p0["select_fg"])
-    sb = ttk.Scrollbar(body, orient="vertical", command=text.yview)
-    text.configure(yscrollcommand=sb.set)
-    if index:
-        lb = tk.Listbox(body, exportselection=False, activestyle="none",
-                        bg=bg, fg=tfg, selectbackground=p0["select_bg"],
-                        selectforeground=p0["select_fg"], relief="flat", borderwidth=0,
-                        highlightthickness=0, font="TkDefaultFont",
-                        width=max(28, max((len(h) for h, _t in sections), default=0) + 1))
-        lb.pack(side="left", fill="y", padx=themes.pad(0, 12))
-    sb.pack(side="right", fill="y")
-    text.pack(side="left", fill="both", expand=True)
-
-    text.tag_configure("h", font="MPSubtitle", foreground=fg,
-                       spacing1=themes.px(14), spacing3=themes.px(6))
-
-    def _repaint(p):
-        # the walk in themes.apply recolours Text/Listbox; these are the
-        # help window's own bits
-        text.tag_configure("h", foreground=p["fg"])
-        text.configure(bg=p["card"], highlightbackground=p["stroke"],
-                       highlightcolor=p["stroke"], selectbackground=p["select_bg"],
-                       selectforeground=p["select_fg"])
-        if index:
-            lb.configure(bg=p["bg"])
-    themes.on_palette(win, _repaint)
-    text.tag_configure("p", spacing1=1, spacing3=1, lmargin1=2, lmargin2=2)
-    marks = []
-    for i, (head, para) in enumerate(sections):
-        mark = f"sec{i}"
-        text.mark_set(mark, "end-1c")
-        text.mark_gravity(mark, "left")
-        marks.append(mark)
-        text.insert("end", head + "\n", "h")
-        text.insert("end", para.strip() + "\n\n", "p")
-        if index:
-            lb.insert("end", head)
-    text.configure(state="disabled")
-
-    if index:
-        def jump(_e=None):
-            sel = lb.curselection()
-            if sel:
-                text.yview(marks[sel[0]])
-        lb.bind("<<ListboxSelect>>", jump)
-
-    def wheel(e):
-        text.yview_scroll(-1 if e.delta > 0 else 1, "units")
-        return "break"
-    text.bind("<MouseWheel>", wheel)
-    win.bind("<Escape>", lambda e: win.destroy())
-
-    def gone(e):
-        if e.widget is win and _HELP_WINDOWS.get(wkey) is win:
-            _HELP_WINDOWS.pop(wkey, None)
-    win.bind("<Destroy>", gone, add="+")
-    _HELP_WINDOWS[wkey] = win
-    themes.recolor(win)
-    win.lift()
-    # focus_set on a window that isn't mapped yet doesn't activate it
-    win.after(50, lambda: win.winfo_exists() and win.focus_force())
-    return win
-
-
-def show_help(parent, key):
-    """Open (or raise) the help window for a helpdocs key."""
-    from .. import helpdocs
-    title, body = helpdocs.get(key)
-    return _open_help_window(parent, "help:" + key, tr("Help – {title}", title=title),
-                             [(title, body)])
-
-
-def show_help_index(parent, buttons=None):
-    """Open (or raise) the help window listing every tab's help.
-    buttons = extra [(text, command(window))] (e.g. Check for updates)."""
-    from .. import helpdocs
-    return _open_help_window(parent, "help:index", tr("{app} – Help", app="MediaPrep Toolkit"),
-                             helpdocs.sections(), index=True, buttons=buttons)
-
-
-def help_button(parent, key, text="?"):
-    """A small '?' ttk.Button that opens the help for helpdocs.HELP[key].
-    The caller places it (pack/grid) like any other widget."""
-    from .. import helpdocs
-    from . import icons
-    if text == "?" and icons.available():
-        btn = ttk.Button(parent, text="", style="Subtle.TButton",
-                         command=lambda: show_help(parent, key))
-        icons.decorate(btn, "help")
-    else:
-        btn = ttk.Button(parent, text=text, width=max(2, len(text) + 1),
-                         command=lambda: show_help(parent, key))
-    add_tooltip(btn, tr("Help: {title}", title=helpdocs.get(key)[0]))
-    return btn
-
-
-# ======================= Fluent info bar =======================
-class InfoBar(tk.Frame):
-    """A Windows 11 style InfoBar: tinted strip with a coloured accent edge,
-    a severity icon, the message (wraps), an optional link and a close ×.
-    kind = "error" / "warn" / "info"."""
-    _ICONS = {"error": "error", "warn": "warning", "info": "info"}
-
-    def __init__(self, master, text, kind="info", link_text=None, on_link=None,
-                 closable=True, on_close=None, links=None):
-        super().__init__(master, borderwidth=0, highlightthickness=1)
-        from .icons import glyph
-        self.kind = kind
-        self._on_close = on_close
-        self.edge = tk.Frame(self, width=themes.px(4), borderwidth=0)
-        self.edge.pack(side="left", fill="y")
-        ic = glyph(self._ICONS.get(kind, "info"))
-        self.icon = tk.Label(self, text=ic or "\u26a0", font="MPIcon" if ic else "MPSemibold",
-                             borderwidth=0, padx=themes.px(10))
-        self.icon.pack(side="left", anchor="n", pady=themes.px(9))
-        if closable:
-            cg = glyph("close")
-            self.close_lbl = tk.Label(self, text=cg or "\u2715", cursor="hand2",
-                                      font="MPIconSmall" if cg else "TkDefaultFont",
-                                      borderwidth=0, padx=themes.px(12))
-            self.close_lbl.pack(side="right", anchor="n", pady=themes.px(10))
-            self.close_lbl.bind("<Button-1>", lambda e: self.close())
-        else:
-            self.close_lbl = None
-        self.link = None
-        # links = [(text, callback), ...] shown left to right; link_text /
-        # on_link is the older single-link form
-        items = list(links or ())
-        if link_text:
-            items.append((link_text, on_link))
-        self.links = []
-        for text_, cb in reversed(items):           # packed from the right
-            lbl = tk.Label(self, text=text_, cursor="hand2", borderwidth=0,
-                           font="MPSemibold", padx=themes.px(6))
-            lbl.pack(side="right", anchor="n", pady=themes.px(8))
-            if cb is not None:
-                lbl.bind("<Button-1>", lambda e, cb=cb: cb())
-            self.links.insert(0, lbl)
-        if self.links:
-            self.link = self.links[-1]
-        self.msg = tk.Label(self, text=text, justify="left", anchor="w", borderwidth=0,
-                            font="TkDefaultFont")
-        self.msg.pack(side="left", fill="x", expand=True, pady=themes.px(8))
-        auto_wrap(self.msg, margin=8, width=820)
-        themes.on_palette(self, self._repaint)
-
-    def _repaint(self, p):
-        k = self.kind
-        bg, fg = p[f"banner_{k}_bg"], p[f"banner_{k}_fg"]
-        acc = p[f"banner_{k}_accent"]
-        self.configure(bg=bg, highlightbackground=themes.mix(bg, p["fg"], 0.12),
-                       highlightcolor=themes.mix(bg, p["fg"], 0.12))
-        self.edge.configure(bg=acc)
-        self.icon.configure(bg=bg, fg=acc)
-        self.msg.configure(bg=bg, fg=fg)
-        for lbl in self.links:
-            lbl.configure(bg=bg, fg=fg, font="MPSemibold")
-        if self.close_lbl is not None:
-            self.close_lbl.configure(bg=bg, fg=fg)
-
-    def close(self):
-        try:
-            self.destroy()
-        except tk.TclError:
-            pass
-        if callable(self._on_close):
-            self._on_close()

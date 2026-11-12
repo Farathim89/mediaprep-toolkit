@@ -9,6 +9,7 @@ isn't focused. Everything is best-effort - any failure is silent.
 Settings live in config.PREFS (notify_on, notify_toast, notify_sound,
 notify_min_minutes)."""
 import base64
+import os
 import subprocess
 import threading
 import time
@@ -23,6 +24,24 @@ _DISPATCH = None
 _POPUPS = []
 TOAST_TIMEOUT = 15          # seconds before a hung powershell is killed
 POPUP_SECONDS = 8
+
+
+def _system32():
+    """The real Windows system folder (GetSystemDirectoryW, else %SystemRoot%)."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(520)
+        n = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))
+        if 0 < n < len(buf):
+            return buf.value
+    except Exception:
+        pass
+    return os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
+
+
+# Windows PowerShell by its full path - a bare "powershell.exe" would be
+# searched in the working folder first (a planted copy there would run)
+POWERSHELL = os.path.join(_system32(), "WindowsPowerShell", "v1.0", "powershell.exe")
 
 # PowerShell's own AppUserModelID: toasts shown under it appear without
 # registering a Start-menu shortcut for this app
@@ -176,7 +195,7 @@ def toast(title, message, on_fail=None, timeout=TOAST_TIMEOUT):
         try:
             enc = base64.b64encode(toast_script(title, message).encode("utf-16-le")).decode()
             p = subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-NonInteractive",
+                [POWERSHELL, "-NoProfile", "-NonInteractive",
                  "-ExecutionPolicy", "Bypass", "-EncodedCommand", enc],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, creationflags=POPEN_FLAGS)

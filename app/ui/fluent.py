@@ -21,6 +21,7 @@ Styles added on top of the standard ones:
 """
 import base64
 import io
+import threading
 import tkinter as tk
 
 THEME = "mpfluent"
@@ -36,7 +37,9 @@ MB = 256                    # ... for the big surfaces (cards, long bars)
 class _State:
     images = {}             # key -> tk.PhotoImage (fixed names)
     created_for = None      # interpreter the elements/layouts were made in
-    scale = None
+    scale = None            # the DPI factor the layouts use now
+    tags = {}               # DPI factor -> element name tag (elements made for it)
+    cache = {}              # (palette, DPI factor) -> ([(key, png data)], geometry)
 
 
 _F = _State()
@@ -149,7 +152,9 @@ def _png(img):
 # with an alpha channel is blended pixel by pixel on every redraw (that made
 # resizing twice as slow).
 SURFACES = (("", "bg"), ("_card", "card"), ("_chrome", "sidebar_bg"))
-_SURF = {}
+# per thread (prewarm() draws in a worker): surf = the surface colours,
+# rec = [(key, png data)] drawn so far, live = also load them into Tk
+_ctx = threading.local()
 
 
 def _flat(img, color):
@@ -161,6 +166,12 @@ def _flat(img, color):
 
 def _store(key, img):
     data = _png(img)
+    _ctx.rec.append((key, data))
+    if _ctx.live:
+        _store_data(key, data)
+
+
+def _store_data(key, data):
     ph = _F.images.get(key)
     if ph is None:
         ph = tk.PhotoImage(name="mpf_" + key, data=data)
@@ -175,9 +186,9 @@ def _put(key, img, on=None):
     (img flattened onto each surface; on="card" -> only that one, under
     the plain key)."""
     if on is not None:
-        return _store(key, _flat(img, _SURF[on]))
+        return _store(key, _flat(img, _ctx.surf[on]))
     for sfx, surf in SURFACES:
-        _store(key + sfx, _flat(img, _SURF[surf]))
+        _store(key + sfx, _flat(img, _ctx.surf[surf]))
 
 
 # ---------------------------------------------------------------- the pictures
@@ -185,10 +196,62 @@ def _u(s):
     return lambda n: max(1, int(round(n * s)))
 
 
+def _font_scale():
+    from . import themes
+    return themes.font_scale()
+
+
+_CACHE_MAX = 8
+
+
 def _paint_all(p, s):
-    """(Re)draw every element picture for palette p at DPI factor s."""
+    """(Re)draw every element picture for palette p at DPI factor s. The
+    pictures of the last few (palette, DPI) pairs are kept: switching back
+    to a theme, or moving the window back to the other monitor, only
+    reloads them."""
+    ck = _cache_key(p, s)
+    hit = _F.cache.get(ck)
+    if hit is not None:
+        for key, data in hit[0]:
+            _store_data(key, data)
+        return dict(hit[1])
+    return _draw_cached(p, s, ck, live=True)
+
+
+def _cache_key(p, s):
+    return tuple(sorted((k, str(v)) for k, v in p.items())), s
+
+
+def _draw_cached(p, s, ck, live):
+    _ctx.rec, _ctx.live = [], live
+    try:
+        g = _draw_all(p, s)
+        rec = _ctx.rec
+    finally:
+        _ctx.rec = None
+    while len(_F.cache) >= _CACHE_MAX:
+        try:
+            _F.cache.pop(next(iter(_F.cache)))
+        except (StopIteration, KeyError, RuntimeError):
+            break
+    _F.cache[ck] = (rec, dict(g))
+    return g
+
+
+def prewarm(p, s):
+    """Draw the pictures for palette p at DPI factor s into the cache
+    only (no Tk call - safe in a worker thread): the first move of the
+    window to a monitor with that scaling then just loads them
+    (ui/dpi.py)."""
+    s = max(1.0, float(s or 1.0))
+    ck = _cache_key(p, s)
+    if ck not in _F.cache:
+        _draw_cached(p, s, ck, live=False)
+
+
+def _draw_all(p, s):
     u = _u(s)
-    _SURF.update(bg=p["bg"], card=p["card"], sidebar_bg=p["sidebar_bg"])
+    _ctx.surf = dict(bg=p["bg"], card=p["card"], sidebar_bg=p["sidebar_bg"])
     sw = u(1)
     R = u(4)                          # control corner radius
     fg = p["fg"]
@@ -407,8 +470,11 @@ def _img(key):
     return _F.images[key]
 
 
-def _create(style, g, s):
-    """Create the theme, its image elements and layouts (once per interpreter)."""
+def _create(style, g, s, tag="", new=True):
+    """Create the theme, its image elements (new=True) and the layouts using
+    them. An image element's border / padding can't be changed once made:
+    every DPI factor gets its own set of elements (names tagged with `tag`,
+    "" for the first one) and the layouts are switched over to it."""
     u = _u(s)
     names = style.theme_names()
     if THEME not in names:
@@ -417,10 +483,13 @@ def _create(style, g, s):
     single = {"Fl.Card.border", "Fl.CardIn.border", "Fl.Heading.cell"}
 
     def vname(name, v):
-        return name if not v or name in single else name.replace("Fl.", f"Fl.{v}.", 1)
+        n = name if not v or name in single else name.replace("Fl.", f"Fl.{v}.", 1)
+        return n.replace("Fl.", f"Fl{tag}.", 1) if tag and n.startswith("Fl.") else n
 
     def ec(name, kind, key, *states, **kw):
         """One element per surface (see SURFACES); states = (state.., key)."""
+        if not new:
+            return
         for sfx, _surf in SURFACES:
             if sfx and name in single:
                 continue
@@ -499,6 +568,11 @@ def _create(style, g, s):
         ("Fl.Combobox.arrow", {"side": "right", "sticky": "ns"}),
         ("Combobox.padding", {"expand": "1", "sticky": "nsew", "children": [
             ("Combobox.textarea", {"sticky": "nsew"})]})]})])
+    # a menu button that looks like a read-only drop-down (the theme picker)
+    lay("Picker.TMenubutton", [("Fl.Button.bg", {"sticky": "nsew", "children": [
+        ("Fl.Combobox.arrow", {"side": "right", "sticky": "ns"}),
+        ("Menubutton.padding", {"expand": "1", "sticky": "nsew", "children": [
+            ("Menubutton.label", {"side": "left", "sticky": "w"})]})]})])
 
     ec("Fl.Spinbox.field", "image", "fld_n",
        ("disabled", "fld_d"), ("focus", "fld_f"), ("hover", "fld_h"),
@@ -554,11 +628,12 @@ def _create(style, g, s):
        width=2 * CB + 2, height=2 * CB + 2)
     ec("Fl.CardIn.border", "image", "card_in", border=CB, padding=0,
        sticky="nsew", width=2 * CB + 2, height=2 * CB + 2)
-    style.layout("TLabelframe", [("Fl.Card.border", {"sticky": "nsew"})])
-    style.layout("Cardbox.TFrame", [("Fl.Card.border", {"sticky": "nsew"})])
-    style.layout("Pill.TFrame", [("Fl.Card.border", {"sticky": "nsew"})])
-    style.layout("Card.Cardbox.TFrame", [("Fl.CardIn.border", {"sticky": "nsew"})])
-    style.layout("Card.TLabelframe", [("Fl.CardIn.border", {"sticky": "nsew"})])
+    card_el, card_in = vname("Fl.Card.border", ""), vname("Fl.CardIn.border", "")
+    style.layout("TLabelframe", [(card_el, {"sticky": "nsew"})])
+    style.layout("Cardbox.TFrame", [(card_el, {"sticky": "nsew"})])
+    style.layout("Pill.TFrame", [(card_el, {"sticky": "nsew"})])
+    style.layout("Card.Cardbox.TFrame", [(card_in, {"sticky": "nsew"})])
+    style.layout("Card.TLabelframe", [(card_in, {"sticky": "nsew"})])
 
     ec("Fl.Vsb.trough", "image", "sbv_trough", border=(0, 1, 0, 1), sticky="ns",
        width=g["SB"], height=4)
@@ -602,7 +677,7 @@ def _create(style, g, s):
     ec("Fl.Heading.cell", "image", "th_n", ("active", "th_h"),
        border=(2, g["u7"], g["u3"] + 2, g["u7"]), sticky="nsew",
        width=g["u3"] + 6, height=2 * g["u7"] + 2)
-    style.layout("Treeview.Heading", [("Fl.Heading.cell", {"sticky": "nsew", "children": [
+    style.layout("Treeview.Heading", [(vname("Fl.Heading.cell", ""), {"sticky": "nsew", "children": [
         ("Treeheading.padding", {"sticky": "nsew", "children": [
             ("Treeheading.image", {"side": "right", "sticky": ""}),
             ("Treeheading.text", {"sticky": "we"})]})]})])
@@ -616,8 +691,18 @@ def apply(style, p, s):
     g = _paint_all(p, s)
     interp = str(style.tk)
     if _F.created_for != interp:
-        _create(style, g, s)
         _F.created_for = interp
+        _F.tags = {}
+        _F.scale = None
+    if _F.scale != s:
+        # first use, or the display DPI changed (ui/dpi.py): the elements
+        # for this factor (made once) and the layouts switched to them
+        tag = _F.tags.get(s)
+        new = tag is None
+        if new:
+            tag = "" if not _F.tags else f"S{len(_F.tags)}"
+            _F.tags[s] = tag
+        _create(style, g, s, tag, new)
         _F.scale = s
     style.theme_use(THEME)
     _configure(style, p, s)
@@ -659,6 +744,7 @@ def _configure(style, p, s):
                   selectbackground=[("readonly", p["control"])],
                   selectforeground=[("readonly", fg)])
     style.configure("TSpinbox", padding=(u(5), u(4), u(1), u(4)))
+    style.configure("Picker.TMenubutton", padding=epad, anchor="w")
     style.configure("Bare.TEntry", background=field, fieldbackground=field,
                     padding=(u(2), u(2), u(2), u(2)))
     style.configure("Bare.TLabel", background=field, foreground=p["muted"], padding=0)
@@ -681,7 +767,8 @@ def _configure(style, p, s):
     style.configure("TLabelframe.Label", background=bg, foreground=fg, font="MPSemibold")
     style.configure("Cardbox.TFrame", background=bg, padding=(u(12), u(8), u(12), u(10)))
     style.configure("Treeview", background=field, fieldbackground=field, foreground=fg,
-                    rowheight=u(28), padding=0, borderwidth=1, bordercolor=p["stroke"],
+                    rowheight=u(28 * _font_scale()), padding=0, borderwidth=1,
+                    bordercolor=p["stroke"],
                     lightcolor=field, darkcolor=field)
     style.map("Treeview", background=[("selected", sb)], foreground=[("selected", sf)])
     style.configure("Treeview.Heading", background=p["heading_bg"], foreground=p["muted"],

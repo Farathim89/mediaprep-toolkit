@@ -2,9 +2,15 @@
 after-credits) that recur across several episodes."""
 import os
 import subprocess
+import time
 
 from ..config import limit_cmd, popen_flags, TEMP_DIR
 from .probe import audio_track_for_lang, probe_duration
+
+# sample 0 of a decoded window = the window's start even when the audio track
+# starts later (a delayed track is padded with silence, not shifted early)
+_AUDIO_ALIGN = "aresample=async=1:first_pts=0"
+DECODE_TIMEOUT = 600.0   # s one window decode may take before ffmpeg is killed
 
 
 # ======================================================================
@@ -14,22 +20,39 @@ from .probe import audio_track_for_lang, probe_duration
 # each distinct opening becomes its own cluster with its own timing.
 # ======================================================================
 
-def _decode_window_wav(src, dst, window, from_end=False, track=None):
+def _decode_window_wav(src, dst, window, from_end=False, track=None, stop_event=None,
+                       timeout=DECODE_TIMEOUT):
     """Decode just the first (or last) `window` seconds of src to mono
     22.05 kHz wav - fast, because ffmpeg only touches that slice. track=None
-    uses the default audio; an int picks that audio stream (0:a:N)."""
+    uses the default audio; an int picks that audio stream (0:a:N).
+    stop_event set / longer than `timeout` s = ffmpeg is killed and the
+    partial wav removed. True when the wav was written."""
     if from_end:
         cmd = ["ffmpeg", "-nostdin", "-v", "error", "-sseof", f"-{window:.3f}", "-i", src]
     else:
         cmd = ["ffmpeg", "-nostdin", "-v", "error", "-ss", "0", "-t", f"{window:.3f}", "-i", src]
     if track is not None:
         cmd += ["-map", f"0:a:{track}"]
-    cmd += ["-ar", "22050", "-ac", "1", "-y", dst]
+    cmd += ["-vn", "-sn", "-dn", "-af", _AUDIO_ALIGN, "-ar", "22050", "-ac", "1", "-y", dst]
     try:
-        subprocess.run(limit_cmd(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       creationflags=popen_flags())
+        p = subprocess.Popen(limit_cmd(cmd), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                             creationflags=popen_flags())
     except OSError:                      # ffmpeg missing - caller finds no wav
-        pass
+        return False
+    t_end = time.monotonic() + float(timeout)
+    while True:
+        try:
+            return p.wait(timeout=0.2) == 0
+        except subprocess.TimeoutExpired:
+            if (stop_event is not None and stop_event.is_set()) or time.monotonic() > t_end:
+                p.kill()
+                p.wait()
+                try:
+                    os.remove(dst)
+                except OSError:
+                    pass
+                return False
 
 
 def _znorm(M, np):
@@ -37,17 +60,20 @@ def _znorm(M, np):
 
 
 def _episode_features(src, window, from_end, np, librosa, sr=22050, hop=2048,
-                      n_mfcc=13, lang=None):
+                      n_mfcc=13, lang=None, stop_event=None):
     """Return (features, feat_per_sec, time_offset). features is a z-normed
     MFCC matrix for the decoded window; time_offset converts a local frame
     time back to an absolute time in the source file (needed for credits,
     which are read from the end). lang (e.g. 'eng') fingerprints that language
-    track when present, so a Japanese default track doesn't skew detection."""
+    track when present, so a Japanese default track doesn't skew detection.
+    stop_event set = (None, 0.0, 0.0) at once."""
     os.makedirs(TEMP_DIR, exist_ok=True)
     dst = os.path.join(TEMP_DIR, f"_detect_{abs(hash(src)) % 10**8}.wav")
     track = audio_track_for_lang(src, lang) if lang else None
     try:
-        _decode_window_wav(src, dst, window, from_end, track=track)
+        _decode_window_wav(src, dst, window, from_end, track=track, stop_event=stop_event)
+        if stop_event is not None and stop_event.is_set():
+            return None, 0.0, 0.0
         if not os.path.exists(dst) or os.path.getsize(dst) == 0:
             return None, 0.0, 0.0
         y, _ = librosa.load(dst, sr=sr, mono=True)
@@ -244,7 +270,10 @@ def _match_known_templates(feats, tpl_paths, kind, fps_ref, thresh, np, librosa,
     max_gap = max(3, int(0.5 * fps_ref))
     tplf = {}
     for p in tpl_paths:
-        M, fps, _off = _episode_features(p, 600.0, False, np, librosa, hop=hop, lang=lang)
+        if stop_event is not None and stop_event.is_set():
+            return None, None
+        M, fps, _off = _episode_features(p, 600.0, False, np, librosa, hop=hop, lang=lang,
+                                         stop_event=stop_event)
         if M is not None and M.shape[1] >= 4:
             tplf[p] = M
     if not tplf:
@@ -345,7 +374,10 @@ def detect_recurring_segments(files, kinds=("intro", "credits"), window=240.0,
             if progress:
                 progress(b0 + (b1 - b0) * idx / max(1, len(files)),
                          f"Analysing {os.path.basename(f)}")
-            M, fps, off = _episode_features(f, window, from_end, np, librosa, hop=hop, lang=lang)
+            M, fps, off = _episode_features(f, window, from_end, np, librosa, hop=hop, lang=lang,
+                                            stop_event=stop_event)
+            if stop_event is not None and stop_event.is_set():
+                return None, None
             if M is not None and M.shape[1] >= 4:
                 feats[f] = (M, fps, off)
                 fps_ref = fps
@@ -508,7 +540,8 @@ def refine_clusters(clusters, lang=None, log=None, progress=None, stop_event=Non
         done, kinds = {}, {}
         c["ranges"] = refine_ranges(c["ranges"], log=log, label=f"{c['kind']} ",
                                     track_for=track_for, known_ref=known, done_out=done,
-                                    template_mode=template_mode, src_out=kinds)
+                                    template_mode=template_mode, src_out=kinds,
+                                    stop_event=stop_event)
         c["edge_src"] = {p: {"start": k[0], "end": k[1]} for p, k in kinds.items()}
         c["refined"] = sum(int(a) + int(b) for a, b in done.values())
 
@@ -528,7 +561,7 @@ def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240
     survives at a join; template_margin ('follow' default / 'exact' /
     'exact+margin'): clusters matched to an existing template ('known')
     follow the template's own edges, or take the content edge (+ margin)."""
-    from .refine import norm_margin, norm_template_mode
+    from .refine_template import norm_margin, norm_template_mode
     margin = norm_margin(margin_frames)
     tmode = norm_template_mode(template_margin)
     from .vfp import combine_clusters, norm_mode, recurring_video
@@ -573,16 +606,17 @@ def detect_recurring(files, mode="audio", kinds=("intro", "credits"), window=240
                         progress=lambda f, t="": prog0(0.9 + 0.1 * f, t),
                         stop_event=stop_event, template_mode=tmode)
     if out and margin and not (stop_event is not None and stop_event.is_set()):
-        _margin_clusters(out, margin, tmode, log)
+        _margin_clusters(out, margin, tmode, log, stop_event=stop_event)
     return out
 
 
-def _margin_clusters(clusters, n, tmode, log=None):
+def _margin_clusters(clusters, n, tmode, log=None, stop_event=None):
     """Widen every member range by n frames each side (engine.refine
     .margin_segments: real frame times, never into another segment of the
     same episode). Clusters that follow a known template ('follow') keep
-    its edges as they are."""
-    from .refine import margin_segments
+    its edges as they are. stop_event set = the ranges not widened yet stay
+    as they are."""
+    from .refine_template import margin_segments
     from .probe import probe_video_duration
     per = {}
     for i, c in enumerate(clusters):
@@ -603,7 +637,8 @@ def _margin_clusters(clusters, n, tmode, log=None):
         except Exception:
             durs[p] = None
     cache = {}
-    margin_segments(per, n, durs, cache, fixed=lambda k: not isinstance(k, int))
+    margin_segments(per, n, durs, cache, fixed=lambda k: not isinstance(k, int),
+                    stop_event=stop_event)
     for p, segs in per.items():
         for i, rng in segs.items():
             if isinstance(i, int):

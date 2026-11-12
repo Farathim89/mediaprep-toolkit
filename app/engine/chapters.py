@@ -2,9 +2,10 @@
 import os
 
 from ..config import TEMP_DIR
+from .encode import build_stream_maps
 from .files import _same_path
 from .probe import probe_duration
-from .process import _run_exempt, run_ffmpeg_with_progress
+from .process import _run_exempt, run_ffmpeg_with_progress, temp_tag
 
 
 def build_chapters(total_duration, drops, lead_title=None):
@@ -30,13 +31,18 @@ def add_chapters(input_file, output_file, chapters, maps=None, stop_event=None,
                  on_progress=None, on_log=None):
     """Write chapter markers into a copy of the file (stream copy, no re-encode)
     so players can offer Skip Intro / Skip Credits. maps: optional -map args
-    (e.g. build_stream_maps() to drop subtitle languages; default -map 0).
+    (e.g. build_stream_maps() to drop subtitle languages; default: every
+    stream except cover art, which -map 0 would turn into a 1-frame video
+    track in MKV - encode.restore_covers() puts covers back).
     Pass stop_event / on_progress for a stoppable run with a progress bar.
     Returns (rc, stderr_text); rc is -1 if stopped."""
     if _same_path(input_file, output_file):
         return 1, "output path is the input file - refusing to overwrite it"
+    if not maps:
+        maps = build_stream_maps(input_file, data=os.path.splitext(output_file)[1].lower()
+                                 not in (".mkv", ".webm"))
     os.makedirs(TEMP_DIR, exist_ok=True)
-    meta = os.path.join(TEMP_DIR, f"chapters_{os.getpid()}.txt")
+    meta = os.path.join(TEMP_DIR, f"chapters_{temp_tag()}.txt")
     lines = [";FFMETADATA1"]
     for s, e, title in chapters:
         lines += ["[CHAPTER]", "TIMEBASE=1/1000",
@@ -45,7 +51,7 @@ def add_chapters(input_file, output_file, chapters, maps=None, stop_event=None,
     with open(meta, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     cmd = (["ffmpeg", "-y", "-i", input_file, "-i", meta]
-           + (list(maps) if maps else ["-map", "0"])
+           + list(maps)
            + ["-map_metadata", "0", "-map_chapters", "1", "-c", "copy", output_file])
     if stop_event is not None or on_progress is not None:
         rc = run_ffmpeg_with_progress(cmd, probe_duration(input_file) or 0,

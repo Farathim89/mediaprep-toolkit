@@ -1,6 +1,6 @@
 """Cut / Edit -> Manual cut sub-tab (ManualCutMixin)."""
 import os
-import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -12,10 +12,12 @@ from ..engine.probe import probe_duration
 from ..i18n import tr
 from ..ui.frametime import file_fps
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, enable_file_drop,
-                          enable_file_drop_deep, help_button)
-from .common import _VIDEO_TYPES, _same_file, edges_for_range, mark_edges
-from .cut_common import _best_ok, _cand_label, _resolve_rng, tr_key
+from ..ui.helpwin import help_button
+from ..ui.timeentry import TimeEntry
+from ..ui.tooltips import info_icon, add_tooltip
+from ..ui.widgets import auto_wrap, enable_file_drop, enable_file_drop_deep
+from .common import _VIDEO_TYPES, _same_file, edges_for_range, mark_edges, opt_kwargs
+from .cut_common import _best_ok, _cand_label, _resolve_rng, manual_result, tr_key
 from .. import jobs as jobreg
 from ..ui import icons
 
@@ -325,20 +327,22 @@ class ManualCutMixin:
             return
         if self.save_hook:
             self.save_hook()
-        self.stop_event.clear()
         self._running(True, [video] if cfg["move_done"] else None)
         if cfg["move_done"] and callable(self.unload_players_hook):
             self.unload_players_hook()      # free the file so its source can move
         jid = self._jid = jobreg.begin(tr("Cut / Edit manual cut"), stop_event=self.stop_event,
                                        tab=self)
-        threading.Thread(target=self._manual_worker, args=(cfg, keep, jid),
-                         daemon=True).start()
+        self._spawn(self._manual_worker, cfg, keep, jid)
 
     def _manual_worker(self, cfg, keep, jid=None):
+        stop, seq = self._run_ctx()
         ok = False
         try:
-            res = run_manual(cfg, keep, self, self.stop_event)
-            ok = res is not False and not self.stop_event.is_set()
+            t0 = time.time()
+            res = run_manual(cfg, keep, self, stop)
+            # did it really write the output? (a failed cut is not 'finished')
+            ok, _out = manual_result(res, cfg, cfg["video"], t0)
+            ok = ok and not stop.is_set()
         except Exception as e:
             self.log(f"[FAIL] Unexpected error: {e!r}")
         finally:
@@ -354,7 +358,9 @@ class ManualCutMixin:
                     moved = os.path.join(os.path.dirname(video) or ".", "done",
                                          os.path.basename(video))
                     self.sel_var.set(moved if os.path.isfile(moved) else "")
-            self.after(0, _f)
+                if not ok and not stop.is_set():
+                    self.status_var.set(tr("Manual cut failed - see the Log."))
+            self._finish(seq, _f)
 
     def _manual_detect(self):
         if self._busy or not self._engine_ready():
@@ -368,31 +374,42 @@ class ManualCutMixin:
             return
         if self.save_hook:
             self.save_hook()
-        self.stop_event.clear()
         self._running(True)
         self.status_var.set(tr("Auto-detecting segments in {name}...",
                                name=os.path.basename(video)))
-        self.bar.configure(mode="indeterminate")
-        self.bar.start(12)
+        # a determinate bar when the engine reports progress, else a busy one
+        prog = bool(opt_kwargs(detect_segments, progress=None))
+        self.bar.configure(mode="determinate" if prog else "indeterminate")
+        self.bar["value"] = 0
+        if not prog:
+            self.bar.start(12)
         jid = self._jid = jobreg.begin(tr("Cut / Edit auto-detect (manual)"),
                                        stop_event=self.stop_event, tab=self)
-        threading.Thread(target=self._manual_detect_worker, args=(video, cfg, jid),
-                         daemon=True).start()
+        self._spawn(self._manual_detect_worker, video, cfg, jid)
 
     def _manual_detect_worker(self, video, cfg, jid=None):
+        stop, seq = self._run_ctx()
         res = None
         try:
             self.log(f"[DETECT] matching templates against {os.path.basename(video)}...")
-            res = detect_segments(video, cfg, stop_event=self.stop_event, log=self.log)
+
+            def prog(frac, _text=""):
+                try:
+                    frac = max(0.0, min(1.0, float(frac or 0.0)))
+                except (TypeError, ValueError):
+                    return
+                self.progress(frac, f"{frac * 100:.0f}%")
+            res = detect_segments(video, cfg, stop_event=stop, log=self.log,
+                                  **opt_kwargs(detect_segments, progress=prog))
         except Exception as e:
             self.log(f"[FAIL] auto-detect crashed: {e!r}")
         finally:
-            stopped = self.stop_event.is_set()
+            stopped = stop.is_set()
             found = [tr_key(lbl) for k, lbl in self.MULTI_SEGS if res and _best_ok(res.get(k))]
             jobreg.end(jid, ok=res is not None and not stopped,
                        summary=tr("{name}: found {what}", name=os.path.basename(video),
                                   what=", ".join(found) if found else tr("nothing")))
-            self.after(0, lambda: self._manual_detect_done(video, cfg, res, stopped))
+            self._finish(seq, lambda: self._manual_detect_done(video, cfg, res, stopped))
 
     def _manual_detect_done(self, video, cfg, res, stopped):
         self.bar.stop()
@@ -419,11 +436,13 @@ class ManualCutMixin:
             self.log(f"  [FAIL] {res['error']}")
         for key, label in self.MULTI_SEGS:
             ef, et = self._manual[key]
+            if not use.get(key, True):
+                # not searched: keep what was typed there by hand
+                self.log(f"  {label}: not searched (unticked on Cut / Edit → Auto-detect) - "
+                         "boxes left as they were")
+                continue
             self._multi_clear_entry(ef)
             self._multi_clear_entry(et)
-            if not use.get(key, True):
-                self.log(f"  {label}: not searched (unticked on Cut / Edit → Auto-detect)")
-                continue
             cands = res.get(key) or []
             for i, c in enumerate(cands, 1):
                 self.log(f"    {_cand_label(key, i, c)}")

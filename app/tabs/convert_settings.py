@@ -5,10 +5,11 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from ..config import BIT_DEPTHS, VALID_PRESETS
-from ..engine import recode
+from ..engine import recode, recode_analyze
 from ..i18n import N_, tr
 from ..ui import icons
-from ..ui.widgets import KeyedCombobox, add_tooltip, auto_wrap, enable_file_drop, info_icon
+from ..ui.tooltips import add_tooltip, info_icon
+from ..ui.widgets import KeyedCombobox, auto_wrap, enable_file_drop
 
 # shown label key -> engine value
 VCODECS = {
@@ -352,11 +353,11 @@ class SettingsMixin:
         c = det.get("crop")
         if "crop" not in det:
             self.crop_info.set(tr("Source {w}x{h} - not measured yet", w=v["w"], h=v["h"]))
-        elif not c or not recode.crop_label(c):
+        elif not c or not recode_analyze.crop_label(c):
             self.crop_info.set(tr("Detected: no black bars ({w}x{h})", w=v["w"], h=v["h"]))
         else:
             what = {"letterbox": tr("letterbox removed"), "pillarbox": tr("pillarbox removed"),
-                    "borders": tr("borders removed")}[recode.crop_label(c)]
+                    "borders": tr("borders removed")}[recode_analyze.crop_label(c)]
             self.crop_info.set(tr("Detected: {w}x{h} ({what})", w=c["w"], h=c["h"], what=what))
         d = det.get("interlace")
         self.deint_info.set("" if d is None else tr("Detected: interlaced") if d["interlaced"]

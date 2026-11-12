@@ -25,7 +25,9 @@ from ..engine.process import _run_capture_stoppable
 from .. import applog
 from .. import jobs
 from ..i18n import tr, ntr
-from ..ui.widgets import add_tooltip, bind_status_colors, enable_file_drop, help_button
+from ..ui.helpwin import help_button
+from ..ui.tooltips import add_tooltip
+from ..ui.widgets import bind_status_colors, enable_file_drop
 from ..ui import icons
 from ..ui.tkthread import _call_tk
 
@@ -230,21 +232,21 @@ class CompareTab(ttk.Frame):
             ib = _probe_tracks(b)
             if ia is None or ib is None:
                 summary = tr("Could not probe one of the files.")
-                self.after(0, lambda: self.summary_var.set(summary))
+                _call_tk(lambda: self.summary_var.set(summary))
                 return
             rows = self._build_rows(ia, ib)
             bad = sum(1 for _, _, _, ok in rows if ok is False)
             summary = self._summary_text(bad)
-            self.after(0, lambda: self._show(rows, bad))
+            _call_tk(lambda: self._show(rows, bad))
             done = True
         except Exception as exc:
             applog.record(f"[Compare] tracks comparison failed: {exc}")
             summary = tr("Compare failed: {error}", error=exc)
-            self.after(0, lambda s=summary: self.summary_var.set(s))
+            _call_tk(lambda s=summary: self.summary_var.set(s))
         finally:
             jobs.end(jid, ok=done, summary=summary)
             if not done:   # _show re-enables the button itself on success
-                self.after(0, lambda: self.cmp_btn.configure(state="normal"))
+                _call_tk(lambda: self.cmp_btn.configure(state="normal"))
 
     @staticmethod
     def _build_rows(a, b):
@@ -662,13 +664,13 @@ class _QualityPane(ttk.Frame):
             ok = not summary.startswith("[FAIL]")
         except _Stopped:
             summary, ok = "[STOPPED]", True
-            self.after(0, lambda: self._append("\n[STOPPED]"))
+            _call_tk(lambda: self._append("\n[STOPPED]"))
         except Exception as exc:
             summary = f"[FAIL] {exc}"
-            self.after(0, lambda e=exc: self._append(f"\n[FAIL] {e}"))
+            _call_tk(lambda e=exc: self._append(f"\n[FAIL] {e}"))
         finally:
             jobs.end(jid, ok=ok, summary=summary)
-            self.after(0, lambda: (self.run_btn.configure(state="normal"),
+            _call_tk(lambda: (self.run_btn.configure(state="normal"),
                                    self.stop_btn.configure(state="disabled")))
 
     def _run_quality(self, ref, new, ref_off, new_off, span, full, n, length,
@@ -680,13 +682,13 @@ class _QualityPane(ttk.Frame):
             usable = min(usable, span)
         if usable <= 1:
             msg = "[FAIL] " + tr("Nothing to compare - check the offsets.")
-            self.after(0, lambda: self._append(msg))
+            _call_tk(lambda: self._append(msg))
             return msg
         info_ref = probe_streams(ref)
         info_new = probe_streams(new)
         if not info_ref or not info_new or not info_ref["video"] or not info_new["video"]:
             msg = "[FAIL] " + tr("Could not probe a video stream in both files.")
-            self.after(0, lambda: self._append(msg))
+            _call_tk(lambda: self._append(msg))
             return msg
         vr, vn = info_ref["video"][0], info_new["video"][0]
         ref_wh = (vr["w"], vr["h"]) if (vr["w"], vr["h"]) != (vn["w"], vn["h"]) else None
@@ -752,7 +754,7 @@ class _QualityPane(ttk.Frame):
                 from ..engine.detect import audio_fingerprint, align_window
                 # audio_fingerprint can't be interrupted, so check Stop
                 # between the steps (each takes a few seconds per file)
-                self.after(0, lambda: self._append(
+                _call_tk(lambda: self._append(
                     tr("Aligning (reading the audio of both files)...")))
                 if self.stop_event.is_set():
                     raise _Stopped()
@@ -800,16 +802,16 @@ class _QualityPane(ttk.Frame):
         elif auto_align and full:
             head.append("[note] " + tr("auto-align works with sample windows, not full "
                                        "scan - switch off Full scan to align a cut file."))
-        self.after(0, lambda t="\n".join(head): self._print(t))
+        _call_tk(lambda t="\n".join(head): self._print(t))
 
         results = []
         total = len(windows)
         w_word, avg_word = tr("window"), tr("average")
         hdr = f"\n{w_word:<16}{'SSIM':>8}{'PSNR':>10}" + (f"{'VMAF':>8}" if use_vmaf else "")
-        self.after(0, lambda: self._append(hdr))
+        _call_tk(lambda: self._append(hdr))
         for i, (rp, np_, ln) in enumerate(windows, 1):
             if self.stop_event.is_set():
-                self.after(0, lambda: self._append("\n[STOPPED]"))
+                _call_tk(lambda: self._append("\n[STOPPED]"))
                 return "[STOPPED]"
             res = _quality_window(new, ref, np_, rp, ln, ref_wh, use_vmaf, self.stop_event)
             results.append(res)
@@ -818,7 +820,7 @@ class _QualityPane(ttk.Frame):
                     + (f"{res['vmaf']:>8.1f}" if res.get("vmaf") is not None else
                        ("     n/a" if use_vmaf else "")))
             pct = int(i * 100 / total)
-            self.after(0, lambda l=line, p=pct: (self._append(l), self.bar.configure(value=p)))
+            _call_tk(lambda l=line, p=pct: (self._append(l), self.bar.configure(value=p)))
 
         ssim = sum(r["ssim"] for r in results) / len(results)
         psnr = sum(r["psnr"] for r in results) / len(results)
@@ -831,6 +833,6 @@ class _QualityPane(ttk.Frame):
             lines.append(f"VMAF {v:.1f}: {_verdict_vmaf(v)}")
         lines.append(tr("(guide: SSIM 0.98+ / VMAF 90+ = you won't see a difference "
                         "in normal viewing)"))
-        self.after(0, lambda t="\n".join(lines): self._append(t))
+        _call_tk(lambda t="\n".join(lines): self._append(t))
         return f"SSIM {ssim:.4f}, PSNR {psnr:.1f} dB" + (
             f", VMAF {sum(vmafs) / len(vmafs):.1f}" if vmafs else "")

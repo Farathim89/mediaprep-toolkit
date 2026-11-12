@@ -64,11 +64,24 @@ def init(logdir, days=None):
         moved = 0
     try:
         os.makedirs(logdir, exist_ok=True)
-        _LOGFILE = os.path.join(logdir, time.strftime("session_%Y%m%d.log"))
-        with open(_LOGFILE, "a", encoding="utf-8") as f:
-            f.write(time.strftime("\n===== session started %Y-%m-%d %H:%M:%S =====\n"))
+        path = os.path.join(logdir, time.strftime("session_%Y%m%d.log"))
+        with _LOCK:
+            early = list(_LINES) if _LOGFILE is None else []
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(time.strftime("\n===== session started %Y-%m-%d %H:%M:%S =====\n"))
+                # lines recorded before the file was known (e.g. a settings
+                # recovery while the settings were loaded) go in too
+                for line in early:
+                    f.write(line + "\n")
+            _LOGFILE = path
     except OSError:
         _LOGFILE = None
+    try:            # messages from config's import (portable data folder choice)
+        from .config import take_notes
+        for note in take_notes():
+            record(note)
+    except Exception:
+        pass
     if moved:
         record(f"[log] moved {moved} session log(s) older than {days} days "
                "to Data\\temp\\trash")

@@ -5,9 +5,11 @@ import tkinter as tk
 from tkinter import ttk
 
 from ..engine.formatting import fmt_time
+from ..ui.dialogfit import ScrollBody
 from ..ui.dialogs import place_dialog
+from ..ui.frametime import excl_to_shown, file_fps
 from ..ui.player import VideoPlayer
-from ..ui.widgets import add_tooltip
+from ..ui.tooltips import add_tooltip
 from .common import _same_file
 from ..i18n import tr, N_
 
@@ -28,15 +30,20 @@ class _AuditionWindow(tk.Toplevel):
         self._poll = None
         self._was_playing = False
         self._auto = True                 # advance to the next clip at the end
-        frm = ttk.Frame(self, padding=8)
-        frm.pack(fill="both", expand=True)
+        outer = ttk.Frame(self, padding=8)
+        outer.pack(fill="both", expand=True)
+        # the player scrolls when the window is taller than the screen
+        # (ui/dialogfit.py); the buttons stay below it
+        sb = ScrollBody(outer)
+        frm = sb.interior
         self.info = tk.StringVar(value="")
         ttk.Label(frm, textvariable=self.info, wraplength=480, justify="left").pack(
             anchor="w", pady=(0, 6))
         self.player = VideoPlayer(frm, width=480, height=270, log_fn=log_fn)
         self.player.pack()
-        row = ttk.Frame(frm)
-        row.pack(fill="x", pady=(8, 0))
+        row = ttk.Frame(outer)
+        row.pack(side="bottom", fill="x", pady=(8, 0))
+        sb.pack(fill="both", expand=True)
         for txt, cmd, tip in [
                 (N_("◀ Prev"), lambda: self._go(self.idx - 1), N_("Previous episode")),
                 (N_("Replay"), lambda: self._go(self.idx), N_("Play this episode's range again")),
@@ -63,14 +70,20 @@ class _AuditionWindow(tk.Toplevel):
             return
         self.idx = max(0, min(idx, len(self.clips) - 1))
         path, a, b = self.clips[self.idx]
-        self.info.set(tr("Episode {i} / {n}:  {name}", i=self.idx + 1, n=len(self.clips),
-                         name=os.path.basename(path)) + "\n"
-                      + f"{fmt_time(a)} -> {fmt_time(b)}  ({b - a:.1f}s)")
         self._auto = True
         if getattr(self.player, "_path", None) and _same_file(self.player._path, path):
             ok = self.player.has_video()
         else:
             ok = self.player.load(path)
+        # b is the engine end (the first frame after the range): show the
+        # range's LAST frame, like every To box
+        try:
+            fps = file_fps(path, self.player) if ok else None
+        except Exception:
+            fps = None
+        self.info.set(tr("Episode {i} / {n}:  {name}", i=self.idx + 1, n=len(self.clips),
+                         name=os.path.basename(path)) + "\n"
+                      + f"{fmt_time(a)} -> {fmt_time(excl_to_shown(b, fps))}  ({b - a:.1f}s)")
         if not ok:
             self.info.set(self.info.get() + "   - " + tr("could not open, skipped"))
             if self.idx + 1 < len(self.clips):

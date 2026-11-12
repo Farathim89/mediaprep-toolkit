@@ -5,6 +5,7 @@ import os
 import glob
 import subprocess
 import threading
+import time
 
 from ..config import CREDITS_SEARCH_WINDOW, INTRO_SEARCH_WINDOW, limit_cmd, popen_flags, TEMP_DIR
 from .probe import (audio_track_for_lang, probe_audio_streams, probe_duration,
@@ -92,35 +93,64 @@ def align_window(M_ref, fps, M_new, new_pos, length):
     return (j + delta) / fps, float(scores[j])
 
 
-def extract_wav(src, dst, track=None):
+# sample 0 of every decode = the requested start on the app timeline, even
+# when the audio track starts later (delayed / gapped audio is padded with
+# silence instead of shifting everything early) - the same as engine.refine
+_AUDIO_ALIGN = "aresample=async=1:first_pts=0"
+
+
+def extract_wav(src, dst, track=None, stop_event=None, start=None, duration=None,
+                timeout=None):
     """Decode audio to mono 22.05 kHz WAV. track=None uses the default audio
     stream; an int picks that audio stream (0:a:N) so each language track can
-    be fingerprinted separately."""
-    cmd = ["ffmpeg", "-y", "-i", src]
+    be fingerprinted separately. start / duration (s): only that window
+    (sample 0 = file time `start`). stop_event set = ffmpeg is killed,
+    False; so is a decode that takes longer than `timeout` seconds (default
+    30 min for a whole file, 10 min for a window)."""
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y"]
+    if start and float(start) > 0:
+        cmd += ["-ss", f"{float(start):.3f}"]
+    cmd += ["-i", src]
+    if duration:
+        cmd += ["-t", f"{float(duration):.3f}"]
     if track is not None:
         cmd += ["-map", f"0:a:{track}"]
-    cmd += ["-vn", "-acodec", "pcm_s16le", "-ar", "22050", "-ac", "1", dst]
+    cmd += ["-vn", "-sn", "-dn", "-af", _AUDIO_ALIGN, "-acodec", "pcm_s16le", "-ar", "22050",
+            "-ac", "1", dst]
+    if timeout is None:
+        timeout = 600.0 if duration else 1800.0
     try:
-        ret = subprocess.run(limit_cmd(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        p = subprocess.Popen(limit_cmd(cmd), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                              creationflags=popen_flags())
     except OSError:                      # ffmpeg missing
         return False
-    return ret.returncode == 0
+    t_end = time.monotonic() + float(timeout)
+    while True:
+        try:
+            return p.wait(timeout=0.2) == 0
+        except subprocess.TimeoutExpired:
+            if _is_stopped(stop_event) or time.monotonic() > t_end:
+                p.kill()
+                p.wait()
+                return False
 
 
-def best_match_over(slices, tpl_y, sr, librosa, np, fftconvolve):
+def best_match_over(slices, tpl_y, sr, librosa, np, fftconvolve, stop_event=None):
     """Match a template against several audio-track slices (same timeline) and
     return the best (time, score). Lets a template match whichever language
     track it was cut from, so the episode's default track no longer matters."""
     best_t, best_s = 0.0, 0.0
     for y in slices:
+        if _is_stopped(stop_event):
+            break
         t, s = get_mfcc_match(y, tpl_y, sr, librosa, np, fftconvolve)
         if s > best_s:
             best_t, best_s = t, s
     return best_t, best_s
 
 
-def anchor_match(slices, tpl_y, sr, anchor_secs, librosa, np, fftconvolve):
+def anchor_match(slices, tpl_y, sr, anchor_secs, librosa, np, fftconvolve, stop_event=None):
     """Locate a segment by matching only the FIRST and LAST `anchor_secs` of the
     template, independently - so the cut spans the real boundaries in each
     episode even if the segment's length varies. Returns (start, end, score)
@@ -130,8 +160,8 @@ def anchor_match(slices, tpl_y, sr, anchor_secs, librosa, np, fftconvolve):
     N = int(anchor_secs * sr)
     if len(tpl_y) < 2 * N + int(1.0 * sr):     # too short to take two ends
         return None
-    hs, h_score = best_match_over(slices, tpl_y[:N], sr, librosa, np, fftconvolve)
-    ts, t_score = best_match_over(slices, tpl_y[-N:], sr, librosa, np, fftconvolve)
+    hs, h_score = best_match_over(slices, tpl_y[:N], sr, librosa, np, fftconvolve, stop_event)
+    ts, t_score = best_match_over(slices, tpl_y[-N:], sr, librosa, np, fftconvolve, stop_event)
     start, end = hs, ts + anchor_secs
     tpl_len = len(tpl_y) / sr
     # the found length must be in a sane range of the template (guards against
@@ -244,7 +274,7 @@ def _load_template_folder(folder, label, log, stop_event, librosa, visual=False)
                                      f"_{label.lower()}_{i}.wav")
         y = sr = None
         try:
-            if extract_wav(file, tmp):
+            if extract_wav(file, tmp, stop_event=stop_event):
                 y, sr = librosa.load(tmp, sr=None)
         finally:
             try:
@@ -307,17 +337,74 @@ def load_templates_for(cfg, log=None, stop_event=None):
     return out
 
 
-def _episode_tracks(video, cfg, stop_event, librosa):
+_HEAD_PAD = 5.0         # s decoded past the intro window + the longest intro template
+_SPLIT_SLACK = 60.0     # head + tail within this of the whole file: decode it whole
+
+
+class _EpAudio:
+    """An episode's decoded audio tracks (mono float32 at sr), one entry per
+    track: heads[i] = file time 0 .. ~head_secs, tails[i] = file time
+    tail_t0 .. the end (empty when not needed / unreadable); idx[i] = its
+    audio stream (0:a:N). full: the whole file was decoded once (a short
+    file, or its length is unknown) - heads and tails are the same arrays,
+    tail_t0 = 0."""
+    __slots__ = ("heads", "tails", "tail_t0", "sr", "idx", "full")
+
+    def __init__(self):
+        self.heads, self.tails, self.idx = [], [], []
+        self.tail_t0, self.sr, self.full = 0.0, None, True
+
+    def region(self, start_sec, n):
+        """Every track's samples from file time start_sec on (at most n),
+        taken from the head or the tail that holds start_sec."""
+        sr = self.sr
+        n = int(n)
+        a = int(start_sec * sr)
+        if self.full or a + n <= len(self.heads[0]) or start_sec < self.tail_t0:
+            return [y[max(0, a):a + n] for y in self.heads]
+        b = a - int(round(self.tail_t0 * sr))
+        return [y[max(0, b):b + n] for y in self.tails]
+
+
+def _audio_end(video):
+    """End (s) of the longest audio stream of `video` (its stream duration /
+    DURATION tag), or None."""
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+           "stream=duration:stream_tags=DURATION", "-of", "default=nw=1", video]
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, creationflags=popen_flags(), timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    best = None
+    for line in r.stdout.decode(errors="replace").splitlines():
+        v = line.split("=", 1)[-1].strip()
+        try:
+            if ":" in v:                                  # HH:MM:SS.mmm tag form
+                h, m, s = v.split(":")
+                val = int(h) * 3600 + int(m) * 60 + float(s)
+            else:
+                val = float(v)
+        except ValueError:
+            continue
+        if val > 0 and (best is None or val > best):
+            best = val
+    return best
+
+
+def _episode_audio(video, cfg, stop_event, librosa, head_secs=None, need_tail=True,
+                   progress=None):
     """Decode the episode's audio for matching: EVERY track (so a template
     matches whichever language track it was cut from - an English template
     scores low against a Japanese default track) or only the cfg['match_lang']
-    track if the file has it. Returns (tracks, sr)."""
-    tracks, sr, _idx = _episode_tracks_idx(video, cfg, stop_event, librosa)
-    return tracks, sr
-
-
-def _episode_tracks_idx(video, cfg, stop_event, librosa):
-    """_episode_tracks plus the audio stream index (0:a:N) of each track."""
+    track if the file has it. Only what the matcher reads is decoded: the
+    first head_secs (default: the intro search window) and - need_tail -
+    the last CREDITS_SEARCH_WINDOW seconds of each track (a 2-hour film with
+    six dubs would take gigabytes otherwise); a file not much longer than
+    both together, or of unknown length, is decoded whole once. Returns an
+    _EpAudio (no heads = no audio could be read)."""
+    import numpy as np
+    prog = progress or (lambda f, t="": None)
     n_audio = max(1, len(probe_audio_streams(video)))
     match_lang = cfg.get("match_lang")
     if match_lang:
@@ -325,25 +412,67 @@ def _episode_tracks_idx(video, cfg, stop_event, librosa):
         track_indices = [mi] if mi is not None else list(range(n_audio))
     else:
         track_indices = list(range(n_audio))
+    head_secs = float(head_secs or (INTRO_SEARCH_WINDOW + _HEAD_PAD))
+    ea = _EpAudio()
+    dur = _audio_end(video) or probe_duration(video)
+    if dur and dur > head_secs + CREDITS_SEARCH_WINDOW + _SPLIT_SLACK:
+        ea.full = False
+        ea.tail_t0 = round(max(0.0, float(dur) - CREDITS_SEARCH_WINDOW), 3)
     os.makedirs(TEMP_DIR, exist_ok=True)
     temp_audio = os.path.join(TEMP_DIR, f"ep_{os.getpid()}_{threading.get_ident()}_audio.wav")
-    tracks, sr, used = [], None, []
+
+    def load(ai, **kw):
+        if not extract_wav(video, temp_audio, track=ai, stop_event=stop_event, **kw):
+            return None
+        return librosa.load(temp_audio, sr=None)
     try:
-        for ai in track_indices:
+        for i, ai in enumerate(track_indices):
             if _is_stopped(stop_event):
                 break
-            if not extract_wav(video, temp_audio, track=ai):
+            prog(i / len(track_indices),
+                 f"Reading audio track {i + 1}/{len(track_indices)}")
+            if ea.full:
+                got = load(ai)
+                if got is None:
+                    continue
+                y, ea.sr = got
+                ea.heads.append(y)
+                ea.tails.append(y)
+                ea.idx.append(ai)
                 continue
-            y, sr = librosa.load(temp_audio, sr=None)
-            tracks.append(y)
-            used.append(ai)
+            got = load(ai, duration=head_secs)
+            if got is None:
+                continue
+            yh, ea.sr = got
+            yt = None
+            if need_tail and not _is_stopped(stop_event):
+                gt = load(ai, start=ea.tail_t0)
+                if gt is not None and gt[1] == ea.sr:
+                    yt = gt[0]
+            ea.heads.append(yh)
+            ea.tails.append(yt if yt is not None else np.zeros(0, dtype=np.float32))
+            ea.idx.append(ai)
     finally:
         try:
             if os.path.exists(temp_audio):
                 os.remove(temp_audio)
         except OSError:
             pass
-    return tracks, sr, used
+    return ea
+
+
+def _episode_tracks_idx(video, cfg, stop_event, librosa):
+    """Every matched audio track decoded whole: (tracks, sr, stream index
+    (0:a:N) of each). Memory grows with the file's length x tracks - the
+    matcher itself uses _episode_audio (head / tail only)."""
+    ea = _episode_audio(video, cfg, stop_event, librosa, head_secs=float("inf"))
+    return ea.heads, ea.sr, ea.idx
+
+
+def _episode_tracks(video, cfg, stop_event, librosa):
+    """_episode_tracks_idx without the stream indices: (tracks, sr)."""
+    tracks, sr, _idx = _episode_tracks_idx(video, cfg, stop_event, librosa)
+    return tracks, sr
 
 
 # a release converted 23.976 <-> 25 fps (PAL speed-up / slow-down) plays
@@ -374,21 +503,26 @@ def _speed_audio(tpl, sp, sr, librosa, np):
     return cache[sp]
 
 
-def _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log, np, librosa, fftconvolve):
+def _match_kind(kind, tpls, ea, cfg, stop_event, log, np, librosa, fftconvolve):
     """One raw candidate per template (its best position), in template order,
-    times in file seconds. Logs the per-template score lines."""
+    times in file seconds. ea: the episode's _EpAudio. Logs the
+    per-template score lines."""
+    sr = ea.sr
     anchor_cut = bool(cfg.get("anchor_cut"))
     anchor_secs = float(cfg.get("anchor_secs", 15.0))
     if kind in ("intro", "preintro"):
-        win = min(int(INTRO_SEARCH_WINDOW * sr), len(tracks[0]))
-        slices, offset = [y[:win] for y in tracks], 0.0
-    else:
+        win = min(int(INTRO_SEARCH_WINDOW * sr), len(ea.heads[0]))
+        slices, offset = [y[:win] for y in ea.heads], 0.0
+    elif ea.full:
         # tail search: slice every track from ONE common absolute start, so
         # a single offset maps a match in any track back to file time
         # (tracks can differ in length; their own -win tails wouldn't align)
-        longest = max(len(y) for y in tracks)
+        longest = max(len(y) for y in ea.tails)
         a0 = max(0, longest - int(CREDITS_SEARCH_WINDOW * sr))
-        slices, offset = [y[a0:] for y in tracks], a0 / sr
+        slices, offset = [y[a0:] for y in ea.tails], a0 / sr
+    else:
+        # the decoded tails all start at the same file time
+        slices, offset = list(ea.tails), ea.tail_t0
     lname, width, _ = _SEG_LOG[kind]
     cands = []
     for tpl in tpls:
@@ -396,20 +530,25 @@ def _match_kind(kind, tpls, tracks, sr, cfg, stop_event, log, np, librosa, fftco
             break
         if tpl.get('y_match') is None:     # picture-only template
             continue
-        am = (anchor_match(slices, tpl['y_match'], sr, anchor_secs, librosa, np, fftconvolve)
+        am = (anchor_match(slices, tpl['y_match'], sr, anchor_secs, librosa, np, fftconvolve,
+                           stop_event)
               if anchor_cut else None)
         if am is not None:
             st, en, score = am
             st -= tpl['lead']                 # back up over the silent lead-in
             log(f"     {lname} {tpl['name']:{width}} -> {score:.3f} (anchored {en - st:.0f}s)")
         else:
-            s, score = best_match_over(slices, tpl['y_match'], sr, librosa, np, fftconvolve)
+            s, score = best_match_over(slices, tpl['y_match'], sr, librosa, np, fftconvolve,
+                                       stop_event)
             sp_used = 1.0
             if score < cfg["confidence"] and not _is_stopped(stop_event):
                 # maybe a 25 fps (PAL) release of a 23.976 fps template or v.v.
                 for sp in SPEEDS:
+                    if _is_stopped(stop_event):
+                        break
                     for y2 in _speed_audio(tpl, sp, sr, librosa, np):
-                        s2, sc2 = best_match_over(slices, y2, sr, librosa, np, fftconvolve)
+                        s2, sc2 = best_match_over(slices, y2, sr, librosa, np, fftconvolve,
+                                                  stop_event)
                         if sc2 >= cfg["confidence"] and sc2 > 1.25 * score:
                             s, score, sp_used = s2, sc2, sp
             st = s - tpl['lead'] / sp_used
@@ -520,7 +659,10 @@ def _tpl_video_end(tpl):
     return tpl["_vend"]
 
 
-def _refine_cand(video, c, tracks, rcache, log, lname, cfg=None):
+_TPL_CACHE = 16         # decoded windows kept per template (engine.refine_base.LRUCache)
+
+
+def _refine_cand(video, c, tracks, rcache, log, lname, cfg=None, stop_event=None):
     """Snap a candidate's start / end to the exact frames (engine.refine),
     each edge on its own, against the template clip: its start = the
     template's first frame; its end = the template's end (exact) - or, when
@@ -529,8 +671,12 @@ def _refine_cand(video, c, tracks, rcache, log, lname, cfg=None):
     last frame mapped into the episode (a template cut with a safety margin
     of a frame or two keeps it); 'exact' = the intro / credits content edge;
     'exact+margin' = the content edge + cfg['margin_frames'] (default 1)
-    frames each side."""
-    from .refine import add_margin, norm_margin, norm_template_mode, refine_range
+    frames each side. Each edge has a time budget (engine.refine
+    BOUNDARY_BUDGET - then it keeps its coarse value, edge_src 'coarse');
+    stop_event stops it at once."""
+    from .refine import refine_range
+    from .refine_base import LRUCache
+    from .refine_template import add_margin, norm_margin, norm_template_mode
     cfg = cfg or {}
     tmode = norm_template_mode(cfg.get("template_margin"))
     tpl = c["_tpl"]
@@ -540,17 +686,22 @@ def _refine_cand(video, c, tracks, rcache, log, lname, cfg=None):
     rel_end = (c["end"] - c["start"]) * float(c.get("speed") or 1.0)   # template time
     trimmed = rel_end < tend - 1.0 and not c.get("anchored")
     ref_rng = (0.0, rel_end if trimmed else tend)
+    # the template's decoded windows, kept for the next episodes of a batch -
+    # the last few only (follow-up windows differ per episode)
+    rc = tpl.get("_rcache")
+    if not isinstance(rc, LRUCache):
+        rc = tpl["_rcache"] = LRUCache(_TPL_CACHE)
     kinds = []
     s, e, done = refine_range(video, (c["start"], c["end"]), tpl["path"], ref_rng,
                               ref_exact=(True, not trimmed), log=log, label=f"{lname} ",
                               track=tracks, ref_track=None, cache=rcache,
-                              ref_cache=tpl.setdefault("_rcache", {}), template_mode=tmode,
-                              src_out=kinds)
+                              ref_cache=rc, template_mode=tmode,
+                              src_out=kinds, stop_event=stop_event)
     c["edge_src"] = {"start": kinds[0] if kinds else "coarse",
                      "end": kinds[1] if kinds else "coarse"}
-    if tmode == "exact+margin":
+    if tmode == "exact+margin" and not _is_stopped(stop_event):
         s, e = add_margin(video, (s, e), norm_margin(cfg.get("margin_frames")),
-                          cache=rcache, edges=done)
+                          cache=rcache, edges=done, stop_event=stop_event)
     if done[0]:
         c["start"] = s
         c["match_start"] = s
@@ -559,12 +710,51 @@ def _refine_cand(video, c, tracks, rcache, log, lname, cfg=None):
     c["refined"] = done
 
 
-def _detect_core(video, cfg, templates, stop_event, log):
+def _safe_progress(progress):
+    """progress(frac, text) that clamps frac to [0, 1] and never raises into
+    the detection; a no-op for None."""
+    if progress is None:
+        return lambda f, t="": None
+
+    def _p(f, t=""):
+        try:
+            progress(max(0.0, min(1.0, float(f))), t)
+        except Exception:
+            pass
+    return _p
+
+
+def _detect_core(video, cfg, templates, stop_event, log, progress=None, err_out=None):
     """The matching engine shared by run_batch and detect_segments. Returns
-    None if no audio could be read, else {"duration", "n_tracks", <kind>:
-    [cand...]}: every template's candidate, best first, with ok (validity),
-    trim_to_match, intro_from_start and credits_to_end applied. Logs exactly
-    what the batch has always logged for the BEST candidate of each kind."""
+    None if no audio could be read (or the file couldn't be processed: out
+    of memory, a file error - logged as [WARN], the reason appended to the
+    err_out list), else {"duration", "n_tracks", <kind>: [cand...]}: every
+    template's candidate, best first, with ok (validity), trim_to_match,
+    intro_from_start and credits_to_end applied. Logs exactly what the batch
+    has always logged for the BEST candidate of each kind. progress(frac,
+    text): optional, see detect_segments."""
+    try:
+        return _detect_core_run(video, cfg, templates, stop_event, log,
+                                _safe_progress(progress))
+    except (MemoryError, OSError) as exc:
+        why = ("out of memory" if isinstance(exc, MemoryError)
+               else f"file error ({exc})")
+        try:
+            log(f"   [WARN] {os.path.basename(video)}: detection failed - {why}")
+        except Exception:
+            pass
+        if err_out is not None:
+            err_out.append(why)
+        return None
+
+
+def _tpl_secs(tpls):
+    """Longest audio template of a list (s), 0 if none."""
+    return max([float(t.get("duration") or 0.0) for t in tpls or ()
+                if t.get("y_match") is not None] or [0.0])
+
+
+def _detect_core_run(video, cfg, templates, stop_event, log, prog):
     import numpy as np
     import librosa
     from scipy.signal import fftconvolve
@@ -572,14 +762,28 @@ def _detect_core(video, cfg, templates, stop_event, log):
     has_vis = any(t.get('vh') is not None for v in templates.values() for t in (v or ()))
     if mode == "both" and not has_vis:
         mode = "audio"            # no template has usable pictures
-    tracks, sr, track_idx = (([], None, []) if mode == "visual"
-                             else _episode_tracks_idx(video, cfg, stop_event, librosa))
+    # the audio the matcher reads: the intro search window (+ the longest
+    # intro template - trim_to_match reads past a match) and the credits
+    # search window at the end
+    head_tpl = max(_tpl_secs(templates.get("intro")), _tpl_secs(templates.get("preintro")))
+    tail_tpl = max(_tpl_secs(templates.get("credits")),
+                   _tpl_secs(templates.get("aftercredits")))
+    head_secs = INTRO_SEARCH_WINDOW + head_tpl + _HEAD_PAD if head_tpl else 30.0
+    A0, A1 = 0.0, 0.3                                  # progress band of the audio decode
+    prog(A0, "Reading audio")
+    ea = (_EpAudio() if mode == "visual"
+          else _episode_audio(video, cfg, stop_event, librosa, head_secs=head_secs,
+                              need_tail=tail_tpl > 0,
+                              progress=lambda f, t="": prog(A0 + (A1 - A0) * f, t)))
+    tracks, sr, track_idx = ea.heads, ea.sr, ea.idx
     if not tracks and mode == "audio":
         return None
     # the timeline to cut is the VIDEO's, not the first audio track's
     # (audio often ends a little early or runs a little long)
-    total = (probe_video_duration(video) or probe_duration(video)
-             or (len(tracks[0]) / sr if tracks else 0.0))
+    total = probe_video_duration(video) or probe_duration(video)
+    if not total and tracks:
+        total = (len(tracks[0]) / sr if ea.full
+                 else ea.tail_t0 + max(len(y) for y in ea.tails) / sr)
     if not total:
         return None
     log(f"   Duration: {total:.1f}s"
@@ -592,17 +796,29 @@ def _detect_core(video, cfg, templates, stop_event, log):
     anchor_cut = bool(cfg.get("anchor_cut"))
     res = {"duration": float(total), "n_tracks": len(tracks)}
     intro_veto = 0.0          # end of a VALID intro (credits must start after it)
+    todo = [k for k in _SEG_KINDS if templates.get(k)]
     for kind in _SEG_KINDS:
         tpls = templates.get(kind) or []
         res[kind] = []
-        if not tpls:
+        if not tpls or _is_stopped(stop_event):
             continue
-        a_c = (_match_kind(kind, tpls, tracks, sr, cfg, stop_event, log,
+        # progress: each kind an equal share of the rest, half matching, half refining
+        j = todo.index(kind)
+        k0 = A1 + (1.0 - A1) * j / len(todo)
+        k1 = A1 + (1.0 - A1) * (j + 1) / len(todo)
+        lname = _SEG_LOG[kind][0]
+        prog(k0, f"Matching {lname} templates")
+        a_c = (_match_kind(kind, tpls, ea, cfg, stop_event, log,
                            np, librosa, fftconvolve) if tracks else [])
+        if mode != "audio":
+            prog(k0 + 0.25 * (k1 - k0), f"Matching {lname} pictures")
         v_c = (_match_kind_visual(kind, tpls, total, video, stop_event, log, vcache, conf)
                if mode != "audio" else [])
         cands = _merge_sources(a_c, v_c, mode, conf)
         cands.sort(key=lambda c: -c["score"])          # stable: template order on ties
+        n_ref = max(1, sum(1 for r, c in enumerate(cands)
+                           if r == 0 or c["score"] >= c.get("thr", conf)))
+        i_ref = 0
         for rank, c in enumerate(cands):
             c["match_start"] = c["start"]
             c["thr"] = max(conf, _VIS_MIN) if c.get("src") == "visual" else conf
@@ -615,7 +831,8 @@ def _detect_core(video, cfg, templates, stop_event, log):
                     and c.get("src") != "visual" and float(c.get("speed") or 1.0) == 1.0
                     and (c["ok"] or (rank > 0 and c["score"] >= _NEAR_MISS * conf))):
                 tpl = c["_tpl"]
-                ml = matched_seconds(tracks, c["start"], tpl['y'], sr, librosa, np)
+                reg = ea.region(c["start"], len(tpl['y']) + int(2 * sr))
+                ml = matched_seconds(reg, 0.0, tpl['y'], sr, librosa, np)
                 if ml < tpl['duration'] - 1.0:
                     if rank == 0:
                         log(f"   {_SEG_LOG[kind][0]} shorter here - trimmed cut"
@@ -625,9 +842,14 @@ def _detect_core(video, cfg, templates, stop_event, log):
             # best one, each edge against the template clip's own edge
             if (cfg.get("refine", True) and not _is_stopped(stop_event)
                     and (c["ok"] or rank == 0) and c["_tpl"].get("path")):
-                _refine_cand(video, c, track_idx or None, rcache,
-                             log if rank == 0 or c["ok"] else (lambda m: None),
-                             _SEG_LOG[kind][0], cfg)
+                prog(k0 + (k1 - k0) * (0.5 + 0.5 * min(i_ref, n_ref - 1) / n_ref),
+                     f"Refining {lname} edges")
+                i_ref += 1
+                clog = log if rank == 0 or c["ok"] else (lambda m: None)
+                clog(f"   refining {_SEG_LOG[kind][0]} edges ({c['start']:.2f}s - "
+                     f"{c['end']:.2f}s)...")
+                _refine_cand(video, c, track_idx or None, rcache, clog,
+                             _SEG_LOG[kind][0], cfg, stop_event)
         best = cands[0] if cands else None
         if kind == "intro" and best and best["ok"]:
             intro_veto = best["end"]
@@ -662,8 +884,26 @@ def _detect_core(video, cfg, templates, stop_event, log):
     return res
 
 
-def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
+def _warn_only(m):
+    """Default log of detect_segments: drop everything but [WARN] lines,
+    which go to the session log."""
+    if "[WARN]" in str(m):
+        try:
+            from .. import applog
+            applog.record(str(m).strip())
+        except Exception:
+            pass
+
+
+def detect_segments(video, cfg, stop_event=None, log=None, templates=None, progress=None):
     """Match one episode against the templates (all variants in each folder).
+    progress: optional callback progress(frac, text) - frac 0.0 .. 1.0 for
+    THIS file, text a short English stage ('Loading templates', 'Reading
+    audio track 1/2', 'Matching intro templates', 'Matching intro
+    pictures', 'Refining intro edges', ... 'Done' / 'Stopped'); called
+    from the detecting thread at every stage (a slow file shows it isn't
+    hung - the caller marshals it to the UI thread); an exception it raises is
+    ignored.
     cfg: the same dict run_batch takes (intro_dir, credits_dir, preintro_dir,
     aftercredits_dir, confidence, match_lang, trim_to_match, anchor_cut,
     anchor_secs, intro_from_start, credits_to_end, use_<kind> or use{},
@@ -684,15 +924,27 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
     'visual' / 'file' is approximate: show a "check this edge" warning)}.
     Each list is best
     first, at most 5, near-misses (score >= 0.6 x confidence) with ok=False.
-    Adds "error" if the episode's audio couldn't be read. Needs librosa."""
-    log = log or (lambda m: None)
+    Adds "error" if the episode's audio couldn't be read (or the file
+    couldn't be processed: "out of memory", "file error (...)") - never
+    raises for one bad file, so a batch goes on. Needs librosa.
+    Without a log, [WARN] lines (e.g. an edge that ran out of its time
+    budget) still go to the session log (applog)."""
+    log = log or _warn_only
+    prog = _safe_progress(progress)
     if templates is None:
+        prog(0.0, "Loading templates")
         templates = load_templates_for(cfg, log, stop_event)
     out = {"duration": 0.0, "preintro": [], "intro": [], "credits": [], "aftercredits": []}
-    res = _detect_core(video, cfg, templates, stop_event, log)
+    err = []
+    res = _detect_core(video, cfg, templates, stop_event, log, progress=prog, err_out=err)
     if res is None:
-        out["duration"] = float(probe_video_duration(video) or probe_duration(video) or 0.0)
-        out["error"] = "audio extract failed"
+        try:
+            out["duration"] = float(probe_video_duration(video) or probe_duration(video)
+                                    or 0.0)
+        except Exception:
+            pass
+        out["error"] = err[0] if err else "audio extract failed"
+        prog(1.0, "Stopped" if _is_stopped(stop_event) else "Done")
         return out
     total = res["duration"]
     out["duration"] = total
@@ -713,4 +965,5 @@ def detect_segments(video, cfg, stop_event=None, log=None, templates=None):
                         "edge_src": dict({"start": "coarse", "end": "coarse"},
                                          **(c.get("edge_src") or {}))})
         out[kind] = lst[:_MAX_CANDS]
+    prog(1.0, "Stopped" if _is_stopped(stop_event) else "Done")
     return out

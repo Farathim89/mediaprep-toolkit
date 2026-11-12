@@ -7,7 +7,7 @@ import subprocess
 
 from ..config import popen_flags, TEMP_DIR
 from .probe import probe_duration, probe_streams, probe_video_duration
-from .process import _run_exempt
+from .process import _run_exempt, temp_tag
 
 
 _SUB_TEXT_EXT = {"subrip": "srt", "srt": "srt", "ass": "ass", "ssa": "ass",
@@ -22,6 +22,8 @@ def _clip_subtitle_file(fpath, vdur):
     def s2(t):
         t = t.strip().replace(",", ".")
         parts = t.split(":")
+        if len(parts) == 2:                # WebVTT allows MM:SS.mmm
+            parts = ["0"] + parts
         try:
             return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
         except (ValueError, IndexError):
@@ -43,9 +45,16 @@ def _clip_subtitle_file(fpath, vdur):
             return m.group(0)
         txt = re.sub(r"(?m)^Dialogue:[^,]*,([0-9:.]+),([0-9:.]+),", fix_ass, txt)
     else:  # srt / vtt
+        # SRT writes 00:00:01,500 but WebVTT needs 00:00:01.500 - a comma
+        # time is an invalid cue there and the whole track comes out empty
+        sep = "." if fpath.lower().endswith(".vtt") else ","
+
         def to_srt(x):
-            h = int(x // 3600); mm = int((x % 3600) // 60); s = x - h * 3600 - mm * 60
-            return f"{h:02d}:{mm:02d}:{s:06.3f}".replace(".", ",")
+            ms = int(round(x * 1000))
+            h, ms = divmod(ms, 3_600_000)
+            mm, ms = divmod(ms, 60_000)
+            s, ms = divmod(ms, 1000)
+            return f"{h:02d}:{mm:02d}:{s:02d}{sep}{ms:03d}"
         def fix_srt(m):
             a, b = s2(m.group(1)), s2(m.group(2))
             if a is None or b is None or a >= vdur:
@@ -75,7 +84,7 @@ def trim_container_to_video(path):
         return False
 
     os.makedirs(TEMP_DIR, exist_ok=True)
-    base = f"_subclip_{os.getpid()}"
+    base = f"_subclip_{temp_tag()}"
     extra_inputs, maps, meta, sidecars = [], [], [], []
     n_inputs = 1                           # input 0 is the source file
     # every subtitle (text or image) adds exactly one map, in order, so its
@@ -108,8 +117,11 @@ def trim_container_to_video(path):
         return False
 
     tmp = os.path.join(os.path.dirname(path) or ".", base + os.path.splitext(path)[1])
+    # 0:V = real video only: an MKV's cover-art attachment shows up as an
+    # attached-picture "video" stream, and copying that into MKV turns it
+    # into a 1-frame picture TRACK (the cut engine restores covers after)
     cmd = (["ffmpeg", "-y", "-i", path] + extra_inputs
-           + ["-map", "0:v", "-map", "0:a?"] + maps + ["-map", "0:t?"]
+           + ["-map", "0:V", "-map", "0:a?"] + maps + ["-map", "0:t?"]
            + ["-c", "copy"] + meta + [tmp])
     r = _run_exempt(cmd)
     ok = r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0

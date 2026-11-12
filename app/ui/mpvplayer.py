@@ -206,6 +206,12 @@ atexit.register(_kill_all)
 class MpvProcess:
     """One mpv.exe drawing into window `wid`, driven over JSON IPC.
 
+    The constructor only starts the process: the IPC pipe is opened on a
+    thread (mpv creates it a moment after it starts), so nothing here waits
+    on mpv on the caller's (Tk) thread. Commands sent before the pipe is
+    open are queued and sent once it is; if it never opens, the event
+    {"event": "start-failed"} is queued (and the process killed).
+
     command(*args)          -> request id (fire and forget; reply discarded)
     command(*args, tag=x)   -> request id; the reply is queued as
                                {"reply": x, "data": ..., "error": ..., "_seq": id}
@@ -229,6 +235,9 @@ class MpvProcess:
         "--volume-max=100", "--keepaspect=yes",
     )
 
+    CONNECT_TIMEOUT = 6.0        # s for mpv to open its IPC pipe
+    WRITE_TIMEOUT = 1.0          # s a command write may take (else mpv hangs: killed)
+
     def __init__(self, exe, wid, extra=(), log_fn=None):
         self.exe = exe
         self.name = rf"\\.\pipe\mediaprep-mpv-{os.getpid()}-{next(_seq)}"
@@ -243,7 +252,10 @@ class MpvProcess:
         self._wev = _k32.CreateEventW(None, True, False, None) if _IS_WIN else None
         self._oid = itertools.count(1)
         self._h = None
-        self._alive = False
+        self._alive = False          # the pipe is open and being read
+        self._state = "connecting"   # -> "open" -> "closed"
+        self._backlog = []           # commands sent before the pipe was open
+        self._grave = []             # buffers of I/O whose cancel never confirmed
         args = [exe, f"--wid={int(wid)}", f"--input-ipc-server={self.name}"]
         args += list(self.BASE_ARGS) + list(extra)
         self.proc = subprocess.Popen(args, creationflags=popen_flags(),
@@ -257,32 +269,57 @@ class MpvProcess:
                 pass
         with _live_lock:
             _live.add(self)
-        t_end = time.monotonic() + 6.0
-        while time.monotonic() < t_end:
+        threading.Thread(target=self._connect, name="mpv-connect", daemon=True).start()
+
+    def _connect(self):
+        """Thread: open mpv's IPC pipe, send the queued commands, then read."""
+        h = None
+        t_end = time.monotonic() + self.CONNECT_TIMEOUT
+        while self._state == "connecting" and time.monotonic() < t_end:
             if _IS_WIN:
-                h = _k32.CreateFileW(self.name, 0x80000000 | 0x40000000, 0, None, 3,
-                                     0x40000000, None)          # FILE_FLAG_OVERLAPPED
-                if h and h != _INVALID:
-                    self._h = h
+                hh = _k32.CreateFileW(self.name, 0x80000000 | 0x40000000, 0, None, 3,
+                                      0x40000000, None)          # FILE_FLAG_OVERLAPPED
+                if hh and hh != _INVALID:
+                    h = hh
                     break
             if self.proc.poll() is not None:
                 break
             time.sleep(0.01)
-        if self._h is None:
-            self.close(timeout=0.2)
-            raise OSError("mpv did not open its IPC pipe")
-        self._alive = True
-        self._reader = threading.Thread(target=self._read_loop, name="mpv-ipc", daemon=True)
-        self._reader.start()
+        with self._wlock:
+            opened = h is not None and self._state == "connecting"
+            if opened:
+                self._h = h
+                self._state = "open"
+                self._alive = True
+                backlog, self._backlog = self._backlog, []
+                for data in backlog:
+                    if not self._send(h, data):
+                        break
+            elif h is not None:
+                _k32.CloseHandle(h)              # closed meanwhile
+        if opened:
+            self._read_loop()
+            return
+        if self._state == "connecting":          # mpv never opened its pipe
+            self._state = "closed"
+            self._kill()
+            self.events.put({"event": "start-failed", "_seq": 0})
+
+    def _kill(self):
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
 
     @property
     def pid(self):
         return self.proc.pid
 
     # ---- io (overlapped)
-    def _io(self, fn, h, buf, size, ov, ev):
+    def _io(self, fn, h, buf, size, ov, ev, limit=None):
         """Start an overlapped ReadFile/WriteFile and wait for it. Returns the
-        byte count, or None when the pipe is closed / broken."""
+        byte count, or None when the pipe is closed / broken - or when it
+        took longer than `limit` seconds (the I/O is then cancelled)."""
         n = wintypes.DWORD(0)
         _k32.ResetEvent(ev)
         ok = fn(h, buf, size, None, ctypes.byref(ov))
@@ -290,25 +327,45 @@ class MpvProcess:
             err = ctypes.get_last_error()
             if err not in (_ERROR_IO_PENDING, _ERROR_MORE_DATA):
                 return None
-            while _k32.WaitForSingleObject(ev, 250) != 0:     # WAIT_OBJECT_0
-                if not self._alive and fn is _k32.ReadFile:
+            t_end = None if limit is None else time.monotonic() + limit
+            while _k32.WaitForSingleObject(ev, 50 if limit else 250) != 0:   # WAIT_OBJECT_0
+                if ((not self._alive and fn is _k32.ReadFile)
+                        or (t_end is not None and time.monotonic() >= t_end)):
                     _k32.CancelIoEx(h, ctypes.byref(ov))
-                    _k32.WaitForSingleObject(ev, 500)
+                    if _k32.WaitForSingleObject(ev, 500) != 0:
+                        self._grave.append((ov, buf))    # the kernel may still use them
                     return None
         if not _k32.GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(n), False):
             if ctypes.get_last_error() != _ERROR_MORE_DATA:
                 return None
         return n.value
 
+    def _send(self, h, data):
+        """Write one command line (with _wlock held). A write that doesn't
+        finish within WRITE_TIMEOUT means mpv hangs: it is killed (the
+        reader then reports "ipc-closed")."""
+        ov = _Overlapped()
+        ov.hEvent = self._wev
+        if self._io(_k32.WriteFile, h, data, len(data), ov, self._wev,
+                    limit=self.WRITE_TIMEOUT) == len(data):
+            return True
+        if self._state == "open":
+            self._state = "closed"          # later writes fail at once
+            if self.proc.poll() is None:
+                self._log("[player] mpv does not take commands any more - stopped it")
+                self._kill()
+        return False
+
     def _write(self, obj):
         data = (json.dumps(obj) + "\n").encode("utf-8")
         with self._wlock:
+            if self._state == "connecting":
+                self._backlog.append(data)      # sent once the pipe is open
+                return True
             h = self._h
-            if h is None:
+            if h is None or self._state != "open":
                 return False
-            ov = _Overlapped()
-            ov.hEvent = self._wev
-            return self._io(_k32.WriteFile, h, data, len(data), ov, self._wev) == len(data)
+            return self._send(h, data)
 
     def _read_loop(self):
         buf = b""
@@ -335,6 +392,8 @@ class MpvProcess:
         finally:
             _k32.CloseHandle(ev)
         self._alive = False
+        if self._state == "open":
+            self._state = "closed"
         self.events.put({"event": "ipc-closed", "_seq": self.replied})
 
     def _dispatch(self, msg):
@@ -423,33 +482,49 @@ class MpvProcess:
         return found
 
     def alive(self):
-        return self._alive and self.proc.poll() is None
+        """True while mpv runs and its pipe is open (or still being opened)."""
+        return self._state != "closed" and self.proc.poll() is None
 
     def close(self, timeout=0.5):
-        """Quit mpv (releases the file) and make sure the process is gone."""
-        if self._h is not None and self.proc.poll() is None:
-            try:
-                self._write({"command": ["quit"]})
-            except Exception:
-                pass
+        """Quit mpv (releases the file) and make sure the process is gone.
+        Never blocks much longer than `timeout` + 0.5 s: the quit command
+        gets 0.2 s, mpv then `timeout` to exit, else it is killed."""
+        was_open = self._state == "open"
+        self._state = "closed"
         self._alive = False
-        h, self._h = self._h, None
-        if h is not None:
-            try:
-                _k32.CancelIoEx(h, None)        # wakes the reader thread
-            except Exception:
-                pass
-            with self._wlock:
+        got = self._wlock.acquire(timeout=0.25)
+        try:
+            h = self._h
+            self._backlog = []
+            if h is not None and got:
+                self._h = None
+                if was_open and self.proc.poll() is None:
+                    try:
+                        data = b'{"command": ["quit"]}\n'
+                        ov = _Overlapped()
+                        ov.hEvent = self._wev
+                        self._io(_k32.WriteFile, h, data, len(data), ov, self._wev, limit=0.2)
+                    except Exception:
+                        pass
+            if h is not None:
                 try:
-                    _k32.CloseHandle(h)
+                    _k32.CancelIoEx(h, None)        # wakes the reader thread
                 except Exception:
                     pass
+                if got:
+                    try:
+                        _k32.CloseHandle(h)
+                    except Exception:
+                        pass
+        finally:
+            if got:
+                self._wlock.release()
         try:
-            self.proc.wait(timeout)
+            self.proc.wait(timeout if was_open else 0.05)
         except Exception:
+            self._kill()
             try:
-                self.proc.kill()
-                self.proc.wait(1.0)
+                self.proc.wait(0.5)
             except Exception:
                 pass
         with _live_lock:

@@ -10,17 +10,19 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from .player import VideoPlayer
-from .widgets import add_tooltip, enable_file_drop, enable_file_drop_deep, help_button
+from .helpwin import help_button
+from .tooltips import add_tooltip
+from .widgets import enable_file_drop, enable_file_drop_deep
 from .. import applog
 from ..i18n import tr
-from . import icons
+from . import icons, themes
 
 _VIDEO_TYPES = [(tr("Video files"), "*.mp4 *.mkv *.mov *.avi *.webm"), (tr("All files"), "*.*")]
 
 
 class DualPlayerTab(ttk.Frame):
     def __init__(self, master):
-        super().__init__(master, padding=8)
+        super().__init__(master, padding=themes.px(8))
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
@@ -33,14 +35,14 @@ class DualPlayerTab(ttk.Frame):
         self.pB.on_user_seek = lambda sec, playing: self._mirror(self.pA, sec, playing)
 
         ctr = ttk.Frame(self)
-        ctr.grid(row=1, column=0, columnspan=2, pady=(8, 0))
+        ctr.grid(row=1, column=0, columnspan=2, pady=themes.pad(8, 0))
 
         def tb(sym, cmd, tip, icon):
             if icons.available():
                 b = icons.decorate(ttk.Button(ctr, text=both, command=cmd), icon)
             else:
                 b = ttk.Button(ctr, text=f"{sym} {both}", command=cmd)
-            b.pack(side="left", padx=2)
+            b.pack(side="left", padx=themes.px(2))
             add_tooltip(b, tip)
             return b
 
@@ -53,13 +55,13 @@ class DualPlayerTab(ttk.Frame):
         self.both_btn = icons.decorate(
             ttk.Button(ctr, text=tr("Play both"), width=bw, style="Accent.TButton",
                        command=self._play_both), "play")
-        self.both_btn.pack(side="left", padx=4)
+        self.both_btn.pack(side="left", padx=themes.px(4))
         add_tooltip(self.both_btn, tr("Play / pause both videos at once"))
         tb(">", lambda: self._both_step(1), tr("Both forward 1 frame"), "step_fwd")
         tb(">>", lambda: self._both_step(10), tr("Both forward 10 frames"), "fwd10")
         tb(">|", lambda: self._both("to_end"), tr("Both to the last frame"), "to_end")
         lk = ttk.Checkbutton(ctr, text=tr("Link"), variable=self.link_var)
-        lk.pack(side="left", padx=(12, 0))
+        lk.pack(side="left", padx=themes.pad(12, 0))
         add_tooltip(lk, tr("Linked: a seek, step or Go in one player moves the other one to "
                            "the same TIME (seconds, not frame number), so videos with "
                            "different frame rates stay aligned. Untick to move them "
@@ -69,14 +71,14 @@ class DualPlayerTab(ttk.Frame):
 
     def _make_column(self, col, tag):
         frame = ttk.Frame(self)
-        frame.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 8, 0))
+        frame.grid(row=0, column=col, sticky="nsew", padx=themes.pad(0 if col == 0 else 8, 0))
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
 
         top = ttk.Frame(frame)
-        top.grid(row=0, column=0, sticky="we", pady=(0, 4))
+        top.grid(row=0, column=0, sticky="we", pady=themes.pad(0, 4))
         var = tk.StringVar()
-        ttk.Label(top, text=tr("Video {tag}:", tag=tag)).pack(side="left", padx=(0, 4))
+        ttk.Label(top, text=tr("Video {tag}:", tag=tag)).pack(side="left", padx=themes.pad(0, 4))
         ent = ttk.Entry(top, textvariable=var)
         ent.pack(side="left", fill="x", expand=True)
 
@@ -104,10 +106,10 @@ class DualPlayerTab(ttk.Frame):
             else:
                 messagebox.showerror(tr("Error"), tr("Type or browse to a valid video first."))
 
-        icons.decorate(ttk.Button(top, text=tr("Browse..."), command=browse), "folder").pack(side="left", padx=4)
+        icons.decorate(ttk.Button(top, text=tr("Browse..."), command=browse), "folder").pack(side="left", padx=themes.px(4))
         icons.decorate(ttk.Button(top, text=tr("Load"), command=load), "load").pack(side="left")
         if tag == "B":                       # '?' at the tab's top-right corner
-            help_button(top, "dual").pack(side="left", padx=(6, 0))
+            help_button(top, "dual").pack(side="left", padx=themes.pad(6, 0))
         enable_file_drop_deep(player, drop)                       # drop anywhere in the player
         enable_file_drop(ent, drop)
         player.load_path = drop               # load + show the path (Convert preview)

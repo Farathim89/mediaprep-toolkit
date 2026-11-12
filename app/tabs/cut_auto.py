@@ -1,6 +1,5 @@
 """Cut / Edit -> Auto-detect sub-tab (AutoCutMixin)."""
 import os
-import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -9,13 +8,30 @@ from ..config import (AFTERCREDITS_DIR, AUDIO_LANG_CHOICES, BIT_DEPTHS, CODECS,
                       OUTPUT_DIR, PREINTRO_DIR, VALID_PRESETS, VIDEO_DIR)
 from ..engine.cut import run_batch
 from ..i18n import N_, ntr, tr
-from ..ui.widgets import (KeyedCombobox, add_tooltip, enable_file_drop, help_button,
-                          info_icon)
+from ..ui.helpwin import help_button
+from ..ui.tooltips import add_tooltip, info_icon
+from ..ui.widgets import KeyedCombobox, enable_file_drop
 from .common import _list_media, _same_dir
 from .cut_common import (_ask_choice, _is_plex, margin_widgets, mode_combobox,
                          norm_margin, norm_tpl_margin, tr_key)
 from .. import jobs as jobreg
 from ..ui import icons
+
+
+def _batch_fails(res):
+    """How many files failed, from run_batch's per-file summary
+    [(source, status, output or None)] (status ok / failed / skipped /
+    stopped). None: the engine returns no summary (an older build)."""
+    if not isinstance(res, (list, tuple)):
+        return None
+    n = 0
+    for item in res:
+        status = item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else None
+        if isinstance(item, dict):
+            status = "failed" if item.get("ok") is False else item.get("status")
+        if status == "failed":
+            n += 1
+    return n
 
 
 class AutoCutMixin:
@@ -437,16 +453,19 @@ class AutoCutMixin:
         mode = self._review_list_mode()
         if mode is None:
             return
+        # re-checked after the dialog: a queued job may have started meanwhile
+        if self._busy:
+            self.status_var.set(tr("Busy - Stop the current job first."))
+            return
         if self.save_hook:
             self.save_hook()
-        self.stop_event.clear()
         self._running(True)
         jid = self._jid = jobreg.begin(tr("Cut / Edit review (detect only)"),
                                        stop_event=self.stop_event, tab=self)
-        threading.Thread(target=self._review_worker, args=(files, cfg, mode, jid),
-                         daemon=True).start()
+        self._spawn(self._review_worker, files, cfg, mode, jid)
 
     def _review_worker(self, files, cfg, mode, jid=None):
+        stop, seq = self._run_ctx()
         results = {}
         crashed = False
         n = len(files)
@@ -454,16 +473,18 @@ class AutoCutMixin:
         have = None         # kinds that have templates at all
         try:
             self.log(f"[REVIEW] detecting in {n} video(s) - nothing is cut")
-            results, have, n_warn = self._detect_loop(files, cfg, "REVIEW", review=True)
+            results, have, n_warn = self._detect_loop(files, cfg, "REVIEW", review=True,
+                                                      stop=stop)
         except Exception as e:
             crashed = True
             self.log(f"[FAIL] review crashed: {e!r}")
         finally:
-            stopped = self.stop_event.is_set()
+            stopped = stop.is_set()
             jobreg.end(jid, ok=not crashed and not stopped,
                        summary=tr("{done}/{n} reviewed, {warn} need a look",
                                   done=len(results), n=n, warn=n_warn))
-            self.after(0, lambda: self._review_done(files, cfg, mode, results, stopped, have))
+            self._finish(seq, lambda: self._review_done(files, cfg, mode, results, stopped,
+                                                        have))
 
     def _review_done(self, files, cfg, mode, results, stopped, have=None):
         self._running(False)
@@ -576,12 +597,11 @@ class AutoCutMixin:
             self.unload_players_hook()
         if self.save_hook:
             self.save_hook()
-        self.stop_event.clear()
         self._running(True, _list_media(cfg["video_dir"]) if cfg["move_done"] else None)
         folder = os.path.basename(os.path.normpath(cfg["video_dir"])) or cfg["video_dir"]
         jid = self._jid = jobreg.begin(tr("Cut / Edit batch - {folder}", folder=folder),
                                        stop_event=self.stop_event, tab=self)
-        threading.Thread(target=self._worker, args=(cfg, jid), daemon=True).start()
+        self._spawn(self._worker, cfg, jid)
         return jid
 
     def _enqueue_batch(self):
@@ -597,14 +617,16 @@ class AutoCutMixin:
         self.status_var.set(tr("Queued: {name}", name=name))
 
     def _worker(self, cfg, jid=None):
+        stop, seq = self._run_ctx()
         crashed = False
+        fails = None
         try:
-            run_batch(cfg, self, self.stop_event)
+            fails = _batch_fails(run_batch(cfg, self, stop))
         except Exception as e:
             crashed = True
             self.log(f"[FAIL] Unexpected error: {e!r}")
         finally:
-            jobreg.end(jid, ok=not crashed,
+            jobreg.end(jid, ok=not crashed and not fails,
                        summary=tr("videos: {src} -> {out}", src=cfg.get("video_dir"),
                                   out=cfg.get("output_dir")))
-            self.after(0, lambda: self._running(False))
+            self._finish(seq, lambda: self._running(False))

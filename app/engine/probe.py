@@ -2,6 +2,7 @@
 inventories, bitrate probes and the quick / full integrity checks."""
 import os
 import json
+import math
 import subprocess
 import threading
 import time
@@ -101,14 +102,16 @@ def _probe(cmd, timeout=120):
 
 
 def probe_video_info(input_file):
-    """Codec, pixel format, bit depth and container bitrate of the first
-    video stream - used for the source log line and 'Auto' bit depth."""
+    """Codec, pixel format, bit depth, frame size (w/h, 0 if unknown) and
+    container bitrate of the first REAL video stream (V:0 - never attached
+    cover art) - used for the source log line and 'Auto' bit depth."""
     result = _probe(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=codec_name,pix_fmt,bits_per_raw_sample",
+        ["ffprobe", "-v", "error", "-select_streams", "V:0",
+         "-show_entries", "stream=codec_name,pix_fmt,bits_per_raw_sample,width,height",
          "-show_entries", "format=bit_rate",
          "-print_format", "json", input_file])
-    info = {"codec": "?", "pix_fmt": "?", "bit_depth": 8, "bitrate_mbps": None}
+    info = {"codec": "?", "pix_fmt": "?", "bit_depth": 8, "bitrate_mbps": None,
+            "w": 0, "h": 0}
     if result is None or result.returncode != 0:
         return info
     try:
@@ -116,6 +119,7 @@ def probe_video_info(input_file):
         s = (data.get("streams") or [{}])[0]
         info["codec"] = s.get("codec_name", "?")
         info["pix_fmt"] = s.get("pix_fmt") or "?"
+        info["w"], info["h"] = int(s.get("width") or 0), int(s.get("height") or 0)
         bits = str(s.get("bits_per_raw_sample") or "")
         if bits.isdigit() and int(bits) > 0:
             info["bit_depth"] = int(bits)
@@ -126,9 +130,23 @@ def probe_video_info(input_file):
         br = str((data.get("format") or {}).get("bit_rate") or "")
         if br.isdigit():
             info["bitrate_mbps"] = int(br) / 1e6
-    except (ValueError, KeyError, IndexError):
+    except (ValueError, KeyError, IndexError, TypeError):
         pass
     return info
+
+
+def probe_start_time(path):
+    """The container's start time (format.start_time, s; 0.0 if unknown).
+    A TS recording often starts at 1.4 s or even 1000+ s, while detection,
+    the player and the UI count from the file start: every cut / probe
+    timestamp is relative to this (the cut adds it back for ffmpeg's raw
+    -copyts timestamps)."""
+    data = _probe_json(path, ["-show_entries", "format=start_time"], timeout=60)
+    try:
+        v = float((data.get("format") or {}).get("start_time"))
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
 
 
 def probe_duration(path):
@@ -147,7 +165,7 @@ def probe_video_duration(path):
     lingering copied subtitle can push the container duration well past the
     video, so the duration check uses this to avoid false alarms. Uses the
     per-stream duration/DURATION tag (instant); returns None if unavailable."""
-    r = _probe(["ffprobe", "-v", "error", "-select_streams", "v:0",
+    r = _probe(["ffprobe", "-v", "error", "-select_streams", "V:0",
                 "-show_entries", "stream=duration:stream_tags=DURATION",
                 "-of", "default=nw=1", path])
     if r is None:
@@ -173,7 +191,7 @@ def probe_video_duration(path):
 
 def probe_video_fps(input_file):
     result = _probe(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+        ["ffprobe", "-v", "error", "-select_streams", "V:0",
          "-show_entries", "stream=avg_frame_rate,r_frame_rate",
          "-of", "csv=p=0", input_file])
     if result is None or result.returncode != 0:
@@ -326,7 +344,9 @@ def probe_streams(input_file):
         lang = ((st.get("tags") or {}).get("language") or "und")
         if ct == "video":
             info["video"].append({"codec": st.get("codec_name", "?"),
-                                  "w": st.get("width"), "h": st.get("height")})
+                                  "w": st.get("width"), "h": st.get("height"),
+                                  "cover": bool((st.get("disposition") or {})
+                                                .get("attached_pic"))})
         elif ct == "audio":
             info["audio"].append({"codec": st.get("codec_name", "?"), "lang": lang,
                                   "channels": st.get("channels")})
@@ -468,9 +488,10 @@ def full_check(input_file, stop_event=None, timeout=1800):
 
 
 def _video_packet_times(path, intervals=None):
-    """(pts, end) of the first video stream's packets, all of them or only
-    those in `intervals` (ONE ffprobe -read_intervals range)."""
-    r = _probe(["ffprobe", "-v", "error", "-select_streams", "v:0"]
+    """(pts, end) of the first real video stream's packets, all of them or
+    only those in `intervals` (ONE ffprobe -read_intervals range, in the
+    file's RAW timestamps). Times are raw too."""
+    r = _probe(["ffprobe", "-v", "error", "-select_streams", "V:0"]
                + (["-read_intervals", intervals] if intervals else [])
                + ["-show_entries", "packet=pts_time,duration_time",
                   "-of", "csv=p=0", path])
@@ -491,16 +512,34 @@ def _video_packet_times(path, intervals=None):
     return out
 
 
-def probe_first_frame_at(path, t, tries=3):
-    """Timestamp of the first video frame at/after t (in the file's own
-    timeline, as ffmpeg -copyts sees it) - the frame a frame-accurate cut
-    starting at t begins with. None if unknown.
+def _interval(lo, hi, base):
+    """A -read_intervals range for [lo, hi] on the 0-based timeline. A window
+    reaching the file start is read from the start WITHOUT seeking: a seek
+    to a TS's start time lands past its first video packet (that packet's
+    dts lies before the audio-based start time) and skipped frame 0."""
+    b = base + hi
+    return f"{base + lo:.3f}%{b:.3f}" if lo > 0 else f"%{b:.3f}"
+
+
+def _packet_times_from_zero(path, lo, hi, base):
+    """Video packet start times in [lo, hi] (roughly; a read may stop
+    short), shifted onto the 0-based timeline (raw pts - base)."""
+    return [p - base for p, _ in _video_packet_times(path, _interval(lo, hi, base))]
+
+
+def probe_first_frame_at(path, t, tries=3, base=None):
+    """Timestamp of the first video frame at/after t - the frame a
+    frame-accurate cut starting at t begins with. None if unknown.
+    t and the result count from the file start (format.start_time = 0, the
+    timeline the cut, the player and the detectors use); base: that start
+    time if the caller has it already.
     ffprobe's -read_intervals now and then returns a truncated packet list
     (exit code 0), so only a read that covers the whole window counts."""
-    lo, hi = max(0.0, t - 3.0), t + 3.0
+    if base is None:
+        base = probe_start_time(path)
     end = None
     for _ in range(tries):
-        pts = [p for p, _ in _video_packet_times(path, f"{lo:.3f}%{hi:.3f}")]
+        pts = _packet_times_from_zero(path, t - 3.0, t + 3.0, base)
         after = [p for p in pts if p >= t - 6e-4]       # encode.CUT_EPS: ms-rounded t
         if not after:
             continue
@@ -514,13 +553,15 @@ def probe_first_frame_at(path, t, tries=3):
     return None
 
 
-def count_frames_between(path, t0, t1, tries=3):
-    """How many video frames have t0 <= pts < t1 (the file's own timeline,
-    as ffmpeg -copyts sees it) - from the packets, no decoding. None when
-    the packet list can't be read completely."""
+def count_frames_between(path, t0, t1, tries=3, base=None):
+    """How many video frames have t0 <= pts < t1 (counted from the file
+    start, like probe_first_frame_at) - from the packets, no decoding. None
+    when the packet list can't be read completely."""
+    if base is None:
+        base = probe_start_time(path)
     end = None
     for _ in range(tries):
-        pts = [p for p, _ in _video_packet_times(path, f"{max(0.0, t0 - 2.0):.3f}%{t1 + 2.0:.3f}")]
+        pts = _packet_times_from_zero(path, t0 - 2.0, t1 + 2.0, base)
         if not pts:
             continue
         need = t1 + 0.5                    # complete = reaches past t1 ...
@@ -530,6 +571,33 @@ def count_frames_between(path, t0, t1, tries=3):
             need = min(need, end - 0.5)
         if max(pts) >= need and (t0 < 2.0 or min(pts) <= t0 - 0.2):
             return sum(1 for p in pts if t0 <= p < t1)
+    return None
+
+
+def output_problem(path, expected_sec=None, need_video=True, tol=None):
+    """SAFETY GATE run before a finished output replaces anything, is
+    placed, or its source is moved to done/: None if `path` looks right,
+    else a short reason. Checks: the file is not empty; it has at least one
+    video frame when need_video (the source has real video); its length is
+    within tol (default max(2 s, 1 %)) of expected_sec. Catches e.g. a cut
+    of the wrong section that came out empty, or a cover-art-only file."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "output file missing"
+    if size <= 0:
+        return "output is empty (0 bytes)"
+    if need_video and not _video_packet_times(path, "%+#1"):
+        return "output has no video frames"
+    if expected_sec and expected_sec > 0:
+        got = probe_video_duration(path) if need_video else None
+        if got is None:
+            got = probe_duration(path)
+        if got is None:
+            return "could not read the output's duration"
+        tol = max(2.0, 0.01 * expected_sec) if tol is None else tol
+        if abs(got - expected_sec) > tol:
+            return f"output is {got:.2f}s long, expected {expected_sec:.2f}s"
     return None
 
 

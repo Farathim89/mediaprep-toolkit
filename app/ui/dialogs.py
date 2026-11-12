@@ -6,9 +6,12 @@ from tkinter import messagebox, ttk
 
 from ..config import APP_VERSION, CPU_THREAD_CHOICES, PREFS
 from ..i18n import tr
-from . import bgmode, themes
+from . import bgmode, dialogfit, themes
+from .dialogfit import ScrollBody
 from .tkthread import _call_tk
-from .widgets import KeyedCombobox, add_tooltip
+from .themepicker import ThemePicker
+from .tooltips import add_tooltip
+from .widgets import KeyedCombobox
 from .. import i18n, jobs, notify, updater
 from . import icons
 
@@ -74,9 +77,11 @@ def _work_area(win):
 def place_dialog(dlg, parent=None, modal=False, focus=None):
     """Show a dialog Toplevel properly: transient for an on-screen owner,
     themed before it is first drawn, centred on the owner (kept on the
-    owner's monitor), raised and focused; modal=True also grabs the input
-    once it is viewable (a grab on a not-yet-mapped window fails). Call it
-    after the dialog's widgets are built."""
+    owner's monitor, no larger than its work area - the body of a dialog
+    built with a dialogfit.ScrollBody scrolls then), raised and focused;
+    modal=True also grabs the input once it is viewable (a grab on a
+    not-yet-mapped window fails). Call it after the dialog's widgets are
+    built."""
     owner = owner_window(parent)
     try:
         shown = bool(dlg.winfo_ismapped())     # re-centring after a re-layout
@@ -86,19 +91,33 @@ def place_dialog(dlg, parent=None, modal=False, focus=None):
             dlg.transient(owner)
         themes.recolor(dlg)
         dlg.update_idletasks()
-        w, h = max(dlg.winfo_reqwidth(), 120), max(dlg.winfo_reqheight(), 60)
         if owner is not None:
-            x = owner.winfo_rootx() + (owner.winfo_width() - w) // 2
-            y = owner.winfo_rooty() + max(0, (owner.winfo_height() - h) // 3)
             left, top, right, bottom = _work_area(owner)
         else:
             left, top = 0, 0
             right, bottom = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        # natural size, or capped to the work area (a too tall dialog)
+        w, h, capped = dialogfit.fit_dialog(dlg, (left, top, right, bottom))
+        w, h = max(w, 120), max(h, 60)
+        if owner is not None:
+            x = owner.winfo_rootx() + (owner.winfo_width() - w) // 2
+            y = owner.winfo_rooty() + max(0, (owner.winfo_height() - h) // 3)
+        else:
             x, y = (right - w) // 2, (bottom - h) // 3
         # keep it - title bar included - on the owner's monitor
-        x = max(left, min(x, right - w))
-        y = max(top, min(y, bottom - h - themes.px(32)))
-        dlg.geometry(f"+{x}+{y}")
+        if capped:
+            dw, dh = dialogfit.decoration()
+            x = max(left, min(x, right - w - dw))
+            y = max(top, min(y, bottom - h - dh))
+            dlg.geometry(f"{w}x{h}+{x}+{y}")
+        else:
+            x = max(left, min(x, right - w))
+            y = max(top, min(y, bottom - h - themes.px(32)))
+            if getattr(dlg, "_mp_capped", False):
+                dlg.geometry("")               # fits again: its natural size
+            dlg.geometry(f"+{x}+{y}")
+        dlg._mp_capped = capped
+        dialogfit.watch(dlg)                   # re-fit after a display scaling change
         if bgmode.enabled():                   # scripted test run: never steal focus
             bgmode.apply(dlg)
             bgmode.place_offscreen(dlg)
@@ -180,10 +199,14 @@ def ask_choice(parent, title, message, choices, default=None, cancel=None):
     out = {"v": cancel}
     body = ttk.Frame(dlg, padding=themes.pad(18, 16, 18, 14))
     body.pack(fill="both", expand=True)
-    ttk.Label(body, text=message, wraplength=themes.px(440), justify="left").pack(
+    # the message scrolls when the dialog is taller than the screen; the
+    # buttons stay below it, always visible
+    sb = ScrollBody(body)
+    ttk.Label(sb.interior, text=message, wraplength=themes.px(440), justify="left").pack(
         anchor="w")
     row = ttk.Frame(body)
-    row.pack(anchor="e", pady=themes.pad(16, 0))
+    row.pack(side="bottom", anchor="e", pady=themes.pad(16, 0))
+    sb.pack(fill="both", expand=True)
 
     def pick(v):
         out["v"] = v
@@ -206,14 +229,17 @@ def ask_string(parent, title, prompt, initialvalue=""):
     out = {"v": None}
     body = ttk.Frame(dlg, padding=themes.pad(18, 16, 18, 14))
     body.pack(fill="both", expand=True)
-    ttk.Label(body, text=prompt, wraplength=themes.px(420), justify="left").pack(anchor="w")
+    sb = ScrollBody(body)                  # (scrolls only when the screen is too small)
+    ttk.Label(sb.interior, text=prompt, wraplength=themes.px(420), justify="left").pack(
+        anchor="w")
     var = tk.StringVar(master=dlg, value=initialvalue or "")
-    ent = ttk.Entry(body, textvariable=var, width=44)
+    ent = ttk.Entry(sb.interior, textvariable=var, width=44)
     ent.pack(fill="x", pady=themes.pad(8, 0))
     ent.select_range(0, "end")
     ent.icursor("end")
     row = ttk.Frame(body)
-    row.pack(anchor="e", pady=themes.pad(16, 0))
+    row.pack(side="bottom", anchor="e", pady=themes.pad(16, 0))
+    sb.pack(fill="both", expand=True)
 
     def pick(v):
         out["v"] = var.get() if v == "ok" else None
@@ -266,7 +292,7 @@ class QueueDialog(tk.Toplevel):
                 if cls._inst.winfo_exists():
                     cls._inst.deiconify()
                     cls._inst.lift()
-                    cls._inst.focus_force()
+                    bgmode.focus(cls._inst)     # no activation in background mode
                     return cls._inst
             except tk.TclError:
                 pass
@@ -278,12 +304,12 @@ class QueueDialog(tk.Toplevel):
         self.title(tr("Job queue"))
         self.transient(root)
         self._stop_all = stop_all
-        f = ttk.Frame(self, padding=10)
+        f = ttk.Frame(self, padding=themes.px(10))
         f.pack(fill="both", expand=True)
-        self.run_lbl = ttk.Label(f, text="", justify="left", wraplength=520)
+        self.run_lbl = ttk.Label(f, text="", justify="left", wraplength=themes.px(520))
         self.run_lbl.pack(anchor="w", fill="x")
         ttk.Label(f, text=tr("Queued (run one after another when nothing else runs):"),
-                  style="Hint.TLabel", wraplength=520).pack(anchor="w", pady=(8, 2))
+                  style="Hint.TLabel", wraplength=themes.px(520)).pack(anchor="w", pady=themes.pad(8, 2))
         mid = ttk.Frame(f)
         mid.pack(fill="both", expand=True)
         self.lb = tk.Listbox(mid, height=8, width=60, activestyle="none",
@@ -293,18 +319,20 @@ class QueueDialog(tk.Toplevel):
         self.lb.pack(side="left", fill="both", expand=True)
         sb.pack(side="left", fill="y")
         side = ttk.Frame(mid)
-        side.pack(side="left", fill="y", padx=(8, 0))
+        side.pack(side="left", fill="y", padx=themes.pad(8, 0))
         ttk.Button(side, text="▲ " + tr("Up"), command=lambda: self._move(-1)).pack(fill="x")
         ttk.Button(side, text="▼ " + tr("Down"),
-                   command=lambda: self._move(1)).pack(fill="x", pady=2)
+                   command=lambda: self._move(1)).pack(fill="x", pady=themes.px(2))
         icons.decorate(ttk.Button(side, text=tr("Remove"), command=self._remove), "remove").pack(fill="x")
-        icons.decorate(ttk.Button(side, text=tr("Clear"), command=jobs.clear), "trash").pack(fill="x", pady=2)
+        icons.decorate(ttk.Button(side, text=tr("Clear"), command=jobs.clear), "trash").pack(fill="x", pady=themes.px(2))
         bar = ttk.Frame(f)
-        bar.pack(fill="x", pady=(8, 0))
+        # packed before the list: a window too small for both shrinks the
+        # list (it scrolls), never the buttons
+        bar.pack(side="bottom", fill="x", pady=themes.pad(8, 0), before=mid)
         self.pause_btn = icons.decorate(ttk.Button(bar, text=tr("Pause queue"), command=self._toggle_pause), "pause")
         self.pause_btn.pack(side="left")
         stop = icons.decorate(ttk.Button(bar, text=tr("Stop all"), command=self._stop), "stop")
-        stop.pack(side="left", padx=6)
+        stop.pack(side="left", padx=themes.px(6))
         add_tooltip(stop, tr("Stop every running job and pause the queue"))
         ttk.Button(bar, text=tr("Close"), command=self.destroy).pack(side="right")
         self.lb.bind("<Delete>", lambda e: self._remove())
@@ -387,7 +415,7 @@ class SettingsDialog(tk.Toplevel):
     """App-wide settings: language, theme, notifications, update check, log
     retention."""
     _inst = None
-    WRAP = 420                    # wrap width of the longer texts (px)
+    WRAP = 420                    # wrap width of the longer texts (px at 100 %)
 
     @classmethod
     def open_(cls, root, persist, on_update, restart=None):
@@ -396,7 +424,7 @@ class SettingsDialog(tk.Toplevel):
                 if cls._inst.winfo_exists():
                     cls._inst.deiconify()
                     cls._inst.lift()
-                    cls._inst.focus_force()
+                    bgmode.focus(cls._inst)     # no activation in background mode
                     return cls._inst
             except tk.TclError:
                 pass
@@ -412,11 +440,17 @@ class SettingsDialog(tk.Toplevel):
         self._persist = persist
         self._on_update = on_update
         self._restart = restart
-        f = ttk.Frame(self, padding=12)
+        f = ttk.Frame(self, padding=themes.px(12))
         f.pack(fill="both", expand=True)
+        # the sections scroll when the dialog is taller than the screen (a
+        # high display scaling - ui/dialogfit.py); OK / Cancel stay below them
+        self._body = ScrollBody(f)
+        c = self._body.interior
+        # the two columns of the compact layout (_mp_compact) - made first,
+        # so the sections shown in them are above them
+        self._cols = (ttk.Frame(c), ttk.Frame(c))
 
-        th = ttk.LabelFrame(f, text=tr("Appearance"))
-        th.pack(fill="x")
+        th = ttk.LabelFrame(c, text=tr("Appearance"))
         th.columnconfigure(1, weight=1)
         ttk.Label(th, text=tr("Language:")).grid(row=0, column=0, sticky="w")
         win_lang = i18n.windows_language() or i18n.DEFAULT
@@ -427,20 +461,30 @@ class SettingsDialog(tk.Toplevel):
         self.v_lang = tk.StringVar(value=cur if cur in codes else i18n.AUTO)
         lbox = KeyedCombobox(th, textvariable=self.v_lang, values=codes, labels=labels,
                              state="readonly", width=24)
-        lbox.grid(row=0, column=1, sticky="w", padx=6)
+        lbox.grid(row=0, column=1, sticky="w", padx=themes.px(6))
         add_tooltip(lbox, tr("The language of the app. 'Automatic' uses the Windows display "
                              "language. A change takes effect after a restart."))
-        ttk.Label(th, text=tr("Theme:")).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        tbox = KeyedCombobox(th, textvariable=themes.theme_var(), values=themes.THEME_NAMES,
-                             state="readonly", width=24)
-        tbox.grid(row=1, column=1, sticky="w", padx=6, pady=(6, 0))
+        ttk.Label(th, text=tr("Theme:")).grid(row=1, column=0, sticky="w", pady=themes.pad(6, 0))
+        # a drop-down with a colour swatch per theme (ui/themepicker.py)
+        tbox = ThemePicker(th)
+        tbox.grid(row=1, column=1, sticky="w", padx=themes.px(6), pady=themes.pad(6, 0))
         add_tooltip(tbox, tr("Applies right away to every window and is remembered. "
                              "'Follow Windows' switches Light / Dark with the Windows "
                              "app mode."))
+        ttk.Label(th, text=tr("Font size:")).grid(row=2, column=0, sticky="w", pady=themes.pad(6, 0))
+        scales = [f"{f:g}" for f in themes.FONT_SCALES]
+        cur = f"{float(PREFS.get('font_scale', 1.0)):g}"
+        self.v_font = tk.StringVar(value=cur if cur in scales else "1")
+        fbox = KeyedCombobox(th, textvariable=self.v_font, values=scales,
+                             labels=[f"{round(float(v) * 100)} %" for v in scales],
+                             state="readonly", width=8)
+        fbox.grid(row=2, column=1, sticky="w", padx=themes.px(6), pady=themes.pad(6, 0))
+        add_tooltip(fbox, tr("The size of all text in the app (100 % = normal). Lists and "
+                             "pages grow with it; a page that no longer fits gets "
+                             "scrollbars. A change takes effect after a restart."))
 
         # video preview engine (ui/player.py): Auto / mpv / OpenCV
-        vp = ttk.LabelFrame(f, text=tr("Video player"))
-        vp.pack(fill="x", pady=(10, 0))
+        vp = ttk.LabelFrame(c, text=tr("Video player"))
         vp.columnconfigure(1, weight=1)
         ttk.Label(vp, text=tr("Video player engine:")).grid(row=0, column=0, sticky="w")
         cur = str(PREFS.get("player_engine", "auto")).lower()
@@ -448,7 +492,7 @@ class SettingsDialog(tk.Toplevel):
         ebox = KeyedCombobox(vp, textvariable=self.v_engine, values=["auto", "mpv", "opencv"],
                              labels=[tr("Auto (mpv if available)"), "mpv", "OpenCV"],
                              state="readonly", width=24)
-        ebox.grid(row=0, column=1, sticky="w", padx=6)
+        ebox.grid(row=0, column=1, sticky="w", padx=themes.px(6))
         add_tooltip(ebox, tr("mpv plays smoothly and steps frames fast using the graphics "
                              "card, with its own sound. OpenCV is the simple built-in "
                              "preview. Auto uses mpv when it is found and starts, else "
@@ -457,13 +501,12 @@ class SettingsDialog(tk.Toplevel):
         exe = mpvplayer.find_mpv()
         ttk.Label(vp, text=(tr("mpv found: {path}", path=exe) if exe else
                             tr("mpv not found - the OpenCV preview is used")),
-                  style="Hint.TLabel", wraplength=self.WRAP).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                  style="Hint.TLabel", wraplength=themes.px(self.WRAP)).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=themes.pad(4, 0))
 
         # Limit CPU use: below-normal priority + thread caps for ffmpeg / mpv
         # (config.popen_flags / limit_cmd; the math-library cap at startup)
-        pf = ttk.LabelFrame(f, text=tr("Performance"))
-        pf.pack(fill="x", pady=(10, 0))
+        pf = ttk.LabelFrame(c, text=tr("Performance"))
         self.v_cpu = tk.BooleanVar(value=bool(PREFS.get("cpu_limit", True)))
         cur = str(PREFS.get("cpu_threads", "auto")).lower()
         self.v_threads = tk.StringVar(value=cur if cur in CPU_THREAD_CHOICES else "auto")
@@ -477,12 +520,12 @@ class SettingsDialog(tk.Toplevel):
                                "slowed. Applies to the next job; the analysis libraries "
                                "pick it up after a restart."))
         ttk.Label(pf, text=tr("Max encoder threads:")).grid(row=1, column=0, sticky="w",
-                                                            padx=(18, 0), pady=(4, 0))
+                                                            padx=themes.pad(18, 0), pady=themes.pad(4, 0))
         thr_labels = [tr("Auto (half the cores, max 8)")] + list(CPU_THREAD_CHOICES[1:-1])             + [tr("All")]
         self.thr_box = KeyedCombobox(pf, textvariable=self.v_threads,
                                      values=list(CPU_THREAD_CHOICES), labels=thr_labels,
                                      state="readonly", width=24)
-        self.thr_box.grid(row=1, column=1, sticky="w", padx=6, pady=(4, 0))
+        self.thr_box.grid(row=1, column=1, sticky="w", padx=themes.px(6), pady=themes.pad(4, 0))
         add_tooltip(self.thr_box, tr("The most CPU threads one ffmpeg job may use. 'All' "
                                      "lets ffmpeg decide (only the lower priority stays)."))
 
@@ -491,60 +534,85 @@ class SettingsDialog(tk.Toplevel):
         self.v_cpu.trace_add("write", _cpu_toggle)
         _cpu_toggle()
 
-        n = ttk.LabelFrame(f, text=tr("Notifications when a job finishes"))
-        n.pack(fill="x", pady=(10, 0))
+        n = ttk.LabelFrame(c, text=tr("Notifications when a job finishes"))
         self.v_on = tk.BooleanVar(value=PREFS["notify_on"])
         self.v_toast = tk.BooleanVar(value=PREFS["notify_toast"])
         self.v_sound = tk.BooleanVar(value=PREFS["notify_sound"])
         self.v_min = tk.StringVar(value=f"{PREFS['notify_min_minutes']:g}")
-        wrap = self.WRAP
+        wrap = themes.px(self.WRAP)
         ttk.Checkbutton(n, text=tr("Notify when a job finishes"), variable=self.v_on).grid(
             row=0, column=0, columnspan=3, sticky="w")
         ttk.Checkbutton(n, text=tr("Windows notification (else a popup in the corner)"),
                         variable=self.v_toast).grid(row=1, column=0, columnspan=3,
-                                                    sticky="w", padx=(18, 0))
+                                                    sticky="w", padx=themes.pad(18, 0))
         ttk.Checkbutton(n, text=tr("Play a sound"), variable=self.v_sound).grid(
-            row=2, column=0, columnspan=3, sticky="w", padx=(18, 0))
+            row=2, column=0, columnspan=3, sticky="w", padx=themes.pad(18, 0))
         # "Only for jobs longer than [ 1 ] minutes" - one row, the spinbox in
         # its own column so a long translation can't push it off the dialog
-        ttk.Label(n, text=tr("Only for jobs longer than"), wraplength=wrap - 140).grid(
-            row=3, column=0, sticky="w", padx=(18, 0), pady=(4, 0))
+        ttk.Label(n, text=tr("Only for jobs longer than"), wraplength=wrap - themes.px(140)).grid(
+            row=3, column=0, sticky="w", padx=themes.pad(18, 0), pady=themes.pad(4, 0))
         ttk.Spinbox(n, from_=0, to=600, increment=1, width=6,
-                    textvariable=self.v_min).grid(row=3, column=1, padx=4, pady=(4, 0))
-        ttk.Label(n, text=tr("minutes")).grid(row=3, column=2, sticky="w", pady=(4, 0))
+                    textvariable=self.v_min).grid(row=3, column=1, padx=themes.px(4), pady=themes.pad(4, 0))
+        ttk.Label(n, text=tr("minutes")).grid(row=3, column=2, sticky="w", pady=themes.pad(4, 0))
         icons.decorate(ttk.Button(n, text=tr("Test notification"), command=notify.test_notification), "info").grid(
-            row=4, column=0, sticky="w", padx=(18, 0), pady=(6, 0))
+            row=4, column=0, sticky="w", padx=themes.pad(18, 0), pady=themes.pad(6, 0))
 
-        u = ttk.LabelFrame(f, text=tr("Updates"))
-        u.pack(fill="x", pady=(10, 0))
+        u = ttk.LabelFrame(c, text=tr("Updates"))
         self.v_upd = tk.BooleanVar(value=PREFS["update_check"])
         ttk.Checkbutton(u, text=tr("Check for a new version at startup (once a day)"),
                         variable=self.v_upd).grid(row=0, column=0, columnspan=2, sticky="w")
         icons.decorate(ttk.Button(u, text=tr("Check now"), command=self._check_now), "refresh").grid(
-            row=1, column=0, sticky="w", pady=(6, 0))
+            row=1, column=0, sticky="w", pady=themes.pad(6, 0))
         self.upd_lbl = ttk.Label(u, text=tr("Installed: v{version}", version=APP_VERSION),
-                                 style="Hint.TLabel", wraplength=wrap - 120)
-        self.upd_lbl.grid(row=1, column=1, sticky="w", padx=8, pady=(6, 0))
+                                 style="Hint.TLabel", wraplength=wrap - themes.px(120))
+        self.upd_lbl.grid(row=1, column=1, sticky="w", padx=themes.px(8), pady=themes.pad(6, 0))
 
-        lg = ttk.LabelFrame(f, text=tr("Logs"))
-        lg.pack(fill="x", pady=(10, 0))
+        lg = ttk.LabelFrame(c, text=tr("Logs"))
         self.v_days = tk.StringVar(value=str(PREFS["log_keep_days"]))
         ttk.Label(lg, text=tr("Move session logs older than")).grid(row=0, column=0,
                                                                    sticky="w")
         ttk.Spinbox(lg, from_=1, to=3650, width=6, textvariable=self.v_days).grid(
-            row=0, column=1, padx=4, sticky="w")
+            row=0, column=1, padx=themes.px(4), sticky="w")
         # the second half on its own line (long in some languages)
         ttk.Label(lg, text=tr("days to Data\\temp\\trash (at startup)"),
                   wraplength=wrap).grid(row=1, column=0, columnspan=2, sticky="w",
-                                        pady=(2, 0))
+                                        pady=themes.pad(2, 0))
+
+        self._secs = (th, vp, pf, n, u, lg)
+        self._compact = None
+        self._mp_compact(False)
 
         bar = ttk.Frame(f)
-        bar.pack(fill="x", pady=(12, 0))
+        bar.pack(side="bottom", fill="x", pady=themes.pad(12, 0))
+        self._body.pack(fill="both", expand=True)
         ttk.Button(bar, text=tr("Cancel"), command=self.destroy).pack(side="right")
-        ttk.Button(bar, style="Accent.TButton", text=tr("OK"), command=self._ok).pack(side="right", padx=6)
+        ttk.Button(bar, style="Accent.TButton", text=tr("OK"), command=self._ok).pack(side="right", padx=themes.px(6))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Destroy>", self._gone, add="+")
         place_dialog(self, root)
+
+    def _mp_compact(self, on):
+        """The sections in one column (on=False, the normal layout) or in two
+        (on=True: dialogfit asks for it when one column is taller than the
+        screen - a high display scaling). Returns True (it has a compact
+        layout)."""
+        on = bool(on)
+        if on == self._compact:
+            return True
+        self._compact = on
+        for w in self._secs + self._cols:
+            w.pack_forget()
+        if on:
+            left, right = self._cols
+            left.pack(side="left", fill="y")
+            right.pack(side="left", fill="y", padx=themes.pad(10, 0))
+            for i, sec in enumerate(self._secs):
+                sec.pack(in_=left if i < 3 else right, fill="x",
+                         pady=themes.pad(10, 0) if i % 3 else 0)
+        else:
+            for i, sec in enumerate(self._secs):
+                sec.pack(fill="x", pady=themes.pad(10, 0) if i else 0)
+        return True
 
     def _gone(self, e):
         if e.widget is self and SettingsDialog._inst is self:
@@ -584,12 +652,20 @@ class SettingsDialog(tk.Toplevel):
         lang_changed = new_lang != PREFS.get("language", i18n.AUTO)
         PREFS["language"] = new_lang
         try:
+            new_font = float(self.v_font.get())
+        except ValueError:
+            new_font = 1.0
+        font_changed = abs(new_font - float(PREFS.get("font_scale", 1.0))) > 1e-6
+        PREFS["font_scale"] = new_font
+        try:
             self._persist()
         except Exception:
             pass
         self.destroy()
         if lang_changed:
             self._offer_restart(new_lang)
+        elif font_changed:
+            self._offer_restart_font(new_font)
 
     def _offer_restart(self, code):
         """The language is applied at startup - offer to restart right away."""
@@ -602,4 +678,18 @@ class SettingsDialog(tk.Toplevel):
         if messagebox.askyesno(tr("Restart now?"), tr(
                 "The language is set to {language}. It takes effect after a restart.\n\n"
                 "Restart the app now?", language=name), parent=self._app_root):
+            self._restart()
+
+    def _offer_restart_font(self, scale):
+        """The font size is applied at startup (every page is laid out for
+        it) - offer to restart right away."""
+        size = f"{round(scale * 100)} %"
+        if self._restart is None:
+            messagebox.showinfo(tr("Font size"), tr(
+                "The font size is set to {size}. It takes effect the next time the app "
+                "starts.", size=size), parent=self._app_root)
+            return
+        if messagebox.askyesno(tr("Restart now?"), tr(
+                "The font size is set to {size}. It takes effect after a restart.\n\n"
+                "Restart the app now?", size=size), parent=self._app_root):
             self._restart()

@@ -14,18 +14,21 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from ..config import MEDIA_EXTS
-from ..engine import recode
+from ..config import APP_ROOT, MEDIA_EXTS
+from ..engine import recode, recode_analyze, recode_run
 from ..engine.formatting import format_seconds, format_size, parse_time
 from ..i18n import ntr, tr
 from ..ui import icons, themes
 from ..ui.dialogs import ask_choice, ask_string
 from ..ui.tkthread import _call_tk
-from ..ui.widgets import (add_tooltip, bind_status_colors, build_log_tab, enable_paths_drop,
-                          help_button, info_icon, trim_text_lines, KeyedCombobox)
+from ..ui.helpwin import help_button
+from ..ui.tooltips import add_tooltip, info_icon
+from ..ui.widgets import (bind_status_colors, build_log_tab, enable_paths_drop, trim_text_lines,
+                          KeyedCombobox)
 from . import convert_presets as cpresets
 from .convert_settings import SettingsMixin
 from .convert_tracks import TracksMixin
+from .common import opt_kwargs
 from .. import applog, jobs
 
 _VIDEO_TYPES = [(tr("Video files"), " ".join("*" + e for e in MEDIA_EXTS)),
@@ -45,6 +48,27 @@ def _media_in(folder, recursive):
         except OSError:
             pass
     return sorted(out, key=str.lower)
+
+
+def _abs_out(p):
+    """A saved output folder -> absolute (a relative one lives in the app folder)."""
+    if isinstance(p, str) and p.strip() and not os.path.isabs(p):
+        return os.path.normpath(os.path.join(APP_ROOT, p))
+    return p
+
+
+def _rel_out(p):
+    """An output folder inside the app folder -> relative ('Media/convert/output')
+    for the settings file; folders elsewhere stay absolute."""
+    if not (isinstance(p, str) and p.strip() and os.path.isabs(p)):
+        return p
+    try:
+        rel = os.path.relpath(os.path.normpath(p), APP_ROOT)
+    except ValueError:            # another drive
+        return p
+    if rel == os.curdir or rel.startswith(os.pardir):
+        return p
+    return rel.replace(os.sep, "/")
 
 
 def _src_text(info):
@@ -70,8 +94,9 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
         self.unload_players_hook = None
         self.save_hook = None
         d = recode.normalize_settings(saved.get("cv_settings") or {})
-        if not d["out_dir"]:
-            d["out_dir"] = recode.CONVERT_OUTPUT
+        # saved relative to the app folder (Media/convert/output) like the
+        # other folder settings, so a moved / renamed app folder still works
+        d["out_dir"] = _abs_out(d["out_dir"]) or recode.CONVERT_OUTPUT
         self.defaults = d
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
@@ -300,13 +325,31 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
         self._add_paths([p for p in paths if p])
 
     def _add_paths(self, paths):
-        files = []
-        for p in paths:
-            p = os.path.normpath(p.strip().strip('"'))
-            if os.path.isdir(p):
-                files += _media_in(p, self.recursive_var.get())
-            elif os.path.isfile(p) and p.lower().endswith(MEDIA_EXTS):
-                files.append(p)
+        paths = [os.path.normpath(p.strip().strip('"')) for p in paths if p and p.strip()]
+        if any(os.path.isdir(p) for p in paths):
+            # a big folder tree takes a while to walk - not on the Tk thread
+            recursive = self.recursive_var.get()
+            self.status_var.set(tr("Scanning..."))
+
+            def scan():
+                files = []
+                for p in paths:
+                    try:
+                        if os.path.isdir(p):
+                            files += _media_in(p, recursive)
+                        elif os.path.isfile(p) and p.lower().endswith(MEDIA_EXTS):
+                            files.append(p)
+                    except OSError:
+                        pass
+                _call_tk(lambda: self._add_files_found(files, paths))
+            threading.Thread(target=scan, daemon=True).start()
+            return
+        self._add_files_found([p for p in paths
+                               if os.path.isfile(p) and p.lower().endswith(MEDIA_EXTS)], paths)
+
+    def _add_files_found(self, files, paths):
+        if not self._busy and self.status_var.get() == tr("Scanning..."):
+            self.status_var.set(tr("Idle"))
         new = []
         for f in files:
             iid = os.path.normcase(os.path.abspath(f))
@@ -325,7 +368,7 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
     def _probe_worker(self, items):
         for iid, f in items:
             try:
-                info = recode.probe_job(f)
+                info = recode_analyze.probe_job(f)
             except Exception:
                 info = None
             _call_tk(lambda iid=iid, f=f, info=info: self._probed(iid, f, info))
@@ -338,7 +381,7 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
                                         "", "", ""), tags=("bad",))
             self.log(f"[ADD] skipped (no readable video): {f}")
             return
-        job = recode.new_job(f, self.defaults, info)
+        job = recode_analyze.new_job(f, self.defaults, info)
         self.jobs_by_iid[iid] = job
         self.tree.item(iid, values=(os.path.basename(f), _src_text(info), tr("Waiting"),
                                     format_size(info["size"]), "", ""), tags=())
@@ -408,27 +451,34 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
         self.defaults = dict(s)          # new files start from the last settings
         for j in jobs_:
             j["settings"] = dict(s)
-            if j.pop("done", False):     # changed after converting: convert it again
-                iid = os.path.normcase(os.path.abspath(j["input"]))
-                if self.tree.exists(iid):
-                    self.tree.set(iid, "status", tr("Waiting"))
-                    self.tree.item(iid, tags=())
+            self._undone(j)
             if rebuild_tracks:
                 j["audio"], j["subs"] = recode.tracks_from_rules(j["info"], s)
         if rebuild_tracks:
             self._fill_tracks()
         self._update_example()
 
+    def _undone(self, j):
+        """A job changed after it was converted: it is converted again."""
+        if j.pop("done", False):
+            iid = os.path.normcase(os.path.abspath(j["input"]))
+            if self.tree.exists(iid):
+                self.tree.set(iid, "status", tr("Waiting"))
+                self.tree.item(iid, tags=())
+
     def _tracks_changed(self):
         job = self._shown_job()
         if job is not None:
+            self._undone(job)
             for j in self._selected_jobs():
                 if j is job:
                     continue
                 if len(j["audio"]) == len(job["audio"]):
                     j["audio"] = copy.deepcopy(job["audio"])
+                    self._undone(j)
                 if len(j["subs"]) == len(job["subs"]):
                     j["subs"] = copy.deepcopy(job["subs"])
+                    self._undone(j)
         self._fill_tracks()
 
     def _apply_to_all(self):
@@ -444,6 +494,7 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
                 j["audio"], j["subs"] = copy.deepcopy(job["audio"]), copy.deepcopy(job["subs"])
             else:
                 j["audio"], j["subs"] = recode.tracks_from_rules(j["info"], s)
+            self._undone(j)
             n += 1
         self.status_var.set(ntr("Settings copied to {n} file.", "Settings copied to {n} files.",
                                 n))
@@ -476,34 +527,84 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
                 out.append((iid, copy.deepcopy(j)))
         return out
 
+    @staticmethod
+    def _pkey(p):
+        return os.path.normcase(os.path.abspath(p))
+
+    def _free_path(self, path, taken):
+        """'name (2).ext', 'name (3).ext' ... - the first that neither exists
+        nor is in `taken` (outputs / sources of this batch, normcase keys)."""
+        if opt_kwargs(recode.keep_both_path, reserved=None):
+            return recode.keep_both_path(path, reserved=taken)    # the engine's helper
+        root, ext = os.path.splitext(path)
+        n = 2
+        while True:
+            cand = f"{root} ({n}){ext}"
+            if not os.path.exists(cand) and self._pkey(cand) not in taken:
+                return cand
+            n += 1
+
     def _plan_outputs(self, items):
         """[(iid, job, output or None)]: asks ONCE what to do with outputs
-        that exist already (Overwrite / Keep both / Skip). None = cancelled."""
+        that exist already or that another file of this batch writes too
+        (S1\\01.mkv + S2\\01.mkv, x.mp4 + x.mkv): Overwrite / Keep both /
+        Skip. Two files of one batch never write the same output, and no
+        output may replace a source in the list. None = cancelled."""
+        key = self._pkey
         planned = [(iid, j, recode.output_path(j)) for iid, j in items]
-        same = [p for _i, j, p in planned
-                if os.path.normcase(os.path.abspath(p)) == os.path.normcase(
-                    os.path.abspath(j["input"]))]
+        same = [p for _i, j, p in planned if key(p) == key(j["input"])]
         if same:
             messagebox.showerror(tr("Error"), tr(
                 "The output would replace its source:\n\n{path}\n\nChoose another output "
                 "folder or file name.", path=same[0]))
             return None
-        exist = [p for _i, _j, p in planned if os.path.exists(p)]
-        if not exist:
+        sources = {key(j["input"]) for j in self.jobs_by_iid.values()}
+        sources |= {key(j["input"]) for _i, j in items}
+        other = [p for _i, _j, p in planned if key(p) in sources]
+        if other:
+            messagebox.showerror(tr("Error"), tr(
+                "An output would replace another file in the list:\n\n{path}\n\nChoose "
+                "another output folder or file name.", path=other[0]))
+            return None
+        seen, clash, dupes = set(), [], 0
+        for _i, _j, p in planned:
+            k = key(p)
+            if k in seen:
+                dupes += 1
+                clash.append(p)
+            elif os.path.exists(p):
+                clash.append(p)
+            seen.add(k)
+        if not clash:
             return planned
-        choice = ask_choice(self, tr("Files exist"), ntr(
-            "{n} output file exists already, e.g.\n{path}\n\nWhat should happen to it?",
-            "{n} output files exist already, e.g.\n{path}\n\nWhat should happen to them?",
-            len(exist), path=os.path.basename(exist[0])),
-            [("over", tr("Overwrite")), ("both", tr("Keep both")), ("skip", tr("Skip")),
-             ("cancel", tr("Cancel"))], default="both", cancel="cancel")
+        if dupes:
+            msg = ntr("{n} output file exists already or is written by another file of the "
+                      "list too, e.g.\n{path}\n\nWhat should happen to it?",
+                      "{n} output files exist already or are written by another file of the "
+                      "list too, e.g.\n{path}\n\nWhat should happen to them?",
+                      len(clash), path=os.path.basename(clash[0]))
+        else:
+            msg = ntr("{n} output file exists already, e.g.\n{path}\n\nWhat should happen "
+                      "to it?",
+                      "{n} output files exist already, e.g.\n{path}\n\nWhat should happen "
+                      "to them?", len(clash), path=os.path.basename(clash[0]))
+        choice = ask_choice(self, tr("Files exist"), msg,
+                            [("over", tr("Overwrite")), ("both", tr("Keep both")),
+                             ("skip", tr("Skip")), ("cancel", tr("Cancel"))],
+                            default="both", cancel="cancel")
         if choice in (None, "cancel"):
             return None
-        out = []
+        out, claimed = [], set()
         for iid, j, p in planned:
-            if os.path.exists(p):
-                p = (p if choice == "over" else
-                     recode.keep_both_path(p) if choice == "both" else None)
+            k = key(p)
+            dup = k in claimed               # an earlier file of this batch writes it
+            if dup or os.path.exists(p):
+                if choice == "skip":
+                    p = None
+                elif choice == "both" or dup:   # never overwrite this batch's own output
+                    p = self._free_path(p, claimed | sources)
+            if p is not None:
+                claimed.add(key(p))
             out.append((iid, j, p))
         return out
 
@@ -529,6 +630,9 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
             return None
         planned = self._plan_outputs(items)
         if not planned:
+            return None
+        if self._busy:          # something started while the dialog was open
+            self.log("[QUEUE] Convert is busy - not started.")
             return None
         self.stop_event.clear()
         self._set_busy(True)
@@ -578,40 +682,29 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
                     self._row(iid, status=tr("Failed"), tag="bad")
                     self.log(f"[FAIL] {name}: the source is gone")
                     continue
-                self.log(f"[{k + 1}/{n}] {name} -> {out}")
-                self.log(f"   {recode.summary_line(job)}")
-                self._row(iid, status=tr("Converting..."), tag="")
                 t0 = time.time()
-
-                def prog(frac, text, k=k, iid=iid, t0=t0):
-                    el = time.time() - t0
-                    eta = format_seconds(el / frac * (1 - frac)) if 0.01 < frac < 1 else "--:--"
-                    pct = f"{frac * 100:.1f}%"
-
-                    def _u():
-                        self.bar.configure(value=int((k + frac) / n * 1000))
-                        self.pct_var.set(f"{k + 1}/{n} · {text.strip()}")
-                        if self.tree.exists(iid):
-                            self.tree.set(iid, "status", f"{tr('Converting...')} {pct}")
-                            self.tree.set(iid, "time", eta)
-                    _call_tk(_u)
-                _call_tk(lambda name=name, k=k: self.status_var.set(
-                    tr("Converting {i}/{n}: {name}", i=k + 1, n=n, name=name)))
-                res = recode.encode(job, out, progress=prog, stop_event=self.stop_event,
-                                    log=self.log)
+                try:
+                    res = self._convert_one(k, n, iid, job, out, name, t0)
+                except Exception as e:      # one bad file doesn't end the batch
+                    res = None
+                    self.log(f"[FAIL] {name}: {e!r}")
                 el = format_seconds(time.time() - t0)
+                if res is None:
+                    fail += 1
+                    self._row(iid, status=tr("Failed"), time=el, tag="bad")
+                    continue
                 if res["stopped"]:
                     self._row(iid, status=tr("Stopped"), time=el, tag="warn")
                     break
                 if res["ok"]:
                     ok += 1
-                    _call_tk(lambda iid=iid: self.jobs_by_iid.get(iid, {}).update(done=True))
                     si, so = res["size_in"], res["size_out"]
                     pct = f" ({so / si * 100:.0f}%)" if si else ""
                     self._row(iid, status=tr("Done") if not res["warnings"]
                               else tr("Done - check the log"),
                               after=format_size(so) + pct, time=el,
                               tag="ok" if not res["warnings"] else "warn")
+                    _call_tk(lambda iid=iid, job=job: self._mark_done(iid, job))
                 else:
                     fail += 1
                     self._row(iid, status=tr("Failed"), time=el, tag="bad")
@@ -629,6 +722,46 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
                     tr("Finished: {ok} converted, {fail} failed, {skip} skipped.",
                        ok=ok, fail=fail, skip=skipped))
             _call_tk(lambda: self._set_busy(False, text))
+
+    def _convert_one(self, k, n, iid, job, out, name, t0):
+        """Encode one queued file (worker thread); recode_run.encode's result."""
+        self.log(f"[{k + 1}/{n}] {name} -> {out}")
+        self.log(f"   {recode.summary_line(job)}")
+        self._row(iid, status=tr("Converting..."), tag="")
+
+        def prog(frac, text):
+            el = time.time() - t0
+            eta = format_seconds(el / frac * (1 - frac)) if 0.01 < frac < 1 else "--:--"
+            pct = f"{frac * 100:.1f}%"
+
+            def _u():
+                self.bar.configure(value=int((k + frac) / n * 1000))
+                self.pct_var.set(f"{k + 1}/{n} · {text.strip()}")
+                if self.tree.exists(iid):
+                    self.tree.set(iid, "status", f"{tr('Converting...')} {pct}")
+                    self.tree.set(iid, "time", eta)
+            _call_tk(_u)
+        _call_tk(lambda: self.status_var.set(
+            tr("Converting {i}/{n}: {name}", i=k + 1, n=n, name=name)))
+        return recode_run.encode(job, out, progress=prog, stop_event=self.stop_event,
+                             log=self.log)
+
+    def _mark_done(self, iid, job):
+        """A file converted OK: it isn't converted again - unless its settings
+        / tracks were changed while it was converting (`job` = the copy that
+        was converted)."""
+        live = self.jobs_by_iid.get(iid)
+        if live is None:
+            return
+        if (live.get("settings") == job.get("settings") and live.get("audio") == job.get("audio")
+                and live.get("subs") == job.get("subs")):
+            live["done"] = True
+            return
+        self.log(f"[INFO] {os.path.basename(job['input'])}: changed while it was converting - "
+                 "it stays in the list to be converted again.")
+        if self.tree.exists(iid):
+            self.tree.set(iid, "status", tr("Waiting"))
+            self.tree.item(iid, tags=())
 
     def stop(self):
         self.stop_event.set()
@@ -656,8 +789,8 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
         def work():
             c = d = None
             try:
-                c = recode.detect_crop(job["input"], job["info"], stop_event=self.stop_event)
-                d = recode.detect_interlace(job["input"], job["info"],
+                c = recode_analyze.detect_crop(job["input"], job["info"], stop_event=self.stop_event)
+                d = recode_analyze.detect_interlace(job["input"], job["info"],
                                             stop_event=self.stop_event)
             finally:
                 jobs.end(jid, ok=c is not None)
@@ -712,7 +845,7 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
             res = {}
             try:
                 self.log(f"[PREVIEW] {os.path.basename(job['input'])}")
-                res = recode.make_preview(job, start=start, progress=prog,
+                res = recode_run.make_preview(job, start=start, progress=prog,
                                           stop_event=self.stop_event, log=self.log)
             except Exception as e:
                 self.log(f"[FAIL] preview: {e}")
@@ -770,5 +903,7 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
             tab = self._nb.index("current")
         except tk.TclError:
             tab = 0
-        return {"cv_settings": dict(self.defaults), "cv_recursive": bool(self.recursive_var.get()),
+        cv = dict(self.defaults)
+        cv["out_dir"] = _rel_out(cv.get("out_dir") or "")
+        return {"cv_settings": cv, "cv_recursive": bool(self.recursive_var.get()),
                 "cv_preset": self.preset_var.get(), "cv_tab": tab if tab < 4 else 0}

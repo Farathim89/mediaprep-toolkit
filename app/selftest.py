@@ -57,7 +57,8 @@ def _episode(np, rng, total, intro_at, silence=None):
 
 
 def _mux(wav, mp4, ffmpeg_flags):
-    cmd = ["ffmpeg", "-hide_banner", "-v", "error", "-y",
+    from .config import FFMPEG
+    cmd = [FFMPEG, "-hide_banner", "-v", "error", "-y",
            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
            "-i", wav, "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", mp4]
@@ -102,10 +103,14 @@ def run(out_dir=None):
                                      "error": traceback.format_exc()[-1500:]}
 
     def s_ffprobe():
-        r = subprocess.run(["ffprobe", "-version"], stdout=subprocess.PIPE,
+        r = subprocess.run([C.FFPROBE, "-version"], stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, creationflags=C.popen_flags())
-        return {"_ok": r.returncode == 0, "ffprobe": shutil.which("ffprobe"),
-                "ffmpeg": shutil.which("ffmpeg"),
+        # frozen: the bundled copies by absolute path; also what a bare name
+        # (the engine) resolves to - it must be the same bundled ffmpeg
+        return {"_ok": r.returncode == 0, "ffprobe": C.FFPROBE, "ffmpeg": C.FFMPEG,
+                "ffprobe_on_path": shutil.which("ffprobe"),
+                "ffmpeg_on_path": shutil.which("ffmpeg"),
+                "no_cwd_exe_search": os.environ.get("NoDefaultCurrentDirectoryInExePath"),
                 "version": r.stdout.decode(errors="replace").splitlines()[0]}
 
     def s_environment():

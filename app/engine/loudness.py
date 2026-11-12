@@ -4,11 +4,9 @@ import os
 import re
 import math
 import json
-import subprocess
 
-from ..config import limit_cmd, popen_flags
-from .encode import build_audio_recode_args
-from .probe import probe_audio_streams, probe_duration
+from .encode import build_audio_recode_args, cover_streams, restore_covers
+from .probe import has_video_stream, output_problem, probe_audio_streams, probe_duration
 from .process import _run_capture_stoppable, _run_exempt, run_ffmpeg_with_progress
 
 
@@ -21,25 +19,42 @@ from .process import _run_capture_stoppable, _run_exempt, run_ffmpeg_with_progre
 _MEAS_SILENCE_TRIM = "silenceremove=start_periods=1:start_threshold=-50dB"
 
 
-def probe_volume(input_file, track=0):
+def probe_volume(input_file, track=0, stop_event=None):
     """Mean and max volume (dB) of one audio stream (0:a:track, default the
     first) via ffmpeg volumedetect, ignoring a silent lead-in.
+    stop_event: when set, ffmpeg is killed and (None, None) returned.
     Returns (mean_db, max_db)."""
-    try:
-        r = subprocess.run(
-            limit_cmd(["ffmpeg", "-hide_banner", "-nostats", "-i", input_file,
-                       "-map", f"0:a:{int(track or 0)}?", "-af",
-                       f"{_MEAS_SILENCE_TRIM},volumedetect", "-vn", "-f", "null", "-"]),
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=popen_flags())
-    except OSError:                        # ffmpeg missing
+    rc, t = _run_capture_stoppable(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", input_file,
+         "-map", f"0:a:{int(track or 0)}?", "-af",
+         f"{_MEAS_SILENCE_TRIM},volumedetect", "-vn", "-f", "null", "-"], stop_event)
+    if rc == -1:                           # stopped
         return None, None
-    t = r.stderr.decode(errors="replace")
 
     def _g(pat):
-        m = re.search(pat, t)
+        m = re.search(pat, t or "")
         return float(m.group(1)) if m else None
 
     return _g(r"mean_volume:\s*(-?\d+(?:\.\d+)?) dB"), _g(r"max_volume:\s*(-?\d+(?:\.\d+)?) dB")
+
+
+# a pass-1 loudnorm report below this (or -inf) is a silent / near-silent
+# track: linear normalizing it would need +50 dB or more (or fail outright,
+# "input_i -inf" makes the whole pass-2 filter invalid) - leave it alone
+_MIN_MEASURABLE_LUFS = -70.0
+
+
+def _meas_ok(meas):
+    """True if a loudnorm pass-1 report can drive a two-pass normalize:
+    every value finite and the track not (near) silent."""
+    if not meas:
+        return False
+    try:
+        vals = [float(meas[k]) for k in ("input_i", "input_tp", "input_lra",
+                                         "input_thresh", "target_offset")]
+    except (TypeError, ValueError, KeyError):
+        return False
+    return all(math.isfinite(v) for v in vals) and vals[0] >= _MIN_MEASURABLE_LUFS
 
 
 def _loudnorm_args(target_i, tp, lra, meas):
@@ -96,17 +111,24 @@ def export_audio_clip(input_file, output_file, start, end, codec, extra_args,
             return -1, ""
         found = _loudnorm_json(text, "input_i")
         meas = found[-1] if found else None
-        if meas:
+        if _meas_ok(meas):
             if on_log:
                 on_log(f"   clip measured {meas['input_i']} LUFS, true peak "
                        f"{meas['input_tp']} dBTP -> normalizing to {target} LUFS (stereo)")
             af.append(_loudnorm_args(target, tp, lra, meas))
+            # loudnorm outputs 192 kHz: bring it back to a normal rate
+            af.append("aresample=48000")
+        elif meas:
+            # silent / near-silent clip: -inf LUFS would make the filter
+            # invalid (export fails) and +70 dB of gain is no use anyway
+            if on_log:
+                on_log(f"   [WARN] the clip is silent or nearly so ({meas.get('input_i')}"
+                       " LUFS) - exported without normalization")
         else:
             if on_log:
                 on_log("   [WARN] could not measure the clip - single-pass loudnorm")
             af.append(f"loudnorm=I={target}:TP={tp}:LRA={lra}")
-        # loudnorm outputs 192 kHz: bring it back to a normal rate
-        af.append("aresample=48000")
+            af.append("aresample=48000")
     if af:
         cmd += ["-af", ",".join(af)]
     cmd += ["-c:a", codec] + list(extra_args)
@@ -184,9 +206,14 @@ def _apply_audio_filters(input_file, output_file, keep_video, audio_out, filters
     cmd = ["ffmpeg", "-y", "-i", input_file]
     if tracks is not None:
         tracks = [int(t) for t in tracks] or [0]
+    # cover art copied into MKV would become a 1-frame video TRACK: leave it
+    # out of the copy and attach it again afterwards (MP4 copies it fine)
+    covers = (cover_streams(input_file) if keep_video and
+              os.path.splitext(output_file)[1].lower() in (".mkv", ".webm") else [])
+    copy_all = ["-map", "0"] + [x for c in covers for x in ("-map", f"-0:{c['index']}")]
     if keep_video and tracks is not None and streams:
         fmap = {t: filters[min(k, len(filters) - 1)] for k, t in enumerate(tracks)}
-        cmd += ["-map", "0", "-c:v", "copy", "-c:s", "copy", "-c:d", "copy"]
+        cmd += copy_all + ["-c:v", "copy", "-c:s", "copy", "-c:d", "copy"]
         for i, s in enumerate(streams):
             if i not in fmap:
                 cmd += [f"-c:a:{i}", "copy"]
@@ -201,7 +228,7 @@ def _apply_audio_filters(input_file, output_file, keep_video, audio_out, filters
                 enc, suffix = _track_encode_args(i, s, codec, bitrate)
                 cmd += [f"-filter:a:{i}", fmap[i] + suffix] + enc
     elif keep_video:
-        cmd += ["-map", "0", "-c:v", "copy", "-c:s", "copy", "-c:d", "copy"]
+        cmd += copy_all + ["-c:v", "copy", "-c:s", "copy", "-c:d", "copy"]
         if not streams:            # couldn't list the tracks: one filter for all
             cmd += ["-filter:a", filters[0]]
             cmd += _audio_encode_args(input_file, output_file, audio_out)
@@ -227,17 +254,29 @@ def _apply_audio_filters(input_file, output_file, keep_video, audio_out, filters
         enc, suffix = _track_encode_args(0, streams[ti] if streams else {}, codec, bitrate)
         cmd += ["-map", f"0:a:{ti}", "-vn", "-filter:a:0", filters[0] + suffix] + enc
     cmd += [output_file]
+    dur = probe_duration(input_file) or 0
     if stop_event is not None or on_progress is not None:
-        dur = probe_duration(input_file) or 0
         rc = run_ffmpeg_with_progress(cmd, dur, on_progress=on_progress,
                                       on_log=on_log, stop_event=stop_event,
                                       stderr_out=stderr_out)
-        return rc, ""      # failures already reported via on_log
-    r = _run_exempt(cmd)
-    text = r.stderr.decode(errors="replace")
-    if stderr_out is not None:
-        stderr_out.append(text)
-    return r.returncode, text
+        text = ""          # failures already reported via on_log
+    else:
+        r = _run_exempt(cmd)
+        rc, text = r.returncode, r.stderr.decode(errors="replace")
+        if stderr_out is not None:
+            stderr_out.append(text)
+    if rc == 0:
+        # safety gate: an empty / video-less / far too short result is a
+        # failure (the caller then discards it), never a finished file
+        problem = output_problem(output_file, dur,
+                                 need_video=bool(keep_video) and has_video_stream(input_file))
+        if problem:
+            if on_log:
+                on_log(f"   [FAIL] output rejected: {problem}")
+            return 1, f"output rejected: {problem}"
+        if covers:
+            restore_covers(input_file, output_file, on_log, covers)
+    return rc, text
 
 
 def _audio_encode_args(input_file, output_file, audio_out):
@@ -305,7 +344,7 @@ def normalize_loudness(input_file, output_file, target_i, keep_video, tp="-1.5",
     # mismatched measurements and miss the target badly.
     streams = probe_audio_streams(input_file)
     sel = _select_tracks(streams, keep_video, tracks)
-    filters, measured = [], []
+    filters, measured, done = [], [], []
     for ti in sel:
         if stop_event is not None and stop_event.is_set():
             return -1, ""
@@ -319,6 +358,14 @@ def normalize_loudness(input_file, output_file, target_i, keep_video, tp="-1.5",
         meas = found[-1] if found else None
         measured.append(meas)
         label = f"track {ti}" + (f" ({streams[ti].get('lang')})" if ti < len(streams) else "")
+        if meas and not _meas_ok(meas):
+            # a silent track (input_i -inf) would make pass 2's filter invalid
+            # and fail the WHOLE file - copy that track unchanged instead
+            if on_log:
+                on_log(f"   {label}: silent or nearly so ({meas.get('input_i')} LUFS) -"
+                       " left unchanged")
+            continue
+        done.append(ti)
         lra_t = lra
         if meas:
             if on_log:
@@ -353,11 +400,20 @@ def normalize_loudness(input_file, output_file, target_i, keep_video, tp="-1.5",
         # source rate (fallback 48 kHz)
         rate = (streams[ti].get("sample_rate") if ti < len(streams) else None) or 48000
         filters.append(f"{af}:print_format=json,aresample={rate}")
+    if result is not None:
+        result["measured"] = measured
+        result["modes"] = []
+    if not done:
+        msg = "nothing to normalize - the audio is silent"
+        if on_log:
+            on_log(f"   [FAIL] {msg}")
+        return 1, msg
     err_text = []
+    # skipped (silent) tracks are stream-copied: pass the processed ones
     rc, err = _apply_audio_filters(input_file, output_file, keep_video, audio_out, filters,
                                    stop_event=stop_event, on_progress=on_progress,
                                    on_log=on_log, stderr_out=err_text,
-                                   tracks=sel if tracks is not None else None)
+                                   tracks=done if (tracks is not None or done != sel) else None)
     modes = [d.get("normalization_type") for d in
              _loudnorm_json("".join(err_text), "normalization_type")]
     if result is not None:
@@ -417,10 +473,10 @@ def measure_loudness_tracks(input_file, stop_event=None):
     return out
 
 
-def measure_lufs(input_file, track=0):
+def measure_lufs(input_file, track=0, stop_event=None):
     """Integrated loudness (LUFS) of a file's audio via loudnorm pass 1.
     Returns a float or None. (Kept for older callers; see measure_loudness.)"""
-    return measure_loudness(input_file, track)[0]
+    return measure_loudness(input_file, track, stop_event)[0]
 
 
 def probe_peaks(input_file, track=0, true_peak=False, stop_event=None):

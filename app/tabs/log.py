@@ -7,7 +7,9 @@ from tkinter import ttk, filedialog, messagebox
 from .. import applog
 from ..i18n import tr
 from ..config import LOGS_DIR
-from ..ui.widgets import help_button, info_icon, trim_text_lines
+from ..ui.helpwin import help_button
+from ..ui.tooltips import info_icon
+from ..ui.widgets import trim_text_lines
 from ..ui import icons
 
 

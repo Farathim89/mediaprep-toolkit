@@ -10,6 +10,15 @@ from ctypes import wintypes
 
 _u32 = ctypes.windll.user32
 _gdi = ctypes.windll.gdi32
+# per-monitor DPI aware, or GetWindowRect returns scaled-down sizes on a
+# 125-200% display and the capture is cropped
+try:
+    _u32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))    # PER_MONITOR_AWARE_V2
+except Exception:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
 PW_RENDERFULLCONTENT = 2
 
 

@@ -22,8 +22,9 @@ from ..engine.formatting import fmt_time
 from ..engine.plexscan import detect_credits_visual
 from ..engine.recurring import detect_recurring
 from ..i18n import tr
-from ..ui.widgets import add_tooltip
-from .common import _KIND_NAMES, _list_media, _same_file, mark_edges
+from ..ui.tkthread import _call_tk
+from ..ui.tooltips import add_tooltip
+from .common import _KIND_NAMES, _list_media, _same_file, mark_edges, opt_kwargs
 from .cut_common import _best_ok, _cand_label, tr_key
 from .templates_detect import _SENS
 from .. import jobs as jobreg
@@ -116,20 +117,23 @@ class TemplateAutoMixin:
         opts = {"mode": self.det_mode_var.get(), "lang": self._det_lang(), "window": window,
                 "minlens": minlens, "thresh": _SENS.get(self.det_sens.get(), 0.8),
                 "neighbours": max_eps - 1 if max_eps > 1 else _DEFAULT_NEIGHBOURS,
-                "kinds": kinds, **self._det_margins()}
+                "kinds": kinds, **self._det_margins(),
+                # read here (Tk thread): the folders Cut / Edit uses now
+                "dirs": dict(self.DIRMAP)}
         if not self.player.has_video() or not _same_file(getattr(self.player, "_path", None),
                                                          video):
             self.player.load(video)
         if callable(self.save_hook):
             self.save_hook()
-        self.cut_stop.clear()
+        # its own stop event: Template cut / Auto-cut have theirs (cut_stop)
+        stop = self.tpl_detect_stop = threading.Event()
         self._tpl_detecting = True
         self._sync_buttons()
         self.bar.configure(mode="determinate", maximum=1000)
         self.bar["value"] = 0
-        jid = self._jid = jobreg.begin(tr("Cut template auto-detect"), stop_event=self.cut_stop,
+        jid = self._jid = jobreg.begin(tr("Cut template auto-detect"), stop_event=stop,
                                        tab=self)
-        threading.Thread(target=self._tpl_auto_worker, args=(video, opts, jid),
+        threading.Thread(target=self._tpl_auto_worker, args=(video, opts, jid, stop),
                          daemon=True).start()
 
     def _tpl_progress(self, frac, text=""):
@@ -140,32 +144,37 @@ class TemplateAutoMixin:
                     self.status_var.set(text)
             except tk.TclError:
                 pass
-        self.after(0, _a)
+        _call_tk(_a)
 
-    def _tpl_auto_worker(self, video, opts, jid=None):
+    def _tpl_auto_worker(self, video, opts, jid=None, stop=None):
         cands = {k: [] for k in _KINDS}
         crashed = False
         name = os.path.basename(video)
-        stop = self.cut_stop
+        stop = stop or self.tpl_detect_stop
+        dirs = opts.get("dirs") or {}
         try:
             mode = opts["mode"]
             self.log(f"[AUTO] {name}: detecting {', '.join(opts['kinds'])} (by {mode})")
             # 1) the templates you already have
-            cfg = {"intro_dir": self.DIRMAP["intro"], "credits_dir": self.DIRMAP["credits"],
-                   "preintro_dir": self.DIRMAP["preintro"],
-                   "aftercredits_dir": self.DIRMAP["aftercredits"],
+            cfg = {"intro_dir": dirs.get("intro"), "credits_dir": dirs.get("credits"),
+                   "preintro_dir": dirs.get("preintro"),
+                   "aftercredits_dir": dirs.get("aftercredits"),
                    "confidence": _CONFIDENCE, "match_lang": opts["lang"],
                    "detect_mode": mode,
                    "margin_frames": opts["margin_frames"],
                    "template_margin": opts["template_margin"],
                    "use": {k: k in opts["kinds"] for k in _KINDS}}
             self._tpl_progress(0.02, tr("Loading templates..."))
-            tpls = load_templates_for(cfg, stop_event=stop)
+            tpls = load_templates_for(cfg, log=self.log, stop_event=stop)
             if stop.is_set():
                 return
             if any(tpls.values()):
                 self._tpl_progress(0.1, tr("Matching the existing templates..."))
-                res = detect_segments(video, cfg, stop_event=stop, templates=tpls)
+                res = detect_segments(
+                    video, cfg, stop_event=stop, templates=tpls, log=self.log,
+                    **opt_kwargs(detect_segments, progress=lambda f, _t="": self._tpl_progress(
+                        0.1 + 0.1 * max(0.0, min(1.0, float(f or 0.0))),
+                        tr("Matching the existing templates..."))))
                 if stop.is_set():
                     return
                 for k in _KINDS:
@@ -237,7 +246,7 @@ class TemplateAutoMixin:
                        summary=tr("{name}: found {what}", name=name,
                                   what=", ".join(tr_key(_KIND_NAMES[k]) for k in found)
                                   or tr("nothing")))
-            self.after(0, lambda: self._tpl_auto_done(video, opts, cands, stopped, crashed))
+            _call_tk(lambda: self._tpl_auto_done(video, opts, cands, stopped, crashed))
 
     def _tpl_auto_done(self, video, opts, cands, stopped, crashed):
         self._tpl_detecting = False
@@ -254,13 +263,21 @@ class TemplateAutoMixin:
             self.log("[AUTO] another video was loaded meanwhile - results kept in the ▾ "
                      "lists only.")
             return
-        filled, starts = [], {}
+        filled, starts, cleared = [], {}, []
         for k in _KINDS:
             if k not in opts["kinds"]:
                 continue
             lst = cands[k]
             pick = next((c for c in lst if c.get("season")), None) or _best_ok(lst)
             if not pick:
+                # searched, nothing found: don't leave the previous episode's
+                # times there (ticked, they would be cut as this episode's)
+                on, ef, et = self.sections[k]
+                on.set(False)
+                ef.clear()
+                et.clear()
+                mark_edges(ef, et, None)
+                cleared.append(k)
                 continue
             self._tpl_pick(k, pick, lst.index(pick) + 1, seek=False)
             filled.append(k)
@@ -276,5 +293,9 @@ class TemplateAutoMixin:
                 segs=", ".join(tr_key(_KIND_NAMES[k]) for k in filled)))
         else:
             self.status_var.set(tr("No confident match - try ▾ for weak candidates"))
+        if cleared:
+            self._refresh_markers()
+            self.log(f"[AUTO] nothing found for {', '.join(cleared)} - those rows were cleared "
+                     "and unticked.")
         self.log(f"[AUTO] filled: {', '.join(filled) or 'nothing'} - check in the player, "
                  "then 'Cut template(s)'.")

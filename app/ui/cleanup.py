@@ -15,10 +15,11 @@ from ..config import (INTRO_DIR, CREDITS_DIR, PREINTRO_DIR, AFTERCREDITS_DIR, VI
                       OUTPUT_DIR, AUDIOGAIN_INPUT, AUDIOGAIN_OUTPUT, TEMP_DIR, short_path)
 from .. import applog
 from ..i18n import tr, ntr
-from .widgets import help_button
+from .helpwin import help_button
 from ..engine.files import TRASH_DIR, move_into_trash
 from ..engine.recode import CONVERT_INPUT, CONVERT_OUTPUT
-from . import icons
+from . import icons, themes
+from .dialogfit import ScrollBody
 
 # (English label, shown label, path) - the English label names the trash
 # sub-folder and the log line, so it never changes with the language
@@ -141,51 +142,59 @@ class CleanupDialog(tk.Toplevel):
         self.transient(master)
         self.resizable(False, False)
 
-        frm = ttk.Frame(self, padding=12)
-        frm.pack(fill="both", expand=True)
+        outer = ttk.Frame(self, padding=themes.px(12))
+        outer.pack(fill="both", expand=True)
+        # the folder list scrolls when the dialog is taller than the screen
+        # (ui/dialogfit.py); the buttons stay below it
+        body = ScrollBody(outer)
+        frm = body.interior
         frm.columnconfigure(1, weight=1)
         ttk.Label(frm, text=tr("Tick the folders to empty. Their contents are MOVED into a "
                                "timestamped folder under Data\\temp\\trash - nothing is "
                                "deleted, so you can still recover files."),
-                  wraplength=430, justify="left").grid(
-                      row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
-        help_button(frm, "cleanup").grid(row=0, column=2, sticky="ne", padx=(8, 0))
+                  wraplength=themes.px(430), justify="left").grid(
+                      row=0, column=0, columnspan=2, sticky="w", pady=themes.pad(0, 10))
+        hbtn = help_button(frm, "cleanup")
+        hbtn.grid(row=0, column=2, sticky="ne", padx=themes.pad(8, 0))
 
         self._rows = []           # (BooleanVar, (label, shown), path, count_label)
         for i, (label, shown, path) in enumerate(FOLDERS, start=1):
             v = tk.BooleanVar(value=False)
             ttk.Checkbutton(frm, text=f"{shown}  ({short_path(path)})",
                             variable=v).grid(
-                row=i, column=0, sticky="w", pady=1)
+                row=i, column=0, sticky="w", pady=themes.px(1))
             lbl = ttk.Label(frm, text="")
-            lbl.grid(row=i, column=1, sticky="e", padx=(20, 0))
+            lbl.grid(row=i, column=1, sticky="e", padx=themes.pad(20, 0))
             self._rows.append((v, (label, shown), path, lbl))
 
         # trash size + the one permanent-delete action
         trow = ttk.Frame(frm)
-        trow.grid(row=len(FOLDERS) + 1, column=0, columnspan=2, sticky="we", pady=(12, 0))
+        trow.grid(row=len(FOLDERS) + 1, column=0, columnspan=2, sticky="we", pady=themes.pad(12, 0))
         trow.columnconfigure(1, weight=1)
         ttk.Label(trow, text=tr("Trash (Data\\temp\\trash):")).grid(row=0, column=0, sticky="w")
         self.trash_lbl = ttk.Label(trow, text="")
         self.trash_lbl.grid(row=0, column=1, sticky="e")
         er = ttk.Frame(trow)
-        er.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        er.grid(row=1, column=0, columnspan=2, sticky="w", pady=themes.pad(4, 0))
         self.empty_btn = icons.decorate(ttk.Button(er, text=tr("Empty trash older than"), command=self._empty_trash), "trash")
         self.empty_btn.pack(side="left")
         self.days_var = tk.StringVar(value="14")
         ttk.Spinbox(er, from_=0, to=3650, width=5, textvariable=self.days_var).pack(
-            side="left", padx=4)
+            side="left", padx=themes.px(4))
         ttk.Label(er, text=tr("days  (PERMANENT - asks first)")).pack(side="left")
 
-        btns = ttk.Frame(frm)
-        btns.grid(row=len(FOLDERS) + 2, column=0, columnspan=2,
-                  sticky="we", pady=(12, 0))
+        btns = ttk.Frame(outer)
         icons.decorate(ttk.Button(btns, text=tr("Refresh counts"), command=self._refresh), "refresh").pack(side="left")
         icons.decorate(ttk.Button(btns, text=tr("Open trash folder"), command=self._open_trash), "folder").pack(
-            side="left", padx=6)
+            side="left", padx=themes.px(6))
         ttk.Button(btns, text=tr("Close"), command=self.destroy).pack(side="right")
         self.clean_btn = icons.decorate(ttk.Button(btns, style="Accent.TButton", text=tr("Clean up selected"), command=self._run), "broom")
-        self.clean_btn.pack(side="right", padx=6)
+        self.clean_btn.pack(side="right", padx=themes.px(6))
+        # under the first two columns, like the rows above (not under the
+        # help button's column; a ttk widget's size is known at once)
+        btns.pack(side="bottom", fill="x", pady=themes.pad(12, 0),
+                  padx=(0, hbtn.winfo_reqwidth() + themes.px(8)))
+        body.pack(fill="both", expand=True)
 
         self._refresh()
         self.protocol("WM_DELETE_WINDOW", self.destroy)

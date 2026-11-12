@@ -4,21 +4,32 @@ naming, duration / size result lines and output verification."""
 import os
 import glob
 import time
+from collections import namedtuple
 
 from ..config import MEDIA_EXTS, TEMP_DIR
 from .chapters import add_chapters, build_chapters
 from .detect import _detect_core, _want_seg, load_templates_for
 from .encode import (PLEX_PRESETS, _SHORT_PIECE, audio_track_codecs, build_audio_pass,
                      build_ffmpeg_cut, build_ffmpeg_inject, build_stream_maps,
-                     crf_for_encoder, plex_plan, plex_size_check, resolve_encoder)
-from .files import (_cleanup, _commit_part, _move_to_done, _part_path, _place_output,
-                    _same_path)
+                     cover_streams, crf_for_encoder, fit_container, plex_plan,
+                     plex_size_check, resolve_encoder, restore_covers)
+from .files import (_cleanup, _commit_part, _move_to_done, _part_path, _path_key,
+                    _place_output, _same_path)
 from .formatting import fmt_time, format_seconds, format_size
-from .probe import (probe_audio_streams, probe_duration, probe_first_frame_at,
-                    probe_piece_timing, probe_streams, probe_video_duration,
-                    probe_video_fps, probe_video_info)
+from .probe import (output_problem, probe_audio_streams, probe_duration,
+                    probe_first_frame_at, probe_piece_timing, probe_start_time,
+                    probe_streams, probe_video_duration, probe_video_fps, probe_video_info)
 from .process import run_ffmpeg_with_progress
 from .subs import _disposition_args, trim_container_to_video
+
+
+class ManualResult(namedtuple("ManualResult", "produced output_path")):
+    """run_manual's result: (produced: bool, output_path: str or None).
+    Truthy only when an output was produced."""
+    __slots__ = ()
+
+    def __bool__(self):
+        return bool(self.produced)
 
 
 def duration_check_line(final_output, expected_sec):
@@ -51,21 +62,24 @@ def saved_size_line(final_output, src_size, wall_start):
             f" - total {format_seconds(time.time() - wall_start)}\n")
 
 
+def _range_kf_times(a, b, interval):
+    """a, b and (interval > 0) a + k*interval below b - computed per k, not
+    summed up, so no float drift creeps in (0.1 added 1000 times != 100.0)."""
+    times = {round(a, 6), round(b, 6)}
+    if interval and interval > 0:
+        k = 0
+        while a + k * interval < b:
+            times.add(round(a + k * interval, 6))
+            k += 1
+    return times
+
+
 def build_forced_keyframe_times(valid_intro, intro_start, intro_end,
                                 valid_credits, credits_start, credits_end,
                                 keyframe_interval, total_duration):
-    times = set()
-    for valid, a, b in ((valid_intro, intro_start, intro_end),
-                        (valid_credits, credits_start, credits_end)):
-        if valid:
-            times.add(a)
-            times.add(b)
-            if keyframe_interval and keyframe_interval > 0:
-                t = a
-                while t < b:
-                    times.add(t)
-                    t += keyframe_interval
-    return sorted(t for t in times if 0.0 < t < total_duration)
+    return keyframe_times_from_ranges(
+        [(valid_intro, intro_start, intro_end), (valid_credits, credits_start, credits_end)],
+        keyframe_interval, total_duration)
 
 
 def compute_keep_segments(total_duration, pre_intro=None, intro=None,
@@ -126,20 +140,61 @@ def keyframe_times_from_ranges(ranges, keyframe_interval, total_duration):
     times = set()
     for valid, a, b in ranges:
         if valid:
-            times.add(a)
-            times.add(b)
-            if keyframe_interval and keyframe_interval > 0:
-                t = a
-                while t < b:
-                    times.add(t)
-                    t += keyframe_interval
+            times |= _range_kf_times(a, b, keyframe_interval)
     return sorted(t for t in times if 0.0 < t < total_duration)
+
+
+# ======================= output safety =======================
+def _plan_output_ext(cfg_encoder, mode, video, ext, vinfo):
+    """The extension the output of `video` gets: chapters mode keeps the
+    source container (stream copy), Plex-ready is MKV, a re-encode keeps
+    the source's unless it can't hold the codecs (fit_container -> .mkv)."""
+    if mode == "chapters":
+        return ext
+    if cfg_encoder in PLEX_PRESETS:
+        return ".mkv"
+    enc = resolve_encoder(cfg_encoder, vinfo["codec"])
+    return fit_container(ext, enc, audio_track_codecs(probe_audio_streams(video)))
+
+
+def _gate(expected_sec, need_video):
+    """The safety gate for _commit_part / _place_output: an output that is
+    empty, has no video frame (when the source has video) or is far off the
+    expected length is rejected - never placed, its source never moved."""
+    return lambda p: output_problem(p, expected_sec, need_video)
+
+
+def _kept_sec(keep, src_vdur):
+    """Length of the kept ranges [(name, start, end)], each clipped to the
+    source's VIDEO length (audio / a subtitle may run on past the picture)."""
+    return sum(max(0.0, (min(e, src_vdur) if src_vdur else e) - s) for _n, s, e in keep)
+
+
+def _move_source_to_done(video, final_output, protect_keys, log):
+    """Move a finished source into <its folder>/done - unless that path is
+    this run's own output (output folder = <source>/done) or another
+    protected file (protect_keys: _path_key()s)."""
+    done_dir = os.path.join(os.path.dirname(video) or ".", "done")
+    dst = os.path.join(done_dir, os.path.basename(video))
+    if _same_path(dst, video):
+        return
+    if _same_path(dst, final_output) or _path_key(dst) in protect_keys:
+        log(f"   [NOTE] source not moved to done: {dst} is an output of this run")
+        return
+    try:
+        os.makedirs(done_dir, exist_ok=True)
+        _move_to_done(video, dst, log)
+    except OSError as e:
+        log(f"   [WARN] could not move source to done: {e}")
 
 
 # ======================= batch remover engine =======================
 def run_batch(cfg, ui, stop_event):
     """cfg: dict of settings. ui: object with .log(msg), .status(text),
-    .progress(frac, text). stop_event: threading.Event."""
+    .progress(frac, text). stop_event: threading.Event.
+    Returns a per-file summary [(source, status, output_path or None)] with
+    status "ok" / "failed" / "skipped" / "stopped" ([] if nothing ran)."""
+    results = []
     try:
         import importlib
         for _mod in ("numpy", "librosa", "scipy.signal"):
@@ -147,7 +202,7 @@ def run_batch(cfg, ui, stop_event):
     except ImportError as e:
         ui.log(f"[FAIL] Missing package: {e}")
         ui.log("Install with:  pip install librosa numpy scipy")
-        return
+        return results
 
     os.makedirs(cfg["output_dir"], exist_ok=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
@@ -164,14 +219,14 @@ def run_batch(cfg, ui, stop_event):
         aftercredits_data = templates["aftercredits"]
         if stop_event.is_set():
             ui.log("STOPPED by user.")
-            return
+            return results
         skipped = [k for k in ("preintro", "intro", "credits", "aftercredits")
                    if not _want_seg(cfg, k)]
         if skipped:
             ui.log(f"Segment type(s) disabled for this run: {', '.join(skipped)}")
         if not (intros_data or credits_data or preintro_data or aftercredits_data):
             ui.log("[FAIL] No usable templates found - nothing to detect with.")
-            return
+            return results
 
         video_files, unsupported = [], []
         for f in glob.glob(os.path.join(cfg["video_dir"], "*")):
@@ -185,10 +240,15 @@ def run_batch(cfg, ui, stop_event):
             ui.log(f"Skipped {len(names)} file(s) of unsupported type: "
                    + ", ".join(names[:5]) + (" ..." if len(names) > 5 else "") + "\n")
         if not video_files:
-            return
+            return results
 
         n_videos = len(video_files)
         batch_t0 = time.time()
+        # no output may replace a source of this batch (Plex mode with the
+        # output folder = the source folder: ep.mp4 -> ep.mkv would replace
+        # the SOURCE ep.mkv) or an output this run already wrote
+        source_keys = {_path_key(v) for v in video_files}
+        outputs_made = set()
 
         def batch_progress(base, span, vb):
             """The BAR shows this video's progress (continuous across its
@@ -206,284 +266,13 @@ def run_batch(cfg, ui, stop_event):
         for vi, video in enumerate(video_files, 1):
             if stop_event.is_set():
                 break
-            filename = os.path.basename(video)
-            name, ext = os.path.splitext(filename)
-            out_ext = ".mkv" if plex_key else ext       # Plex-ready output is MKV
-            final_output = os.path.join(cfg["output_dir"], f"{name}{out_ext}")
-            temp_segs = []
-            temp_audio = ""         # episode audio is decoded + removed by _detect_core
-            produced = False        # True only if THIS run wrote the output ok
-            video_wall = time.time()
-            vb, vspan = (vi - 1) / n_videos, 1.0 / n_videos
-            if _same_path(final_output, video):
-                ui.log(f"[{vi}/{len(video_files)}] {filename}\n   [FAIL] output folder is"
-                       " the source folder - would overwrite the source, skipped\n")
-                continue
-
-            ui.status(f"Video {vi}/{len(video_files)}: {filename}")
-            ui.progress(0.0, f"analysing video {vi}/{n_videos}")
-            src_size = os.path.getsize(video)
-            ui.log(f"[{vi}/{len(video_files)}] {filename}  ({format_size(src_size)})")
-
-            # the same matcher the Manual cut "Auto-detect" / review dry run
-            # use (detect_segments) - best candidate of each kind decides
-            det = _detect_core(video, cfg, templates, stop_event, ui.log)
-            if stop_event.is_set():
-                _cleanup(temp_audio, temp_segs)
-                break
-            if det is None:
-                ui.log("   [FAIL] audio extract failed - skipping\n")
-                continue
-            total_duration = det["duration"]
-
-            def _top(kind):
-                c = det.get(kind) or []
-                return c[0] if c and c[0]["ok"] else None
-
-            c_in, c_cr, c_pre, c_aft = (_top("intro"), _top("credits"),
-                                        _top("preintro"), _top("aftercredits"))
-            valid_intro, valid_credits = c_in is not None, c_cr is not None
-            valid_preintro, valid_aftercredits = c_pre is not None, c_aft is not None
-            intro_start, intro_end = (c_in["start"], c_in["end"]) if c_in else (0.0, 0.0)
-            # chapters mode marks the intro where it REALLY starts (the part
-            # before it becomes its own chapter); the cut modes drop from 0
-            intro_real_start = c_in["match_start"] if c_in else intro_start
-            credits_start, credits_end = ((c_cr["start"], c_cr["end"]) if c_cr
-                                          else (total_duration, total_duration))
-            preintro_start, preintro_end = ((c_pre["start"], c_pre["end"]) if c_pre
-                                            else (0.0, 0.0))
-            aftercredits_start, aftercredits_end = (
-                (c_aft["start"], c_aft["end"]) if c_aft
-                else (total_duration, total_duration))
-
-            if not (valid_intro or valid_credits or valid_preintro or valid_aftercredits):
-                ui.log("   [SKIP] no matches\n")
-                _cleanup(temp_audio, temp_segs)
-                continue
-            # optional: if a segment the user enabled (and has templates for) was
-            # NOT found above the confidence, skip the WHOLE episode instead of
-            # producing a partial cut - so weak-credits episodes are left intact
-            # for you to handle, not output with only the intro removed
-            if cfg.get("skip_incomplete"):
-                missing = []
-                for kind, have_tpl, is_valid in (
-                        ("pre-intro", preintro_data, valid_preintro),
-                        ("intro", intros_data, valid_intro),
-                        ("credits", credits_data, valid_credits),
-                        ("after-credits", aftercredits_data, valid_aftercredits)):
-                    if have_tpl and not is_valid:
-                        missing.append(kind)
-                if missing:
-                    ui.log(f"   [SKIP] enabled segment(s) not found: {', '.join(missing)}"
-                           " - leaving this episode untouched for review\n")
-                    _cleanup(temp_audio, temp_segs)
-                    continue
-            if stop_event.is_set():
-                _cleanup(temp_audio, temp_segs)
-                break
-
-            fps = probe_video_fps(video)
-
-            # --- source info + output bit depth + size warning ---
-            vinfo = probe_video_info(video)
-            br = f", ~{vinfo['bitrate_mbps']:.1f} Mbit/s" if vinfo["bitrate_mbps"] else ""
-            ui.log(f"   Source video: {vinfo['codec']} {vinfo['bit_depth']}-bit"
-                   f" ({vinfo['pix_fmt']}){br}")
-            plex = None
-            if cfg["mode"] == "chapters":       # pure stream copy, no encoder
-                encoder, crf, out_depth = None, None, None
-                ui.log("   Output: stream copy (no re-encode)")
-            elif plex_key:
-                if ext.lower() != ".mkv":
-                    ui.log(f"   Plex-ready: source is {ext.lower()} - writing .mkv")
-                plex = plex_plan(plex_key, video, cfg["preset"], ui.log)
-                encoder, crf, out_depth = plex["encoder"], plex["crf"], plex["bit_depth"]
-            else:
-                encoder = resolve_encoder(cfg["encoder"], vinfo["codec"], ui.log)
-                crf = crf_for_encoder(encoder, cfg)
-                if cfg["bit_depth"] == "auto":
-                    out_depth = 10 if vinfo["bit_depth"] >= 10 else 8
-                else:
-                    out_depth = int(cfg["bit_depth"])
-                if encoder == "h264_nvenc" and out_depth >= 10:
-                    ui.log("   [WARN] H.264 NVENC cannot encode 10-bit - using 8-bit.")
-                    out_depth = 8
-                src_eff = 2 if vinfo["codec"] in ("hevc", "av1", "vp9") else 1
-                tgt_eff = 2 if encoder in ("libx265", "hevc_nvenc", "libsvtav1") else 1
-                if tgt_eff < src_eff or (vinfo["bit_depth"] >= 10 and out_depth == 8):
-                    ui.log("   [WARN] Source codec/bit depth is more efficient than the"
-                           " chosen output - the file may get MUCH bigger."
-                           " Consider H.265, 10-bit, CRF 22-24, preset slow.")
-                ui.log(f"   Output: {encoder} {out_depth}-bit,"
-                       f" CRF/CQ {crf}, preset {cfg['preset']}")
-
-            if cfg["mode"] == "cut":
-                drops = []
-                if valid_preintro:
-                    drops.append((preintro_start, preintro_end))
-                if valid_intro:
-                    drops.append((intro_start, intro_end))
-                if valid_credits:
-                    drops.append((credits_start, credits_end))
-                if valid_aftercredits:
-                    drops.append((aftercredits_start, aftercredits_end))
-                keep = _seg_names(keep_from_drops(total_duration, drops), total_duration)
-
-                steps = [n for n, _, _ in keep] + (["Stitching"] if len(keep) > 1 else [])
-                n_steps = len(steps)
-                ui.log(f"   Steps: {' -> '.join(steps)}")
-                audio_streams = probe_audio_streams(video)
-
-                # weight each segment's share of the batch bar by its duration
-                total_d = sum(e - s for _, s, e in keep) or 1.0
-                multi = len(keep) > 1
-                # a multi-piece cut encodes the audio in one seamless pass
-                # (_stitch); per-piece audio only for a single piece / Plex
-                piece_audio = not multi or bool(plex)
-                enc_span = vspan * (0.85 if multi else 1.0)
-                done_d = 0.0
-
-                ok = True
-                for i, (seg_name, s0, s1) in enumerate(keep, 1):
-                    if stop_event.is_set():
-                        ok = False
-                        break
-                    ui.status(f"Video {vi}/{len(video_files)}: {filename}  -  [{i}/{n_steps}] {seg_name}")
-                    seg_out = os.path.join(TEMP_DIR, f"seg_{vi}_{i}{out_ext}")
-                    temp_segs.append(seg_out)
-                    t0 = time.time()
-                    seg_cb = dict(cb, on_progress=batch_progress(
-                        vb + done_d / total_d * enc_span,
-                        (s1 - s0) / total_d * enc_span, vb))
-                    rc = build_ffmpeg_cut(video, seg_out, s0, s1, audio_streams,
-                                          crf, cfg["preset"], cfg["kf_interval"],
-                                          seg_name=seg_name, fps=fps,
-                                          encoder=encoder, subs_lang=subs_lang,
-                                          bit_depth=out_depth, plex=plex,
-                                          audio=piece_audio, **seg_cb)
-                    if rc != 0:
-                        if rc != -1:  # -1 = stopped by user, already logged
-                            ui.log(f"   [FAIL] {seg_name} failed")
-                        ok = False
-                        break
-                    done_d += s1 - s0
-                    ui.log(f"   [{i}/{n_steps}] {seg_name}: done in {format_seconds(time.time()-t0)}")
-
-                if ok and len(temp_segs) == 1:
-                    if _place_output(temp_segs[0], final_output, ui.log):
-                        produced = True
-                        ui.log(duration_check_line(
-                            final_output, sum(e - s for _, s, e in keep)).rstrip("\n"))
-                        ui.log(saved_size_line(final_output, src_size, video_wall))
-                elif ok and len(temp_segs) > 1:
-                    ui.status(f"Video {vi}/{len(video_files)}: {filename}  -  [{n_steps}/{n_steps}] Stitching")
-                    a_span = (vspan - enc_span) * 0.7
-                    placed, rc = _stitch(
-                        video, temp_segs, keep, final_output, audio_streams, plex,
-                        f"{vi}", cb,
-                        batch_progress(vb + enc_span, a_span, vb),
-                        batch_progress(vb + enc_span + a_span,
-                                       vspan - enc_span - a_span, vb), ui.log)
-                    if placed:
-                        produced = True
-                        ui.log(duration_check_line(
-                            final_output, sum(e - s for _, s, e in keep)).rstrip("\n"))
-                        ui.log(saved_size_line(final_output, src_size, video_wall))
-                    elif rc not in (0, -1):    # rc 0 = placing failed, logged already
-                        ui.log("   [FAIL] merge failed\n")
-                elif not stop_event.is_set():
-                    ui.log("   [FAIL] skipping this video\n")
-            elif cfg["mode"] == "chapters":
-                ch_drops = []
-                if valid_preintro:
-                    ch_drops.append((preintro_start, preintro_end, "Pre-intro"))
-                if valid_intro:
-                    ch_drops.append((intro_real_start, intro_end, "Intro"))
-                if valid_credits:
-                    ch_drops.append((credits_start, credits_end, "Credits"))
-                if valid_aftercredits:
-                    ch_drops.append((aftercredits_start, aftercredits_end, "After-credits"))
-                # "Intro: cut from file start": keep its meaning (everything
-                # before the intro is skippable) by titling that lead-in
-                # chapter "Cold Open", while the Intro marker sits where the
-                # intro really begins
-                lead = None
-                if valid_intro and cfg.get("intro_from_start"):
-                    if intro_real_start > 0.05:
-                        lead = "Cold Open"
-                        ui.log(f"   Intro chapter at its real start {intro_real_start:.1f}s;"
-                               " the part before it is a 'Cold Open' chapter")
-                    else:
-                        ui.log("   Intro chapter starts at 0 (the intro opens the file)")
-                chapters = build_chapters(total_duration, ch_drops, lead_title=lead)
-                # Chapter markers are metadata only: stream-copy the source
-                # (no re-encode, no quality loss). A player's skip lands on the
-                # source's nearest keyframe at each boundary.
-                ui.log(f"   Adding {len(chapters)} chapter marker(s) (stream copy)")
-                ui.status(f"Video {vi}/{len(video_files)}: {filename}  -  Add Chapters")
-                part = _part_path(final_output)
-                rc, err = add_chapters(video, part, chapters,
-                                       maps=build_stream_maps(video, subs_lang),
-                                       **dict(cb, on_progress=batch_progress(vb, vspan, vb)))
-                if _commit_part(rc, part, final_output, ui.log):
-                    produced = True
-                    ui.log(saved_size_line(final_output, src_size, video_wall))
-                elif rc not in (0, -1):
-                    for ln in err.strip().splitlines()[-4:]:
-                        ui.log(f"      | {ln}")
-                    ui.log("   [FAIL] adding chapters failed\n")
-            else:
-                kf_times = keyframe_times_from_ranges(
-                    [(valid_preintro, preintro_start, preintro_end),
-                     (valid_intro, intro_start, intro_end),
-                     (valid_credits, credits_start, credits_end),
-                     (valid_aftercredits, aftercredits_start, aftercredits_end)],
-                    cfg["kf_interval"], total_duration)
-                ui.log(f"   Injecting {len(kf_times)} forced keyframe(s), no cutting")
-                ui.status(f"Video {vi}/{len(video_files)}: {filename}  -  Inject Keyframes")
-                part = _part_path(final_output)
-                rc = build_ffmpeg_inject(video, part, kf_times, total_duration,
-                                         crf, cfg["preset"], fps=fps,
-                                         encoder=encoder, bit_depth=out_depth, subs_lang=subs_lang,
-                                         plex=plex,
-                                         **dict(cb, on_progress=batch_progress(vb, vspan, vb)))
-                if _commit_part(rc, part, final_output, ui.log):
-                    produced = True
-                    ui.log(duration_check_line(
-                        final_output, total_duration).rstrip("\n"))
-                    ui.log(saved_size_line(final_output, src_size, video_wall))
-                elif rc not in (0, -1):
-                    ui.log("   [FAIL] keyframe injection failed\n")
-
-            # cut mode can leave a lingering subtitle past the picture; clip it
-            if produced and cfg["mode"] == "cut":
-                if trim_container_to_video(final_output):
-                    ui.log("   Trimmed a lingering subtitle tail to the video length")
-            if produced and plex:
-                kept = (sum(e - s for _, s, e in keep) if cfg["mode"] == "cut"
-                        else total_duration)
-                plex_size_check(final_output, src_size, kept, total_duration, ui.log)
-
-            if os.path.exists(final_output):
-                warns = verify_output(video, final_output)
-                if warns:
-                    ui.log("   [VERIFY] WARNING: " + "; ".join(warns))
-                else:
-                    ui.log("   [VERIFY] OK - tracks & resolution preserved")
-
-            # move the SOURCE of a finished video into videos/done so it's easy
-            # to see what's left. Skipped/failed videos stay put on purpose.
-            if produced and cfg.get("move_done") and not stop_event.is_set():
-                done_dir = os.path.join(os.path.dirname(video) or ".", "done")
-                try:
-                    os.makedirs(done_dir, exist_ok=True)
-                    dst = os.path.join(done_dir, filename)
-                    if not _same_path(dst, video):
-                        _move_to_done(video, dst, ui.log)
-                except OSError as e:
-                    ui.log(f"   [WARN] could not move source to done: {e}")
-
-            _cleanup(temp_audio, temp_segs)
+            status, out_path = "failed", None
+            try:
+                status, out_path = _batch_one(
+                    cfg, ui, stop_event, templates, video, vi, n_videos, subs_lang,
+                    plex_key, cb, batch_progress, source_keys, outputs_made)
+            finally:
+                results.append((video, status, out_path))
 
         if not stop_event.is_set():
             ui.progress(1.0, "done")
@@ -492,6 +281,313 @@ def run_batch(cfg, ui, stop_event):
         # templates and episode audio are decoded straight into memory and
         # their temp WAVs removed at once (load_templates_for/_detect_core)
         pass
+    return results
+
+
+def _batch_one(cfg, ui, stop_event, templates, video, vi, n_videos, subs_lang,
+               plex_key, cb, batch_progress, source_keys, outputs_made):
+    """One video of run_batch. Returns (status, output path or None)."""
+    intros_data = templates["intro"]
+    credits_data = templates["credits"]
+    preintro_data = templates["preintro"]
+    aftercredits_data = templates["aftercredits"]
+    filename = os.path.basename(video)
+    name, ext = os.path.splitext(filename)
+    vinfo = probe_video_info(video)
+    out_ext = _plan_output_ext(cfg.get("encoder"), cfg["mode"], video, ext, vinfo)
+    final_output = os.path.join(cfg["output_dir"], f"{name}{out_ext}")
+    temp_segs = []
+    temp_audio = ""         # episode audio is decoded + removed by _detect_core
+    produced = False        # True only if THIS run wrote the output ok
+    video_wall = time.time()
+    vb, vspan = (vi - 1) / n_videos, 1.0 / n_videos
+    if _same_path(final_output, video):
+        ui.log(f"[{vi}/{n_videos}] {filename}\n   [FAIL] output folder is"
+               " the source folder - would overwrite the source, skipped\n")
+        return "failed", None
+    if _path_key(final_output) in source_keys | outputs_made:
+        ui.log(f"[{vi}/{n_videos}] {filename}\n   [FAIL] output {final_output} would"
+               " overwrite another source / output of this batch, skipped\n")
+        return "failed", None
+
+    ui.status(f"Video {vi}/{n_videos}: {filename}")
+    ui.progress(0.0, f"analysing video {vi}/{n_videos}")
+    src_size = os.path.getsize(video)
+    ui.log(f"[{vi}/{n_videos}] {filename}  ({format_size(src_size)})")
+
+    # the same matcher the Manual cut "Auto-detect" / review dry run
+    # use (detect_segments) - best candidate of each kind decides
+    det = _detect_core(video, cfg, templates, stop_event, ui.log)
+    if stop_event.is_set():
+        _cleanup(temp_audio, temp_segs)
+        return "stopped", None
+    if det is None:
+        ui.log("   [FAIL] audio extract failed - skipping\n")
+        return "failed", None
+    total_duration = det["duration"]
+
+    def _top(kind):
+        c = det.get(kind) or []
+        return c[0] if c and c[0]["ok"] else None
+
+    c_in, c_cr, c_pre, c_aft = (_top("intro"), _top("credits"),
+                                _top("preintro"), _top("aftercredits"))
+    valid_intro, valid_credits = c_in is not None, c_cr is not None
+    valid_preintro, valid_aftercredits = c_pre is not None, c_aft is not None
+    intro_start, intro_end = (c_in["start"], c_in["end"]) if c_in else (0.0, 0.0)
+    # chapters mode marks the intro where it REALLY starts (the part
+    # before it becomes its own chapter); the cut modes drop from 0
+    intro_real_start = c_in["match_start"] if c_in else intro_start
+    credits_start, credits_end = ((c_cr["start"], c_cr["end"]) if c_cr
+                                  else (total_duration, total_duration))
+    preintro_start, preintro_end = ((c_pre["start"], c_pre["end"]) if c_pre
+                                    else (0.0, 0.0))
+    aftercredits_start, aftercredits_end = (
+        (c_aft["start"], c_aft["end"]) if c_aft
+        else (total_duration, total_duration))
+
+    if not (valid_intro or valid_credits or valid_preintro or valid_aftercredits):
+        ui.log("   [SKIP] no matches\n")
+        _cleanup(temp_audio, temp_segs)
+        return "skipped", None
+    # optional: if a segment the user enabled (and has templates for) was
+    # NOT found above the confidence, skip the WHOLE episode instead of
+    # producing a partial cut - so weak-credits episodes are left intact
+    # for you to handle, not output with only the intro removed
+    if cfg.get("skip_incomplete"):
+        missing = []
+        for kind, have_tpl, is_valid in (
+                ("pre-intro", preintro_data, valid_preintro),
+                ("intro", intros_data, valid_intro),
+                ("credits", credits_data, valid_credits),
+                ("after-credits", aftercredits_data, valid_aftercredits)):
+            if have_tpl and not is_valid:
+                missing.append(kind)
+        if missing:
+            ui.log(f"   [SKIP] enabled segment(s) not found: {', '.join(missing)}"
+                   " - leaving this episode untouched for review\n")
+            _cleanup(temp_audio, temp_segs)
+            return "skipped", None
+    if stop_event.is_set():
+        _cleanup(temp_audio, temp_segs)
+        return "stopped", None
+
+    fps = probe_video_fps(video)
+    has_video = vinfo["codec"] not in ("?", None)
+    src_vdur = probe_video_duration(video)
+    covers = cover_streams(video)
+
+    # --- source info + output bit depth + size warning ---
+    br = f", ~{vinfo['bitrate_mbps']:.1f} Mbit/s" if vinfo["bitrate_mbps"] else ""
+    ui.log(f"   Source video: {vinfo['codec']} {vinfo['bit_depth']}-bit"
+           f" ({vinfo['pix_fmt']}){br}")
+    start_time = probe_start_time(video)
+    if abs(start_time) >= 0.05:
+        ui.log(f"   Source timestamps start at {start_time:.3f}s - cut points"
+               " count from the file start")
+    plex = None
+    if cfg["mode"] == "chapters":       # pure stream copy, no encoder
+        encoder, crf, out_depth = None, None, None
+        ui.log("   Output: stream copy (no re-encode)")
+    elif plex_key:
+        if ext.lower() != ".mkv":
+            ui.log(f"   Plex-ready: source is {ext.lower()} - writing .mkv")
+        plex = plex_plan(plex_key, video, cfg["preset"], ui.log)
+        encoder, crf, out_depth = plex["encoder"], plex["crf"], plex["bit_depth"]
+    else:
+        encoder = resolve_encoder(cfg["encoder"], vinfo["codec"], ui.log)
+        crf = crf_for_encoder(encoder, cfg)
+        if cfg["bit_depth"] == "auto":
+            out_depth = 10 if vinfo["bit_depth"] >= 10 else 8
+        else:
+            out_depth = int(cfg["bit_depth"])
+        if encoder == "h264_nvenc" and out_depth >= 10:
+            ui.log("   [WARN] H.264 NVENC cannot encode 10-bit - using 8-bit.")
+            out_depth = 8
+        src_eff = 2 if vinfo["codec"] in ("hevc", "av1", "vp9") else 1
+        tgt_eff = 2 if encoder in ("libx265", "hevc_nvenc", "libsvtav1") else 1
+        if tgt_eff < src_eff or (vinfo["bit_depth"] >= 10 and out_depth == 8):
+            ui.log("   [WARN] Source codec/bit depth is more efficient than the"
+                   " chosen output - the file may get MUCH bigger."
+                   " Consider H.265, 10-bit, CRF 22-24, preset slow.")
+        ui.log(f"   Output: {encoder} {out_depth}-bit,"
+               f" CRF/CQ {crf}, preset {cfg['preset']}")
+        if out_ext.lower() != ext.lower():
+            ui.log(f"   Output container: {ext.lower()} can't hold {encoder} + this"
+                   f" audio - writing {out_ext}")
+
+    keep = []
+    if cfg["mode"] == "cut":
+        drops = []
+        if valid_preintro:
+            drops.append((preintro_start, preintro_end))
+        if valid_intro:
+            drops.append((intro_start, intro_end))
+        if valid_credits:
+            drops.append((credits_start, credits_end))
+        if valid_aftercredits:
+            drops.append((aftercredits_start, aftercredits_end))
+        keep = _seg_names(keep_from_drops(total_duration, drops), total_duration)
+
+        steps = [n for n, _, _ in keep] + (["Stitching"] if len(keep) > 1 else [])
+        n_steps = len(steps)
+        ui.log(f"   Steps: {' -> '.join(steps)}")
+        audio_streams = probe_audio_streams(video)
+        gate = _gate(_kept_sec(keep, src_vdur), has_video)
+
+        # weight each segment's share of the batch bar by its duration
+        total_d = sum(e - s for _, s, e in keep) or 1.0
+        multi = len(keep) > 1
+        # a multi-piece cut encodes the audio in one seamless pass
+        # (_stitch); per-piece audio only for a single piece / Plex
+        piece_audio = not multi or bool(plex)
+        enc_span = vspan * (0.85 if multi else 1.0)
+        done_d = 0.0
+
+        ok = True
+        for i, (seg_name, s0, s1) in enumerate(keep, 1):
+            if stop_event.is_set():
+                ok = False
+                break
+            ui.status(f"Video {vi}/{n_videos}: {filename}  -  [{i}/{n_steps}] {seg_name}")
+            seg_out = os.path.join(TEMP_DIR, f"seg_{vi}_{i}{out_ext}")
+            temp_segs.append(seg_out)
+            t0 = time.time()
+            seg_cb = dict(cb, on_progress=batch_progress(
+                vb + done_d / total_d * enc_span,
+                (s1 - s0) / total_d * enc_span, vb))
+            rc = build_ffmpeg_cut(video, seg_out, s0, s1, audio_streams,
+                                  crf, cfg["preset"], cfg["kf_interval"],
+                                  seg_name=seg_name, fps=fps,
+                                  encoder=encoder, subs_lang=subs_lang,
+                                  bit_depth=out_depth, plex=plex,
+                                  audio=piece_audio, **seg_cb)
+            if rc != 0:
+                if rc != -1:  # -1 = stopped by user, already logged
+                    ui.log(f"   [FAIL] {seg_name} failed")
+                ok = False
+                break
+            done_d += s1 - s0
+            ui.log(f"   [{i}/{n_steps}] {seg_name}: done in {format_seconds(time.time()-t0)}")
+
+        if ok and len(temp_segs) == 1:
+            placed = _place_output(temp_segs[0], final_output, ui.log, gate)
+            if placed:
+                final_output, produced = placed, True
+                ui.log(duration_check_line(
+                    final_output, sum(e - s for _, s, e in keep)).rstrip("\n"))
+                ui.log(saved_size_line(final_output, src_size, video_wall))
+        elif ok and len(temp_segs) > 1:
+            ui.status(f"Video {vi}/{n_videos}: {filename}  -  [{n_steps}/{n_steps}] Stitching")
+            a_span = (vspan - enc_span) * 0.7
+            placed, rc = _stitch(
+                video, temp_segs, keep, final_output, audio_streams, plex,
+                f"{vi}", cb,
+                batch_progress(vb + enc_span, a_span, vb),
+                batch_progress(vb + enc_span + a_span,
+                               vspan - enc_span - a_span, vb), ui.log, gate)
+            if placed:
+                final_output, produced = placed, True
+                ui.log(duration_check_line(
+                    final_output, sum(e - s for _, s, e in keep)).rstrip("\n"))
+                ui.log(saved_size_line(final_output, src_size, video_wall))
+            elif rc not in (0, -1):    # rc 0 = placing failed, logged already
+                ui.log("   [FAIL] merge failed\n")
+        elif not stop_event.is_set():
+            ui.log("   [FAIL] skipping this video\n")
+    elif cfg["mode"] == "chapters":
+        ch_drops = []
+        if valid_preintro:
+            ch_drops.append((preintro_start, preintro_end, "Pre-intro"))
+        if valid_intro:
+            ch_drops.append((intro_real_start, intro_end, "Intro"))
+        if valid_credits:
+            ch_drops.append((credits_start, credits_end, "Credits"))
+        if valid_aftercredits:
+            ch_drops.append((aftercredits_start, aftercredits_end, "After-credits"))
+        # "Intro: cut from file start": keep its meaning (everything
+        # before the intro is skippable) by titling that lead-in
+        # chapter "Cold Open", while the Intro marker sits where the
+        # intro really begins
+        lead = None
+        if valid_intro and cfg.get("intro_from_start"):
+            if intro_real_start > 0.05:
+                lead = "Cold Open"
+                ui.log(f"   Intro chapter at its real start {intro_real_start:.1f}s;"
+                       " the part before it is a 'Cold Open' chapter")
+            else:
+                ui.log("   Intro chapter starts at 0 (the intro opens the file)")
+        chapters = build_chapters(total_duration, ch_drops, lead_title=lead)
+        # Chapter markers are metadata only: stream-copy the source
+        # (no re-encode, no quality loss). A player's skip lands on the
+        # source's nearest keyframe at each boundary.
+        ui.log(f"   Adding {len(chapters)} chapter marker(s) (stream copy)")
+        ui.status(f"Video {vi}/{n_videos}: {filename}  -  Add Chapters")
+        part = _part_path(final_output)
+        maps = build_stream_maps(video, subs_lang,
+                                 data=out_ext.lower() not in (".mkv", ".webm"))
+        rc, err = add_chapters(video, part, chapters, maps=maps,
+                               **dict(cb, on_progress=batch_progress(vb, vspan, vb)))
+        placed = _commit_part(rc, part, final_output, ui.log,
+                              _gate(src_vdur or total_duration, has_video))
+        if placed:
+            final_output, produced = placed, True
+            ui.log(saved_size_line(final_output, src_size, video_wall))
+        elif rc not in (0, -1):
+            for ln in err.strip().splitlines()[-4:]:
+                ui.log(f"      | {ln}")
+            ui.log("   [FAIL] adding chapters failed\n")
+    else:
+        kf_times = keyframe_times_from_ranges(
+            [(valid_preintro, preintro_start, preintro_end),
+             (valid_intro, intro_start, intro_end),
+             (valid_credits, credits_start, credits_end),
+             (valid_aftercredits, aftercredits_start, aftercredits_end)],
+            cfg["kf_interval"], total_duration)
+        ui.log(f"   Injecting {len(kf_times)} forced keyframe(s), no cutting")
+        ui.status(f"Video {vi}/{n_videos}: {filename}  -  Inject Keyframes")
+        part = _part_path(final_output)
+        rc = build_ffmpeg_inject(video, part, kf_times, total_duration,
+                                 crf, cfg["preset"], fps=fps,
+                                 encoder=encoder, bit_depth=out_depth, subs_lang=subs_lang,
+                                 plex=plex,
+                                 **dict(cb, on_progress=batch_progress(vb, vspan, vb)))
+        placed = _commit_part(rc, part, final_output, ui.log,
+                              _gate(src_vdur or total_duration, has_video))
+        if placed:
+            final_output, produced = placed, True
+            ui.log(duration_check_line(
+                final_output, src_vdur or total_duration).rstrip("\n"))
+            ui.log(saved_size_line(final_output, src_size, video_wall))
+        elif rc not in (0, -1):
+            ui.log("   [FAIL] keyframe injection failed\n")
+
+    if produced:
+        outputs_made.add(_path_key(final_output))
+        # cut mode can leave a lingering subtitle past the picture; clip it
+        if cfg["mode"] == "cut" and trim_container_to_video(final_output):
+            ui.log("   Trimmed a lingering subtitle tail to the video length")
+        if covers:
+            restore_covers(video, final_output, ui.log, covers)
+        if plex:
+            kept = (sum(e - s for _, s, e in keep) if cfg["mode"] == "cut"
+                    else total_duration)
+            plex_size_check(final_output, src_size, kept, total_duration, ui.log)
+        warns = verify_output(video, final_output, subs_lang)
+        if warns:
+            ui.log("   [VERIFY] WARNING: " + "; ".join(warns))
+        else:
+            ui.log("   [VERIFY] OK - tracks & resolution preserved")
+
+    # move the SOURCE of a finished video into videos/done so it's easy
+    # to see what's left. Skipped/failed videos stay put on purpose.
+    if produced and cfg.get("move_done") and not stop_event.is_set():
+        _move_source_to_done(video, final_output, outputs_made, ui.log)
+
+    _cleanup(temp_audio, temp_segs)
+    if produced:
+        return "ok", final_output
+    return ("stopped" if stop_event.is_set() else "failed"), None
 
 
 def _seg_names(keep, total_duration=None):
@@ -519,9 +615,10 @@ def _seg_names(keep, total_duration=None):
 
 
 def _stitch(video, temp_segs, keep, final_output, audio_streams, plex, tag, cb,
-            audio_progress, merge_progress, log):
+            audio_progress, merge_progress, log, check=None):
     """Join the encoded pieces (keep = [(name, start, end)], one per piece)
-    into final_output via its .part file. Returns (placed, ffmpeg rc).
+    into final_output via its .part file. check: the safety gate (see
+    _commit_part). Returns (output path or None, ffmpeg rc).
 
     Video (+ subtitles / fonts / Plex stream-copied audio) comes from the
     pieces through the concat demuxer, each pinned to the span its VIDEO
@@ -537,9 +634,10 @@ def _stitch(video, temp_segs, keep, final_output, audio_streams, plex, tag, cb,
     codecs = audio_track_codecs(audio_streams, plex)
     tracks = [(k, c) for k, c in enumerate(codecs) if c]
     spans, ranges = [], []
+    base = probe_start_time(video)
     for t, (_n, s0, s1) in zip(temp_segs, keep):
         tm = probe_piece_timing(t)
-        first = probe_first_frame_at(video, s0) if tm else None
+        first = probe_first_frame_at(video, s0, base=base) if tm else None
         if tm and first is not None and tm[2] > tm[0]:
             cstart, vstart, vend = tm
             # piece timestamp T shows source time T - vstart + first, and the
@@ -560,7 +658,7 @@ def _stitch(video, temp_segs, keep, final_output, audio_streams, plex, tag, cb,
             _cleanup(audio_file, [])
             if rc != -1:
                 log("   [FAIL] audio pass failed")
-            return False, rc
+            return None, rc
 
     concat_list = os.path.join(TEMP_DIR, f"concat_{tag}.txt")
     with open(concat_list, "w", encoding="utf-8") as f:
@@ -598,19 +696,23 @@ def _stitch(video, temp_segs, keep, final_output, audio_streams, plex, tag, cb,
         + ["-map", "0:v?"] + amaps + ["-map", "0:s?", "-map", "0:t?", "-c", "copy"]
         + disp + ["-ignore_unknown", part], expected,
         **dict(cb, on_progress=merge_progress))
-    placed = _commit_part(rc, part, final_output, log)
+    placed = _commit_part(rc, part, final_output, log, check)
     _cleanup(audio_file, [concat_list])
     return placed, rc
 
 
-def run_manual(cfg, keep, ui, stop_event):
+def run_manual(cfg, keep, ui, stop_event, protect=None):
     """Cut ONE video into the given keep-segments and stitch them, using the
     same encoder settings and ffmpeg helpers as the batch engine. `keep` is a
-    list of (start, end) seconds from compute_keep_segments()."""
+    list of (start, end) seconds from compute_keep_segments().
+    protect: optional paths (e.g. every source of a multi-file run) the
+    output must never replace, nor the source be moved onto.
+    Returns ManualResult(produced, output_path) - a (bool, str or None)
+    tuple that is truthy only when an output was produced."""
     video = cfg["video"]
     if not os.path.isfile(video):
         ui.log("[FAIL] video not found")
-        return
+        return ManualResult(False, None)
     os.makedirs(cfg["output_dir"], exist_ok=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
     cb = {"on_progress": ui.progress, "on_log": ui.log, "stop_event": stop_event}
@@ -619,26 +721,40 @@ def run_manual(cfg, keep, ui, stop_event):
     prefix = cfg.get("job_label", "")
     prefix = f"{prefix} " if prefix else ""
     plex_key = cfg.get("encoder") if cfg.get("encoder") in PLEX_PRESETS else None
-    out_ext = ".mkv" if plex_key else ext      # Plex-ready output is always MKV
+    vinfo = probe_video_info(video)
+    # Plex-ready output is always MKV; a re-encode keeps the source's
+    # container unless it can't hold the codecs (.webm + x265, .mpg)
+    out_ext = _plan_output_ext(cfg.get("encoder"), "cut", video, ext, vinfo)
     final_output = os.path.join(cfg["output_dir"], f"{name}{out_ext}")
     video_wall = time.time()
     src_size = os.path.getsize(video)
     ui.log(f"{prefix}[MANUAL] {name}{ext}  ({format_size(src_size)})")
     if plex_key and ext.lower() != ".mkv":
         ui.log(f"   Plex-ready: source is {ext.lower()} - writing .mkv")
+    elif out_ext.lower() != ext.lower():
+        ui.log(f"   Output container: {ext.lower()} can't hold the chosen codecs"
+               f" - writing {out_ext}")
     if _same_path(final_output, video):
         ui.log("   [FAIL] output folder is the source folder - would overwrite"
                " the source, skipped\n")
-        return
+        return ManualResult(False, None)
+    protect_keys = {_path_key(p) for p in protect or ()}
+    if _path_key(final_output) in protect_keys:
+        ui.log(f"   [FAIL] output {final_output} would overwrite another file of"
+               " this run, skipped\n")
+        return ManualResult(False, None)
 
     src_total = probe_video_duration(video) or probe_duration(video)
     named = _seg_names(keep, src_total)
     if not named:
         ui.log("   [SKIP] those points leave nothing to keep\n")
-        return
+        return ManualResult(False, None)
 
     fps = probe_video_fps(video)
-    vinfo = probe_video_info(video)
+    start_time = probe_start_time(video)
+    if abs(start_time) >= 0.05:
+        ui.log(f"   Source timestamps start at {start_time:.3f}s - cut points"
+               " count from the file start")
     plex = plex_plan(plex_key, video, cfg.get("preset"), ui.log) if plex_key else None
     encoder = plex["encoder"] if plex else resolve_encoder(cfg["encoder"], vinfo["codec"], ui.log)
     crf = plex["crf"] if plex else crf_for_encoder(encoder, cfg)
@@ -653,6 +769,7 @@ def run_manual(cfg, keep, ui, stop_event):
         out_depth = 8
     audio_streams = probe_audio_streams(video)
     subs_lang = {s.lower() for s in cfg["subs_langs"]} if cfg.get("subs_langs") else None
+    covers = cover_streams(video)
     ui.log(f"   Keep: {' -> '.join(f'{n} [{fmt_time(s)}-{fmt_time(e)}]' for n, s, e in named)}")
 
     def overall_progress(base, span):
@@ -671,6 +788,7 @@ def run_manual(cfg, keep, ui, stop_event):
     piece_audio = not multi or bool(plex)
     enc_span = 0.85 if multi else 1.0
     done_d = 0.0
+    gate = _gate(_kept_sec(named, src_total), vinfo["codec"] not in ("?", None))
 
     temp_segs, ok = [], True
     for i, (seg_name, s0, s1) in enumerate(named, 1):
@@ -695,36 +813,34 @@ def run_manual(cfg, keep, ui, stop_event):
         done_d += s1 - s0
 
     expected = sum(e - s for _, s, e in named)
+    placed = None
     if ok and len(temp_segs) == 1:
-        ok = _place_output(temp_segs[0], final_output, ui.log)
-        if ok:
-            ui.log(duration_check_line(final_output, expected).rstrip("\n"))
-            ui.log(saved_size_line(final_output, src_size, video_wall))
+        placed = _place_output(temp_segs[0], final_output, ui.log, gate)
     elif ok and len(temp_segs) > 1:
         ui.status(f"{prefix}[MANUAL] {name}{ext}  -  Stitching")
         a_span = (1.0 - enc_span) * 0.7
         # a failed/stopped merge must not count as produced (no trim, no move)
-        ok, rc = _stitch(video, temp_segs, named, final_output, audio_streams, plex,
-                         "manual", cb, overall_progress(enc_span, a_span),
-                         overall_progress(enc_span + a_span, 1.0 - enc_span - a_span),
-                         ui.log)
-        if ok:
-            ui.log(duration_check_line(final_output, expected).rstrip("\n"))
-            ui.log(saved_size_line(final_output, src_size, video_wall))
-        elif rc not in (0, -1):    # rc 0 = placing failed, logged already
+        placed, rc = _stitch(video, temp_segs, named, final_output, audio_streams, plex,
+                             "manual", cb, overall_progress(enc_span, a_span),
+                             overall_progress(enc_span + a_span, 1.0 - enc_span - a_span),
+                             ui.log, gate)
+        if not placed and rc not in (0, -1):    # rc 0 = placing failed, logged already
             ui.log("   [FAIL] merge failed\n")
     elif not stop_event.is_set():
         ui.log("   [FAIL] could not produce output\n")
 
-    if os.path.exists(final_output) and ok:
+    produced = bool(placed) and os.path.exists(placed)
+    if produced:
+        final_output = placed
+        ui.log(duration_check_line(final_output, expected).rstrip("\n"))
+        ui.log(saved_size_line(final_output, src_size, video_wall))
         if trim_container_to_video(final_output):
             ui.log("   Trimmed a lingering subtitle tail to the video length")
-
-    produced = os.path.exists(final_output) and ok
-    if produced and plex:
-        plex_size_check(final_output, src_size, expected, src_total, ui.log)
-    if os.path.exists(final_output):
-        warns = verify_output(video, final_output)
+        if covers:
+            restore_covers(video, final_output, ui.log, covers)
+        if plex:
+            plex_size_check(final_output, src_size, expected, src_total, ui.log)
+        warns = verify_output(video, final_output, subs_lang)
         if warns:
             ui.log("   [VERIFY] WARNING: " + "; ".join(warns))
         else:
@@ -732,41 +848,42 @@ def run_manual(cfg, keep, ui, stop_event):
 
     # move the SOURCE of a finished video into <source>/done, exactly like the
     # auto (batch) tool. Only when the cut actually produced an output and we
-    # weren't stopped; a same-path output (in-place) is left alone.
+    # weren't stopped; never onto the output itself or a protected path.
     if produced and cfg.get("move_done") and not stop_event.is_set():
-        done_dir = os.path.join(os.path.dirname(video) or ".", "done")
-        try:
-            os.makedirs(done_dir, exist_ok=True)
-            dst = os.path.join(done_dir, f"{name}{ext}")
-            if not _same_path(dst, video) and not _same_path(final_output, video):
-                _move_to_done(video, dst, ui.log)
-        except OSError as e:
-            ui.log(f"   [WARN] could not move source to done: {e}")
+        _move_source_to_done(video, final_output, protect_keys, ui.log)
 
     _cleanup("", temp_segs)
     ui.log("STOPPED by user." if stop_event.is_set() else "FINISHED!")
+    return ManualResult(produced, final_output if produced else None)
 
 
-def verify_output(src, out):
+def verify_output(src, out, subs_lang=None):
     """Compare source vs output streams; returns a list of warning strings
     (empty if audio/subtitle tracks, languages and resolution are preserved).
-    Codec and duration changes are expected and not reported."""
+    Codec and duration changes are expected and not reported. subs_lang:
+    the subtitle-language filter the run used - only those tracks are
+    expected. Cover art is ignored, and an odd frame size cropped to even
+    (4:2:0 encoders) is expected too."""
     a, b = probe_streams(src), probe_streams(out)
     if not a or not b:
         return ["could not probe for verification"]
     warns = []
+    a_subs = [x for x in a["subtitle"]
+              if not subs_lang or (x["lang"] or "und").lower() in subs_lang]
     if len(a["audio"]) != len(b["audio"]):
         warns.append(f"audio tracks {len(a['audio'])} -> {len(b['audio'])}")
-    if len(a["subtitle"]) != len(b["subtitle"]):
-        warns.append(f"subtitle tracks {len(a['subtitle'])} -> {len(b['subtitle'])}")
+    if len(a_subs) != len(b["subtitle"]):
+        warns.append(f"subtitle tracks {len(a_subs)} -> {len(b['subtitle'])}")
     la, lb = sorted(x["lang"] for x in a["audio"]), sorted(x["lang"] for x in b["audio"])
     if la != lb:
         warns.append(f"audio languages {la} -> {lb}")
-    sa, sb = sorted(x["lang"] for x in a["subtitle"]), sorted(x["lang"] for x in b["subtitle"])
+    sa, sb = sorted(x["lang"] for x in a_subs), sorted(x["lang"] for x in b["subtitle"])
     if sa != sb:
         warns.append(f"subtitle languages {sa} -> {sb}")
-    if a["video"] and b["video"]:
-        va, vb = a["video"][0], b["video"][0]
-        if va["w"] != vb["w"] or va["h"] != vb["h"]:
-            warns.append(f"resolution {va['w']}x{va['h']} -> {vb['w']}x{vb['h']}")
+    va = [x for x in a["video"] if not x.get("cover")]
+    vb = [x for x in b["video"] if not x.get("cover")]
+    if va and vb:
+        w, h = va[0]["w"] or 0, va[0]["h"] or 0
+        if (vb[0]["w"], vb[0]["h"]) not in ((w, h), (w - w % 2, h - h % 2)):
+            warns.append(f"resolution {w}x{h} -> {vb[0]['w']}x{vb[0]['h']}")
     return warns

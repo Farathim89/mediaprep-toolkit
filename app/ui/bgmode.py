@@ -88,3 +88,17 @@ def place_offscreen(win, size=None):
             win.geometry(size)
     except Exception:
         pass
+
+
+def focus(widget):
+    """Give `widget` the keyboard focus the way a re-opened window wants it:
+    focus_force() normally; in background mode only focus_set() - no window
+    activation - and the foreground goes straight back to the user."""
+    try:
+        if enabled():
+            widget.focus_set()
+            give_back_focus(widget.winfo_toplevel())
+        else:
+            widget.focus_force()
+    except Exception:
+        pass

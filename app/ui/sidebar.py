@@ -41,6 +41,9 @@ class Sidebar(tk.Canvas):
         self.bind("<Motion>", self._motion)
         self.bind("<Leave>", self._leave)
         self.bind("<Button-1>", self._click)
+        self.bind("<Button-3>", self._context_click)
+        for seq in ("<Shift-F10>", "<App>"):
+            self.bind(seq, lambda e: (self._context_key(), "break")[1])
         self.bind("<Configure>", self._on_configure)
         self.bind("<FocusIn>", lambda e: self._set_focus(True))
         self.bind("<FocusOut>", lambda e: self._set_focus(False))
@@ -49,15 +52,21 @@ class Sidebar(tk.Canvas):
         for seq in ("<Return>", "<space>", "<KP_Enter>"):
             self.bind(seq, lambda e: (self._activate_focus(), "break")[1])
         themes.on_palette(self, lambda p: self._redraw())
+        # another display scaling (ui/dpi.py): width + rows for the new DPI
+        from . import dpi
+        dpi.on_change(self, lambda _r: self.set_collapsed(self.collapsed, notify=False))
 
     # ------------------------------------------------------------ API
     def add_page(self, key, icon, label, tip=None):
         self._items.append(dict(key=key, icon=icon, label=label, kind="page",
                                 command=None, tip=tip or label, footer=False))
 
-    def add_action(self, key, icon, label, command, tip=None, footer=True):
+    def add_action(self, key, icon, label, command, tip=None, footer=True, context=None):
+        """context(x_root, y_root): a menu for the item (right-click, the
+        Menu key or Shift+F10 while it has the keyboard cursor)."""
         self._items.append(dict(key=key, icon=icon, label=label, kind="action",
-                                command=command, tip=tip or label, footer=footer))
+                                command=command, tip=tip or label, footer=footer,
+                                context=context))
 
     def set_item(self, key, icon=None, label=None, tip=None):
         for it in self._items:
@@ -312,6 +321,21 @@ class Sidebar(tk.Canvas):
             self.toggle()
         elif i is not None:
             self._activate(i)
+
+    def _context_click(self, e):
+        self._hide_tip()
+        i = self._index_at(e.y)
+        if isinstance(i, int) and callable(self._items[i].get("context")):
+            self._items[i]["context"](e.x_root, e.y_root)
+
+    def _context_key(self):
+        i = self._focus
+        if not isinstance(i, int) or not callable(self._items[i].get("context")):
+            return
+        rows, _top = self._rows()
+        y = dict(rows).get(i, 0) + themes.px(ROW_H)
+        self._items[i]["context"](self.winfo_rootx() + themes.px(PAD_X + 20),
+                                  self.winfo_rooty() + y)
 
     def _activate(self, i):
         it = self._items[i]

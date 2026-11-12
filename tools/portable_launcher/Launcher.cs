@@ -10,11 +10,25 @@
 // starts "MediaPrep Toolkit.exe" from it (MEDIAPREP_PORTABLE_DATA = the data
 // folder, command line passed through) and exits - only "--selftest" waits
 // and returns the app's exit code. The app also gets MEDIAPREP_LAUNCHER = this
-// exe's path (the in-app updater puts a new portable exe next to it).
+// exe's path (the in-app updater replaces this file in place - whatever its
+// name; the previous one is kept as "<name>.old" until the app's next start).
+// Nothing here depends on the exe's file name: the version comes from the
+// trailer, the lock and owner names from the data / runtime folder.
 // MEDIAPREP_BACKGROUND=1 (scripted tests) unpacks without a window. Otherwise (first start / new version) it
 // shows a small progress window, checks the payload, unpacks it to
 // "<name>.tmp", renames that into place and removes older runtime folders.
 // Media\ and Data\ are never touched.
+//
+// Deeply nested exe folder (path limit): the program goes to the per-user
+// %LOCALAPPDATA%\MediaPrep\rt\<version>-<hash8>\ instead, SHARED by every
+// portable copy of this user. There each copy that uses a runtime folder
+// leaves owners\<sha8 of its data folder>.txt (its data folder path, UTF-8
+// without BOM, rewritten at each start; app/config.py reads it when the
+// program is started by hand), the lock is named after the runtime folder,
+// and a copy only removes an old runtime folder it owned once no other copy
+// claims it. A runtime of a NEWER version than this exe is never removed
+// (an old exe started after an update), nor a "<name>.tmp" younger than
+// 10 minutes (an unpack in progress).
 //
 // Compiled with the .NET Framework 4 csc.exe that ships with Windows (C# 5).
 using System;
@@ -148,6 +162,10 @@ namespace MediaPrepPortable
         internal const string AppExe = "MediaPrep Toolkit.exe";
         internal const string DataName = "mediaprep-data";
         internal const string Complete = ".complete";
+        internal const string Owners = "owners";
+        internal const string LegacyMarker = "portable-data.txt";
+        private const double TmpGraceMinutes = 10;
+        private const double StaleOwnerDays = 7;
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool GetDiskFreeSpaceEx(string dir, out ulong freeForUser,
@@ -171,6 +189,7 @@ namespace MediaPrepPortable
 
             string runtimeDir = Path.Combine(dataDir, "runtime");
             string target = Path.Combine(runtimeDir, p.Version + "-" + p.Hash8);
+            bool shared = false;
             // Windows' 260-char path limit: the deepest file inside the app is
             // ~105 chars below its folder. If this exe sits in a deeply nested
             // folder, unpack the PROGRAM to a short per-user path instead (the
@@ -180,16 +199,18 @@ namespace MediaPrepPortable
                 runtimeDir = Path.Combine(Environment.GetFolderPath(
                     Environment.SpecialFolder.LocalApplicationData), "MediaPrep", "rt");
                 target = Path.Combine(runtimeDir, p.Version + "-" + p.Hash8);
+                shared = true;
             }
+            Layout lay = new Layout(dataDir, runtimeDir, target, shared, p.Version);
 
             // fast path: already unpacked
             if (IsReady(target))
             {
-                int rc = Launch(exe, target, dataDir, args, selftest);
-                CleanupOld(runtimeDir, Path.GetFileName(target), dataDir, false);
+                int rc = Launch(exe, lay, args, selftest);
+                CleanupOld(lay, false);
                 return rc;
             }
-            return Setup(exe, p, dataDir, runtimeDir, target, args, selftest);
+            return Setup(exe, p, lay, args, selftest);
         }
 
         private static bool IsReady(string target)
@@ -220,17 +241,19 @@ namespace MediaPrepPortable
         // (sklearn ...\_radius_neighbors_classmode.cp310-win_amd64.pyd = 103) + margin
         private const int DeepestRelPath = 115;
 
-        private static int Launch(string exe, string target, string dataDir, string args, bool wait)
+        private static int Launch(string exe, Layout lay, string args, bool wait)
         {
             // lets the app find its data folder even when started by hand from
-            // the short fallback runtime folder (see app/config.py)
-            try { File.WriteAllText(Path.Combine(target, "portable-data.txt"), dataDir, Encoding.UTF8); }
-            catch (Exception) { }
-            ProcessStartInfo si = new ProcessStartInfo(Path.Combine(target, AppExe), args);
+            // the shared fallback runtime folder (see app/config.py)
+            MarkOwner(lay);
+            ProcessStartInfo si = new ProcessStartInfo(Path.Combine(lay.Target, AppExe), args);
             si.UseShellExecute = false;
+            // the working folder stays the caller's (relative arguments), but
+            // programs started by a bare name are never taken from it
             si.WorkingDirectory = Environment.CurrentDirectory;
-            si.EnvironmentVariables["MEDIAPREP_PORTABLE_DATA"] = dataDir;
-            // the in-app updater puts a new portable exe next to this one
+            si.EnvironmentVariables["NoDefaultCurrentDirectoryInExePath"] = "1";
+            si.EnvironmentVariables["MEDIAPREP_PORTABLE_DATA"] = lay.DataDir;
+            // the in-app updater replaces this exe in place (app/updater.py)
             si.EnvironmentVariables["MEDIAPREP_LAUNCHER"] = Path.GetFullPath(exe);
             try
             {
@@ -266,13 +289,145 @@ namespace MediaPrepPortable
             return 1;
         }
 
-        private static Mutex OpenMutex(string dataDir)
+        private static Mutex OpenMutex(string lockKey)
         {
-            // one per data folder (two different portable copies don't block each other)
-            string key = dataDir.ToLowerInvariant();
+            // one per runtime folder: <data folder> for the normal layout (two
+            // different portable copies don't block each other), the shared
+            // rt folder itself for the fallback (all copies that use it)
+            string key = lockKey.ToLowerInvariant();
             byte[] h;
             using (SHA256 sha = SHA256.Create()) h = sha.ComputeHash(Encoding.UTF8.GetBytes(key));
             return new Mutex(false, "Local\\MediaPrepPortable-" + BitConverter.ToString(h, 0, 8).Replace("-", ""));
+        }
+
+        // owners\<this name> in a shared runtime folder = this data folder's claim
+        internal static string OwnerName(string dataDir)
+        {
+            byte[] h;
+            using (SHA256 sha = SHA256.Create())
+                h = sha.ComputeHash(Encoding.UTF8.GetBytes(NormDir(dataDir)));
+            return BitConverter.ToString(h, 0, 4).Replace("-", "").ToLowerInvariant() + ".txt";
+        }
+
+        private static string NormDir(string dir)
+        {
+            try { dir = Path.GetFullPath(dir); } catch { }
+            return dir.TrimEnd('\\').ToLowerInvariant();
+        }
+
+        // shared runtime: (re)write this copy's claim - the newest marker is
+        // the copy used most recently. No BOM (the app reads it as text).
+        private static void MarkOwner(Layout lay)
+        {
+            if (!lay.Shared) return;
+            try
+            {
+                Directory.CreateDirectory(lay.DataDir);   // (the app fills it)
+                string dir = Path.Combine(lay.Target, Owners);
+                Directory.CreateDirectory(dir);
+                string f = Path.Combine(dir, OwnerName(lay.DataDir));
+                File.WriteAllText(f, lay.DataDir, new UTF8Encoding(false));
+                File.SetLastWriteTimeUtc(f, DateTime.UtcNow);
+                // the single marker of older launchers (shared by every copy)
+                string legacy = Path.Combine(lay.Target, LegacyMarker);
+                if (File.Exists(legacy)) File.Delete(legacy);
+            }
+            catch (Exception) { }
+        }
+
+        // shared runtime folder `d`: drop this copy's claim (and claims of
+        // data folders gone for a week - a deleted copy). True = some copy
+        // still claims it (or nobody ever did - unknown, so it is kept).
+        private static bool ClaimedByOthers(string d, string myDataDir)
+        {
+            string own = Path.Combine(d, Owners);
+            string legacy = Path.Combine(d, LegacyMarker);
+            bool known = false;
+            if (Directory.Exists(own))
+            {
+                known = true;
+                try { File.Delete(Path.Combine(own, OwnerName(myDataDir))); } catch { }
+                string[] marks;
+                try { marks = Directory.GetFiles(own, "*.txt"); } catch { return true; }
+                foreach (string f in marks)
+                {
+                    string dir;
+                    try { dir = File.ReadAllText(f).Trim(); } catch { return true; }
+                    if (dir.Length > 0 && Path.IsPathRooted(dir) && Directory.Exists(dir)) return true;
+                    // missing (a USB stick that isn't plugged in?) - only a
+                    // claim untouched for a week counts as gone
+                    double days;
+                    try { days = (DateTime.UtcNow - File.GetLastWriteTimeUtc(f)).TotalDays; }
+                    catch { return true; }
+                    if (days < StaleOwnerDays) return true;
+                    try { File.Delete(f); } catch { return true; }
+                }
+            }
+            if (File.Exists(legacy))
+            {
+                known = true;
+                string dir;
+                try { dir = File.ReadAllText(legacy).Trim(); } catch { return true; }
+                if (dir.Length > 0 && !string.Equals(NormDir(dir), NormDir(myDataDir),
+                                                      StringComparison.Ordinal)
+                    && (Directory.Exists(dir) || AgeDays(legacy) < StaleOwnerDays)) return true;
+            }
+            return !known;
+        }
+
+        // "2.1.0-1a2b3c4d" -> "2.1.0" (null for other names)
+        private static string RuntimeVersion(string name)
+        {
+            int i = name.LastIndexOf('-');
+            if (i <= 0 || name.Length - i - 1 != 8) return null;
+            return name.Substring(0, i);
+        }
+
+        // numeric compare of the leading a.b.c part ("2.10" > "2.9")
+        internal static int CompareVersions(string a, string b)
+        {
+            List<int> x = VersionNumbers(a), y = VersionNumbers(b);
+            int n = Math.Max(x.Count, y.Count);
+            for (int i = 0; i < n; i++)
+            {
+                int u = i < x.Count ? x[i] : 0, v = i < y.Count ? y[i] : 0;
+                if (u != v) return u.CompareTo(v);
+            }
+            return 0;
+        }
+
+        private static List<int> VersionNumbers(string v)
+        {
+            List<int> o = new List<int>();
+            foreach (string part in v.Split('-')[0].Split('.'))
+            {
+                int k;
+                if (!int.TryParse(part, out k)) break;
+                o.Add(k);
+            }
+            return o;
+        }
+
+        private static bool IsReparse(string path)
+        {
+            try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+            catch { return true; }
+        }
+
+        private static double AgeDays(string file)
+        {
+            try { return (DateTime.UtcNow - File.GetLastWriteTimeUtc(file)).TotalDays; }
+            catch { return 0; }
+        }
+
+        private static double AgeMinutes(string dir)
+        {
+            try
+            {
+                DateTime c = Directory.GetCreationTimeUtc(dir), w = Directory.GetLastWriteTimeUtc(dir);
+                return (DateTime.UtcNow - (c > w ? c : w)).TotalMinutes;
+            }
+            catch { return 0; }
         }
 
         private static bool Acquire(Mutex m, int ms)
@@ -281,10 +436,10 @@ namespace MediaPrepPortable
             catch (AbandonedMutexException) { return true; }     // an earlier setup was killed
         }
 
-        private static int Setup(string exe, Payload p, string dataDir, string runtimeDir,
-                                 string target, string args, bool selftest)
+        private static int Setup(string exe, Payload p, Layout lay, string args, bool selftest)
         {
-            using (Mutex m = OpenMutex(dataDir))
+            string target = lay.Target;
+            using (Mutex m = OpenMutex(lay.LockKey))
             {
                 if (!Acquire(m, 0))
                 {
@@ -298,7 +453,7 @@ namespace MediaPrepPortable
                     {
                         Application.EnableVisualStyles();
                         Application.SetCompatibleTextRenderingDefault(false);
-                        SetupForm form = new SetupForm(exe, p, dataDir, runtimeDir, target);
+                        SetupForm form = new SetupForm(exe, p, lay);
                         if (Background())
                             form.RunHidden();           // scripted test run: no window
                         else
@@ -309,34 +464,51 @@ namespace MediaPrepPortable
                 }
                 finally { m.ReleaseMutex(); }
             }
-            int rc = Launch(exe, target, dataDir, args, selftest);
-            CleanupOld(runtimeDir, Path.GetFileName(target), dataDir, false);
+            int rc = Launch(exe, lay, args, selftest);
+            CleanupOld(lay, false);
             return rc;
         }
 
         // remove other runtime folders (older releases, half-finished unpacks).
         // A folder still in use can't be renamed away and is kept for next time.
-        internal static void CleanupOld(string runtimeDir, string keep, string dataDir, bool locked)
+        // Never: a newer version's runtime, an unpack younger than 10 min, a
+        // link; in the shared rt folder only what no other copy claims.
+        internal static void CleanupOld(Layout lay, bool locked)
         {
             string[] dirs;
-            try { dirs = Directory.GetDirectories(runtimeDir); }
+            try { dirs = Directory.GetDirectories(lay.RuntimeDir); }
             catch { return; }
             if (dirs.Length <= 1) return;
+            string keep = Path.GetFileName(lay.Target);
             Mutex m = null;
             try
             {
                 if (!locked)
                 {
-                    m = OpenMutex(dataDir);
+                    m = OpenMutex(lay.LockKey);
                     if (!Acquire(m, 0)) { m.Dispose(); m = null; return; }
                 }
                 foreach (string d in dirs)
                 {
-                    if (string.Equals(Path.GetFileName(d), keep, StringComparison.OrdinalIgnoreCase))
+                    string name = Path.GetFileName(d);
+                    if (string.Equals(name, keep, StringComparison.OrdinalIgnoreCase))
                         continue;
-                    string doomed = d;
-                    if (!d.EndsWith(".del", StringComparison.OrdinalIgnoreCase))
+                    if (IsReparse(d)) continue;           // never follow a link
+                    if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
                     {
+                        // an unpack in progress (another start / another copy)
+                        // stays; an abandoned old one goes
+                        if (AgeMinutes(d) >= TmpGraceMinutes) DeleteTree(d);
+                        continue;
+                    }
+                    string doomed = d;
+                    if (!name.EndsWith(".del", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // an older exe started after an update keeps its hands
+                        // off the newer runtime
+                        string ver = RuntimeVersion(name);
+                        if (ver != null && CompareVersions(ver, lay.Version) > 0) continue;
+                        if (lay.Shared && ClaimedByOthers(d, lay.DataDir)) continue;
                         // Windows lets a folder be renamed while its program runs,
                         // so ask the exe itself: an old version still running keeps
                         // its folder until a later start
@@ -391,6 +563,21 @@ namespace MediaPrepPortable
         }
     }
 
+    // where this exe's program folder is and who it belongs to
+    internal sealed class Layout
+    {
+        public readonly string DataDir, RuntimeDir, Target, Version;
+        public readonly bool Shared;         // the per-user rt fallback (all deep copies)
+
+        public Layout(string dataDir, string runtimeDir, string target, bool shared, string version)
+        {
+            DataDir = dataDir; RuntimeDir = runtimeDir; Target = target;
+            Shared = shared; Version = version;
+        }
+
+        public string LockKey { get { return Shared ? RuntimeDir : DataDir; } }
+    }
+
     internal sealed class SetupForm : Form
     {
         private static readonly Color Bg = Color.FromArgb(32, 32, 32);
@@ -400,6 +587,7 @@ namespace MediaPrepPortable
         private static readonly Color Track = Color.FromArgb(58, 58, 58);
 
         private readonly string exe, dataDir, runtimeDir, target;
+        private readonly Layout lay;
         private readonly Payload payload;
         private readonly Label status;
         private readonly Panel bar;
@@ -407,10 +595,10 @@ namespace MediaPrepPortable
         private bool done;
         public string Error;
 
-        public SetupForm(string exe, Payload p, string dataDir, string runtimeDir, string target)
+        public SetupForm(string exe, Payload p, Layout lay)
         {
-            this.exe = exe; payload = p;
-            this.dataDir = dataDir; this.runtimeDir = runtimeDir; this.target = target;
+            this.exe = exe; payload = p; this.lay = lay;
+            dataDir = lay.DataDir; runtimeDir = lay.RuntimeDir; target = lay.Target;
 
             Text = "Setting up " + Program.AppName;
             try { Icon = Icon.ExtractAssociatedIcon(exe); } catch { }
@@ -641,7 +829,7 @@ namespace MediaPrepPortable
                 File.WriteAllText(Path.Combine(tmp, Program.Complete),
                                   payload.Version + "\r\n" + DateTime.Now.ToString("s") + "\r\n");
                 MoveWithRetry(tmp, target);
-                Program.CleanupOld(runtimeDir, Path.GetFileName(target), dataDir, true);
+                Program.CleanupOld(lay, true);
                 Finish(null);
             }
             catch (UnauthorizedAccessException)

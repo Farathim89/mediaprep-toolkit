@@ -1,7 +1,6 @@
 """Cut / Edit -> Multi cut sub-tab (MultiCutMixin)."""
 import os
 import time
-import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
@@ -13,12 +12,27 @@ from ..engine.probe import probe_duration
 from ..i18n import ntr, tr
 from ..ui.frametime import cached_fps, excl_to_shown, file_fps, prefetch_fps, shown_to_excl
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (info_icon, TimeEntry, add_tooltip, auto_wrap, bind_status_colors,
-                          enable_file_drop_deep, enable_paths_drop, help_button)
-from .common import _VIDEO_TYPES, mark_edges
-from .cut_common import _SEGS, _TO_END, _ZERO_FROM, _resolve_rng, tr_key
+from ..ui.tkthread import _call_tk
+from ..ui.helpwin import help_button
+from ..ui.timeentry import TimeEntry
+from ..ui.tooltips import info_icon, add_tooltip
+from ..ui.widgets import auto_wrap, bind_status_colors, enable_file_drop_deep, enable_paths_drop
+from .common import _VIDEO_TYPES, mark_edges, opt_kwargs
+from .cut_common import (_SEGS, _TO_END, _ZERO_FROM, _resolve_rng, manual_output,
+                         manual_result, tr_key)
 from .. import jobs as jobreg
 from ..ui import icons, themes
+
+_WHICH = ("from", "to")
+_TIME_TOL = 0.002        # a box value this close to the stored one is "unchanged"
+                         # (the boxes hold milliseconds, detection exact floats)
+
+
+def _moved(a, b, tol=_TIME_TOL):
+    """True if box value a differs from stored value b (None = empty)."""
+    if a is None or b is None:
+        return (a is None) != (b is None)
+    return abs(float(a) - float(b)) > tol
 
 
 class MultiCutMixin:
@@ -42,9 +56,12 @@ class MultiCutMixin:
         btns = ttk.Frame(multi)
         btns.pack(fill="x", padx=6, pady=(6, 0))
         icons.decorate(ttk.Button(btns, text=tr("Add files..."), command=self._multi_add), "add").pack(side="left")
-        icons.decorate(ttk.Button(btns, text=tr("Remove selected"), command=self._multi_remove), "remove").pack(
-            side="left", padx=6)
-        icons.decorate(ttk.Button(btns, text=tr("Clear all"), command=self._multi_clear), "trash").pack(side="left")
+        self.multi_rm_btn = icons.decorate(ttk.Button(btns, text=tr("Remove selected"),
+                                                      command=self._multi_remove), "remove")
+        self.multi_rm_btn.pack(side="left", padx=6)
+        self.multi_clear_btn = icons.decorate(ttk.Button(btns, text=tr("Clear all"),
+                                                         command=self._multi_clear_cmd), "trash")
+        self.multi_clear_btn.pack(side="left")
         info_icon(btns, tr("Cut the intro/credits (and pre/after) out of several files, each "
                              "with its own times. Add files, click one to set its sections - or "
                              "set them once and 'Apply to all'. Then Cut all.")).pack(
@@ -288,6 +305,17 @@ class MultiCutMixin:
                                          values=(os.path.basename(p),) + ("-",) * len(self.MULTI_SEGS))
             self._multi_paths[iid] = p
             self._multi_seg[iid] = ranges
+            # mistyped boxes stay mistyped (never read as "empty" after a restart)
+            bad = {}
+            for b in (it.get("bad") or ()):
+                try:
+                    k, w, texts = b
+                    if k in ranges and w in _WHICH and len(texts) == 4:
+                        bad[(k, w)] = tuple(str(t) for t in texts)
+                except (TypeError, ValueError):
+                    continue
+            if bad:
+                self._multi_bad[iid] = bad
             self._multi_write_row(iid)
             notes = it.get("notes")
             if isinstance(notes, str) and notes:
@@ -297,7 +325,8 @@ class MultiCutMixin:
         return [{"path": self._multi_paths[iid],
                  "seg": {k: list(v) for k, v in self._multi_seg.get(iid, {}).items()},
                  "notes": self._multi_notes.get(iid, ""),
-                 "warn": iid not in self._multi_info}
+                 "warn": iid not in self._multi_info,
+                 "bad": [[k, w, list(t)] for (k, w), t in self._multi_bad.get(iid, {}).items()]}
                 for iid in self.multi_tree.get_children() if iid in self._multi_paths]
 
     def _multi_set_notes(self, iid, notes, warn=True):
@@ -366,12 +395,22 @@ class MultiCutMixin:
     def _multi_drop(self, path):
         self._multi_add_paths([path])
 
+    def _multi_busy(self):
+        """True (and a status hint) while a job runs - the list can't change then."""
+        if self._busy:
+            self.status_var.set(tr("Busy - Stop the current job first."))
+            return True
+        return False
+
     def _multi_remove(self):
+        if self._multi_busy():
+            return
         for iid in self.multi_tree.selection():
             self._multi_cands.pop(self._multi_paths.pop(iid, None), None)
             self._multi_seg.pop(iid, None)
             self._multi_edges.pop(iid, None)
             self._multi_notes.pop(iid, None)
+            self._multi_bad.pop(iid, None)
             self._multi_info.discard(iid)
             self.multi_tree.delete(iid)
         self._multi_sel = None
@@ -387,12 +426,17 @@ class MultiCutMixin:
         self._multi_loading = False
         self._multi_markers()
 
+    def _multi_clear_cmd(self):
+        if not self._multi_busy():
+            self._multi_clear()
+
     def _multi_clear(self):
         self.multi_tree.delete(*self.multi_tree.get_children())
         self._multi_paths.clear()
         self._multi_seg.clear()
         self._multi_edges.clear()
         self._multi_notes.clear()
+        self._multi_bad.clear()
         self._multi_info.clear()
         self._multi_cands.clear()
         self._multi_sel = None
@@ -450,10 +494,17 @@ class MultiCutMixin:
         self._multi_loading = True
         ranges = self._multi_seg.get(iid, {})
         edges = self._multi_edges.get(iid, {})
+        bad = self._multi_bad.get(iid, {})
         for key, (ef, et) in self._multi_entries.items():
             fr, to = ranges.get(key, [None, None])
             ef.set_value(fr) if fr is not None else self._multi_clear_entry(ef)
             et.set_value(to) if to is not None else self._multi_clear_entry(et)
+            # a mistyped box shows what was typed again (it is not "empty")
+            for box, which in ((ef, "from"), (et, "to")):
+                texts = bad.get((key, which))
+                if texts:
+                    for v, t in zip(box.vars, texts):
+                        v.set(t)
             mark_edges(ef, et, edges.get(key))     # ⚠ on edges placed by sound / a fade
         self._multi_loading = False
         self._multi_markers()
@@ -465,7 +516,8 @@ class MultiCutMixin:
 
     def _multi_read_entries(self):
         """Current section times from the boxes: {key: [from, to]} (engine
-        values: To = the exclusive end, one frame after the shown To)."""
+        values: To = the exclusive end, one frame after the shown To). A
+        mistyped box reads as None here - see _multi_read_bad."""
         out = {}
         for key, (ef, et) in self._multi_entries.items():
             fr, _ = ef.get_value()
@@ -473,8 +525,31 @@ class MultiCutMixin:
             out[key] = [fr, to]
         return out
 
+    def _multi_read_bad(self):
+        """{(key, 'from'/'to'): typed texts} of the boxes holding a time that
+        can't be read (e.g. 1:75) - never to be taken as an empty box."""
+        bad = {}
+        for key, (ef, et) in self._multi_entries.items():
+            for box, which in ((ef, "from"), (et, "to")):
+                if not box.get_seconds()[1]:
+                    bad[(key, which)] = tuple(v.get() for v in box.vars)
+        return bad
+
+    @staticmethod
+    def _bad_order(kw):
+        keys = [k for k, _ in _SEGS]
+        k, w = kw
+        return (keys.index(k) if k in keys else 9, _WHICH.index(w) if w in _WHICH else 9)
+
+    @staticmethod
+    def _bad_text(key, which):
+        seg = tr_key(dict(_SEGS).get(key, key))
+        return (tr("{seg}: invalid From time.", seg=seg) if which == "from"
+                else tr("{seg}: invalid To time.", seg=seg))
+
     def _multi_write_row(self, iid):
         ranges = self._multi_seg.get(iid, {})
+        bad = self._multi_bad.get(iid, {})
         fps = None
         path = self._multi_paths.get(iid)
         if path and any(to is not None for _fr, to in ranges.values()):
@@ -482,9 +557,12 @@ class MultiCutMixin:
             if not known:
                 # probe in the background (a restored list may hold many files),
                 # then redraw this row with the exact frame step
-                prefetch_fps([path], lambda _p, i=iid: self.after(
-                    0, lambda: self._multi_paths.get(i) and self._multi_write_row(i)))
+                prefetch_fps([path], lambda _p, i=iid: _call_tk(
+                    lambda: self._multi_paths.get(i) and self._multi_write_row(i)))
         for key, _ in self.MULTI_SEGS:
+            if (key, "from") in bad or (key, "to") in bad:
+                self.multi_tree.set(iid, key, tr("invalid time"))
+                continue
             fr, to = ranges.get(key, [None, None])
             self.multi_tree.set(iid, key, self._short_rng(key, fr, to, fps))
 
@@ -495,38 +573,50 @@ class MultiCutMixin:
         new = self._multi_read_entries()
         old = self._multi_seg.get(iid, {})
         edges = self._multi_edges.get(iid)
-        if edges:
-            # an edge the user changed is no longer the detected one
-            for key, (fr, to) in new.items():
-                es = edges.get(key)
-                o = old.get(key, [None, None])
-                if es and fr != o[0]:
-                    es["start"] = None
-                if es and to != o[1]:
-                    es["end"] = None
+        for key, rng in new.items():
+            o = old.get(key, [None, None])
+            # a box the user didn't touch keeps its exact stored value (the
+            # boxes only hold milliseconds) - and its approximate-edge warning
+            for i, side in ((0, "start"), (1, "end")):
+                if not _moved(rng[i], o[i]):
+                    rng[i] = o[i]
+                elif edges and edges.get(key):
+                    edges[key][side] = None    # changed: no longer the detected edge
         self._multi_seg[iid] = new
+        bad = self._multi_read_bad()
+        if bad:
+            self._multi_bad[iid] = bad
+        else:
+            self._multi_bad.pop(iid, None)
         self._multi_write_row(iid)
         self._multi_markers()
 
     def _multi_apply_to(self, iids, selected):
         """Copy the current box times onto each iid in `iids`."""
+        bad = self._multi_read_bad()
+        if bad:
+            messagebox.showerror(tr("Error"), "\n".join(
+                self._bad_text(k, w) for k, w in sorted(bad, key=self._bad_order)))
+            return
         times = self._multi_read_entries()
         if all(fr is None and to is None for fr, to in times.values()):
             messagebox.showinfo(tr("Nothing set"), tr("Set at least one section's times first."))
             return
-        # the To boxes show the LAST frame cut: on a file with another frame
-        # rate that same shown frame time gets that file's own exclusive end
+        # the To boxes show the LAST frame cut: each file gets the exclusive
+        # end (one frame later) on its OWN frame grid - also when no row is
+        # selected (then the boxes knew no fps and read the shown time as is)
         src_fps = self._multi_fps() if self._multi_sel else None
         shown = {k: et.get_seconds()[0] for k, (_ef, et) in self._multi_entries.items()}
         for iid in iids:
             seg = {k: list(v) for k, v in times.items()}
             fps = self._multi_fps(iid)
-            if fps and src_fps and abs(fps - src_fps) > 1e-6:
+            if fps and (not src_fps or abs(fps - src_fps) > 1e-6):
                 for k, v in seg.items():
                     if v[1] is not None and shown.get(k) is not None:
                         v[1] = round(shown_to_excl(shown[k], fps), 6)
             self._multi_seg[iid] = seg
             self._multi_edges.pop(iid, None)      # times typed / copied by hand
+            self._multi_bad.pop(iid, None)
             self._multi_write_row(iid)
         if selected:
             msg = ntr("Applied the section times to {n} selected file.",
@@ -555,8 +645,10 @@ class MultiCutMixin:
         dur = self.multi_player.timeline.duration
         marks = []
         for key, (ef, et) in self._multi_entries.items():
-            fr, _ = ef.get_value()
-            to, _ = et.get_value()
+            fr, fr_ok = ef.get_value()
+            to, to_ok = et.get_value()
+            if not (fr_ok and to_ok):
+                continue            # a mistyped box is not "empty" (= file start / end)
             fr, end, err = _resolve_rng(key, fr, to, dur)
             if fr is None or err or not end:
                 continue
@@ -629,14 +721,46 @@ class MultiCutMixin:
         if not self._multi_paths:
             messagebox.showerror(tr("Error"), tr("Add some files to the list first."))
             return None
+        # a mistyped box is never taken as empty (an empty Intro From would
+        # cut from 0:00!) - like Manual cut, refuse until it's fixed
+        bad_lines, first_bad = [], None
+        for iid in self.multi_tree.get_children():
+            bad = self._multi_bad.get(iid)
+            if not bad or iid not in self._multi_paths:
+                continue
+            first_bad = first_bad or iid
+            name = os.path.basename(self._multi_paths[iid])
+            bad_lines += [f"{name} - {self._bad_text(k, w)}"
+                          for k, w in sorted(bad, key=self._bad_order)]
+        if bad_lines:
+            if len(bad_lines) > 12:
+                bad_lines = bad_lines[:12] + [tr("... and {n} more", n=len(bad_lines) - 12)]
+            self.multi_tree.selection_set(first_bad)     # show its boxes
+            self.multi_tree.see(first_bad)
+            messagebox.showerror(tr("Error"), tr(
+                "These times can't be read - fix or clear them first:\n\n{lines}",
+                lines="\n".join(bad_lines)))
+            return None
         out_dir = self.dirs["Output folder:"].get()
         if self._refuse_same_folder(out_dir, list(self._multi_paths.values())):
             return None
-        # two files with the same name would write the same output file
-        by_out = {}
+        # two files whose cut has the same name would write the same output
+        # file (Plex-ready writes .mkv: ep.mp4 + ep.mkv collide too)
+        # (only files sharing a name stem can collide: just those are probed)
+        enc = {"encoder": CODECS.get(self.codec_var.get(), "libx264"), "output_dir": out_dir}
+        by_stem = {}
         for path in self._multi_paths.values():
-            by_out.setdefault(os.path.normcase(os.path.basename(path)), []).append(path)
-        dupes = [ps for ps in by_out.values() if len(ps) > 1]
+            stem = os.path.splitext(os.path.basename(path))[0]
+            by_stem.setdefault(os.path.normcase(stem), []).append(path)
+        dupes = []
+        for group in by_stem.values():
+            if len(group) < 2:
+                continue
+            by_out = {}
+            for path in group:
+                out_name = os.path.basename(manual_output(enc, path, exact=True))
+                by_out.setdefault(os.path.normcase(out_name), []).append(path)
+            dupes += [ps for ps in by_out.values() if len(ps) > 1]
         if dupes:
             lines = [p for ps in dupes for p in ps]
             if len(lines) > 12:
@@ -647,7 +771,7 @@ class MultiCutMixin:
                    "other in the Output folder:\n\n{files}\n\nRemove or rename one of each "
                    "pair, then Cut all again.", files="\n".join(lines)))
             return None
-        jobs = []      # (path, [drop ranges])
+        jobs = []      # (path, [(from, to, section key)])
         skip_lines = []
         for iid, path in self._multi_paths.items():
             name = os.path.basename(path)
@@ -660,7 +784,7 @@ class MultiCutMixin:
                 if err:
                     skip_lines.append(f"  [SKIP] {name} - {label}: {err}")
                 elif fr is not None:
-                    drops.append((fr, to))
+                    drops.append((fr, to, key))
             if drops:
                 jobs.append((path, drops))
             else:
@@ -691,58 +815,70 @@ class MultiCutMixin:
         jobs, base_cfg, skip_lines, n_skipped = prepared
         if self.save_hook:
             self.save_hook()
-        self.stop_event.clear()
         self._running(True, [p for p, _ in jobs] if base_cfg["move_done"] else None)
         if base_cfg["move_done"] and callable(self.unload_players_hook):
             self.unload_players_hook()      # free the files so their sources can move
         jid = self._jid = jobreg.begin(tr("Cut / Edit multi cut"), stop_event=self.stop_event,
                                        tab=self)
-        threading.Thread(target=self._multi_worker,
-                         args=(jobs, base_cfg, skip_lines, n_skipped, jid),
-                         daemon=True).start()
+        self._spawn(self._multi_worker, jobs, base_cfg, skip_lines, n_skipped, jid)
         return jid
 
     def _multi_worker(self, jobs, base_cfg, skip_lines=(), n_skipped=0, jid=None):
+        stop, seq = self._run_ctx()
         n_ok = n_fail = 0
         n_skip = n_skipped
         crashed = False
+        warn_rows = {}          # path -> note for its row (sections past the end)
+        sources = [p for p, _d in jobs]
         try:
             n = len(jobs)
             self.log(f"[MULTI] cutting {n} file(s), each with its own sections")
             for ln in skip_lines:
                 self.log(ln)
             for i, (path, drops) in enumerate(jobs, 1):
-                if self.stop_event.is_set():
+                if stop.is_set():
                     break
+                name = os.path.basename(path)
                 try:
                     total = probe_duration(path)
                     if not total:
-                        self.log(f"  [{i}/{n}] [FAIL] could not read {os.path.basename(path)}")
+                        self.log(f"  [{i}/{n}] [FAIL] could not read {name}")
+                        n_fail += 1
+                        continue
+                    # a section that starts at / after the end of THIS file (times
+                    # applied from a longer episode?) would silently cut nothing -
+                    # the file would be re-encoded WITH it. Not cut, row gets a ⚠.
+                    past = [(a, k) for a, _b, k in drops if a >= total - 0.001]
+                    if past:
+                        segs = ", ".join(f"{k} {fmt_time(a)}" for a, k in past)
+                        self.log(f"  [{i}/{n}] [FAIL] {name} - section(s) start after the "
+                                 f"end of the file ({fmt_time(total)}): {segs} - fix the "
+                                 "times; not cut")
+                        warn_rows[path] = "; ".join(
+                            tr("{seg} starts after the end of the file ({dur})",
+                               seg=tr_key(dict(_SEGS).get(k, k)), dur=format_seconds(total))
+                            for _a, k in past)
                         n_fail += 1
                         continue
                     # an empty To ("end") runs to the end of this file
-                    drops = [(a, total if b is None else b) for a, b in drops]
-                    drops = [(a, b) for a, b in drops if b > a]
-                    keep = keep_from_drops(total, drops) if drops else None
+                    rngs = [(a, total if b is None else b) for a, b, _k in drops]
+                    rngs = [(a, b) for a, b in rngs if b > a]
+                    keep = keep_from_drops(total, rngs) if rngs else None
                     if not keep:
-                        self.log(f"  [{i}/{n}] [SKIP] {os.path.basename(path)} - ranges leave nothing")
+                        self.log(f"  [{i}/{n}] [SKIP] {name} - ranges leave nothing")
                         n_skip += 1
                         continue
-                    removed = ", ".join(f"{fmt_time(a)}->{fmt_time(b)}" for a, b in drops)
-                    self.log(f"  [{i}/{n}] {os.path.basename(path)}  remove {removed}")
+                    removed = ", ".join(f"{fmt_time(a)}->{fmt_time(b)}" for a, b in rngs)
+                    self.log(f"  [{i}/{n}] {name}  remove {removed}")
                     cfg = dict(base_cfg, video=path, job_label=f"[{i}/{n}]")
-                    final = os.path.join(cfg["output_dir"], os.path.basename(path))
                     t0 = time.time()
-                    res = run_manual(cfg, keep, self, self.stop_event)
-                    if self.stop_event.is_set():
+                    # no output may replace another source of this run
+                    res = run_manual(cfg, keep, self, stop,
+                                     **opt_kwargs(run_manual, protect=sources))
+                    if stop.is_set():
                         break           # the interrupted file counts as neither
-                    if isinstance(res, bool):
-                        ok = res
-                    else:               # run_manual returns nothing: check the output
-                        try:
-                            ok = os.path.getmtime(final) >= t0 - 2
-                        except OSError:
-                            ok = False
+                    # the real output (Plex-ready = .mkv, whatever the source was)
+                    ok, _out = manual_result(res, cfg, path, t0)
                     if ok:
                         n_ok += 1
                     else:
@@ -751,7 +887,7 @@ class MultiCutMixin:
                     self.log(f"    [FAIL] {e!r}")
                     n_fail += 1
             counts = f"{n_ok} OK, {n_fail} failed, {n_skip} skipped"
-            if self.stop_event.is_set():
+            if stop.is_set():
                 self.log(f"[MULTI] stopped ({counts} before Stop).")
             else:
                 self.log(f"[MULTI] done: {counts}.")
@@ -762,4 +898,29 @@ class MultiCutMixin:
             jobreg.end(jid, ok=not crashed and n_fail == 0,
                        summary=tr("{ok} OK, {failed} failed, {skipped} skipped", ok=n_ok,
                                   failed=n_fail, skipped=n_skip))
-            self.after(0, lambda: self._running(False))
+            self._finish(seq, lambda: self._multi_cut_done(base_cfg, warn_rows))
+
+    def _multi_cut_done(self, base_cfg, warn_rows):
+        self._running(False)
+        for path, note in warn_rows.items():
+            iid = self._multi_iid_for(path)
+            if iid is not None:
+                self._multi_set_notes(iid, note, warn=True)
+        if base_cfg.get("move_done"):
+            self._multi_repoint_moved()
+
+    def _multi_repoint_moved(self):
+        """After a cut that moved its finished sources to <folder>\\done: point
+        those list rows at the moved files (so they still load / cut)."""
+        n = 0
+        for iid, p in list(self._multi_paths.items()):
+            if os.path.isfile(p):
+                continue
+            moved = os.path.join(os.path.dirname(p) or ".", "done", os.path.basename(p))
+            if os.path.isfile(moved):
+                self._multi_paths[iid] = moved
+                if p in self._multi_cands:
+                    self._multi_cands[moved] = self._multi_cands.pop(p)
+                n += 1
+        if n:
+            self.log(f"[MULTI] {n} list row(s) now point at the moved source(s) in 'done'.")

@@ -253,8 +253,9 @@ def detect_credits_visual(path, search_secs=420, fps=2, log=None, stop_event=Non
     log(f"   [visual] credits-like {start:.1f}s -> {end:.1f}s "
         f"({b - a} of {n} frames, score {score:.2f})")
     if margin_frames:
-        from .refine import add_margin, norm_margin
-        start, end = add_margin(path, (start, end), norm_margin(margin_frames), dur=float(dur))
+        from .refine_template import add_margin, norm_margin
+        start, end = add_margin(path, (start, end), norm_margin(margin_frames), dur=float(dur),
+                                stop_event=stop_event)
     return round(start, 3), round(end, 3), round(float(score), 3)
 
 
@@ -296,14 +297,16 @@ def _snap_range(path, rng, track, stop_event=None, kind=None, dur=None, skip=(Fa
         return s, e, ""
     if not skip[0]:
         ns, why = find_snap(path, s, kind=kind, edge="start", radius=1.0,
-                            audio_track=track or 0)
+                            audio_track=track or 0, stop_event=stop_event)
         if ns is not None and abs(ns - s) <= 1.0 and ns < e:
             bits.append(f"start {s:.2f}->{ns:.2f} ({why})")
             s = ns
     if skip[1] or (dur and e >= dur - 0.05):
         return s, e, "; ".join(bits)
+    if stop_event is not None and stop_event.is_set():
+        return s, e, "; ".join(bits)
     ne, why = find_snap(path, e, kind=kind, edge="end", radius=1.0,
-                        audio_track=track or 0)
+                        audio_track=track or 0, stop_event=stop_event)
     if ne is not None and abs(ne - e) <= 1.0 and ne > s:
         bits.append(f"end {e:.2f}->{ne:.2f} ({why})")
         e = ne
@@ -495,7 +498,7 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
             prog(0.95 + 0.02 * j, f"Refining {key} boundaries")
             done, kinds = {}, {}
             new = refine_ranges(rngs, log=log, label=f"{key} ", track_for=track_for,
-                                done_out=done, src_out=kinds)
+                                done_out=done, src_out=kinds, stop_event=stop_event)
             for f, k in kinds.items():
                 out[f][key + "_edge_src"] = {"start": k[0], "end": k[1]}
             for f, rng in new.items():
@@ -509,7 +512,7 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
         if stopped():
             return out
 
-    from .refine import margin_segments, norm_margin
+    from .refine_template import margin_segments, norm_margin
     margin = norm_margin(o.get("margin_frames"))
     mcache = {}
     for i, f in enumerate(good):
@@ -534,13 +537,18 @@ def scan_season(files, opts=None, progress=None, stop_event=None, log=None):
                         es["start"] = "snap"
                     if not skip[key][1] and e != r[key][1]:
                         es["end"] = "snap"
+                    if (s, e) != tuple(r[key]):
+                        for c in r["cands"][key]:       # the chosen candidate follows
+                            if (c["start"], c["end"]) == tuple(r[key]):
+                                c["start"], c["end"] = s, e
+                                break
                     r[key] = (s, e)
         if margin and (r["intro"] or r["credits"]) and not stopped():
             # safety margin: N frames more each side (real frame times, never
             # into the other segment), so no intro / credits frame is left
             # at a join
             segs = {k: r[k] for k in ("intro", "credits") if r[k]}
-            margin_segments({f: segs}, margin, {f: dur}, mcache)
+            margin_segments({f: segs}, margin, {f: dur}, mcache, stop_event=stop_event)
             for k, rng in segs.items():
                 for c in r["cands"][k]:             # the chosen candidate follows
                     if (c["start"], c["end"]) == tuple(r[k]):

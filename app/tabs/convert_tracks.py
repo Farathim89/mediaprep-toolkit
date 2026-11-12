@@ -8,7 +8,8 @@ from tkinter import ttk
 from ..engine import recode
 from ..i18n import N_, tr
 from ..ui import icons, themes
-from ..ui.widgets import KeyedCombobox, add_tooltip, info_icon
+from ..ui.tooltips import add_tooltip, info_icon
+from ..ui.widgets import KeyedCombobox
 
 ACODECS = {N_("Copy"): "copy", "AAC": "aac", "AC3": "ac3", "E-AC3": "eac3",
            "Opus": "libopus", "FLAC": "flac", "MP3": "libmp3lame"}

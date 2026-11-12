@@ -15,9 +15,12 @@ from ..engine import detect as detect_engine
 from ..engine.formatting import fmt_time
 from ..engine.probe import probe_subtitle_inventory
 from ..i18n import ntr, tr
+from ..ui.dialogfit import ScrollBody
 from ..ui.dialogs import ask_string, place_dialog
 from ..ui.player import VideoPlayer
-from ..ui.widgets import ScrollFrame, add_tooltip, build_log_tab, trim_text_lines
+from ..ui.tkthread import _call_tk
+from ..ui.tooltips import add_tooltip
+from ..ui.widgets import ScrollFrame, build_log_tab, trim_text_lines
 from .common import _KIND_NAMES, _same_dir, _same_file, _snap_in_thread, mark_edges
 from .cut_auto import AutoCutMixin
 from .cut_common import _cand_label, _is_plex, norm_margin, norm_tpl_margin, tr_key
@@ -25,7 +28,7 @@ from .cut_manual import ManualCutMixin
 from .cut_multi import MultiCutMixin
 from .cut_scan import ScanMixin
 from .templates import TemplateTab
-from .. import applog, presets
+from .. import applog, jobs as jobreg, presets
 from ..ui import icons
 
 
@@ -39,12 +42,19 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         self.unload_players_hook = None   # set by app.py: frees files locked by players
         self._busy = False                # a Cut / Edit job is running
         self._jid = None                  # its job-registry id
+        # every run gets its own stop event and number (_running): a worker
+        # that hangs after Stop is abandoned (_stop_watchdog) and its late
+        # results are ignored (_finish) instead of locking the tab
+        self._run_seq = 0
+        self._worker = None               # the running worker thread
+        self._watchdog = None             # after() id of the armed abandon timer
         self._manual_cands = {}           # Manual cut: last detect_segments result
         self._manual_cands_path = ""      # ... and the video it belongs to
         self._multi_cands = {}            # Multi cut: path -> detect_segments result
         self._multi_notes = {}            # Multi cut: iid -> "intro weak 0.41; ..."
         self._multi_edges = {}            # Multi cut: iid -> {key: {"start","end"}} edge_src
         self._multi_info = set()          # ... iids whose note is informational (no ⚠)
+        self._multi_bad = {}              # Multi cut: iid -> {(key, "from"/"to"): typed texts}
         self._plex_saved = dict(saved.get("plex_scan") or {})   # last scan options
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -167,8 +177,15 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         dlg = tk.Toplevel(self)
         dlg.title(tr("Choose subtitle languages to keep"))
         dlg.transient(self.winfo_toplevel())
-        body = ttk.Frame(dlg, padding=10)
-        body.pack(fill="both", expand=True)
+        outer = ttk.Frame(dlg, padding=10)
+        outer.pack(fill="both", expand=True)
+        # the language list scrolls when the dialog is taller than the
+        # screen (ui/dialogfit.py); the buttons stay below it
+        sb = ScrollBody(outer)
+        body = sb.interior
+        btns = ttk.Frame(outer)
+        btns.pack(side="bottom", fill="x")
+        sb.pack(fill="both", expand=True)
         scan_stop = threading.Event()
         status = tk.StringVar(value=ntr("Scanning {n} file for subtitle tracks...",
                                         "Scanning {n} files for subtitle tracks...", len(files)))
@@ -176,7 +193,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         bar = ttk.Progressbar(body, mode="determinate", maximum=len(files), length=400)
         bar.pack(fill="x", pady=(8, 6))
         _cancel = lambda: (scan_stop.set(), dlg.destroy())
-        ttk.Button(body, text=tr("Cancel"), command=_cancel).pack(anchor="e")
+        ttk.Button(btns, text=tr("Cancel"), command=_cancel).pack(side="right")
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
         dlg.bind("<Escape>", lambda e: _cancel())
         self._centre_dialog(dlg, modal=True)
@@ -186,22 +203,23 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
                 if dlg.winfo_exists():
                     bar.configure(value=done)
                     status.set(tr("Scanning subtitles {done}/{total}...", done=done, total=total))
-            self.after(0, _u)
+            _call_tk(_u)
 
         def _work():
             inv = probe_subtitle_inventory(files, progress=prog, stop_event=scan_stop)
-            self.after(0, lambda: self._populate_subs_dialog(dlg, body, inv, scan_stop))
+            _call_tk(lambda: self._populate_subs_dialog(dlg, body, btns, inv, scan_stop))
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _populate_subs_dialog(self, dlg, body, inv, scan_stop):
+    def _populate_subs_dialog(self, dlg, body, btns, inv, scan_stop):
         if scan_stop.is_set() or not dlg.winfo_exists():
             return
-        for w in body.winfo_children():      # clear the progress UI
+        for w in body.winfo_children() + btns.winfo_children():   # clear the progress UI
             w.destroy()
         if not inv:
             ttk.Label(body, text=tr("No subtitle tracks found in the files.")).pack(anchor="w")
-            ttk.Button(body, text=tr("Close"), command=dlg.destroy).pack(anchor="e", pady=(8, 0))
+            btns.pack_configure(pady=(8, 0))
+            ttk.Button(btns, text=tr("Close"), command=dlg.destroy).pack(side="right")
             self._centre_dialog(dlg)
             return
 
@@ -220,8 +238,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             bits.append(ntr("- in {n} file", "- in {n} files", d["count"]))
             ttk.Checkbutton(body, text="  ".join(bits), variable=v).pack(anchor="w", padx=6, pady=1)
 
-        btns = ttk.Frame(body)
-        btns.pack(fill="x", pady=(10, 0))
+        btns.pack_configure(pady=(10, 0))
         def _ok():
             self.subs_langs = {lang for lang, v in vars_by_lang.items() if v.get()}
             self.subs_filter_var.set(True)
@@ -608,29 +625,40 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             trim_text_lines(self.logbox)
             self.logbox.see("end")
             self.logbox.configure(state="disabled")
-        self.after(0, _a)
+        _call_tk(_a)
 
     def status(self, text):
-        self.after(0, lambda: self.status_var.set(text))
+        _call_tk(lambda: self.status_var.set(text))
 
     def progress(self, frac, text):
         def _a():
             self.bar["value"] = int(frac * 1000)
             self.pct_var.set(text)
-        self.after(0, _a)
+        _call_tk(_a)
 
     def _running(self, on, locked=None):
         # while a cut that moves its sources runs, the preview players refuse
         # to reopen those files (an open player locks them on Windows)
         if on:
             VideoPlayer.lock_paths(locked or ())
+            self._run_seq += 1
+            # a fresh stop event per run: a worker abandoned after Stop keeps
+            # its own (set) event, so starting the next job can't un-stop it
+            self.stop_event = threading.Event()
+            self._cancel_watchdog()
+            seq = self._run_seq
+            self.after(1000, lambda: self._stop_poll(seq))
         else:
             VideoPlayer.unlock_all()
+            self._worker = None
+            self._cancel_watchdog()
         self._busy = bool(on)
         st = "disabled" if on else "normal"
-        # 'Add to queue' stays usable while a job runs - that's what it's for
+        # 'Add to queue' stays usable while a job runs - that's what it's for;
+        # the Multi cut list can't lose / gain rows while a job uses it
         for name in ("start_btn", "cut_sel_btn", "multi_cut_btn", "review_btn",
-                     "man_detect_btn", "multi_detect_mb", "multi_plex_btn"):
+                     "man_detect_btn", "multi_detect_mb", "multi_plex_btn",
+                     "multi_rm_btn", "multi_clear_btn"):
             w = getattr(self, name, None)
             if w is not None:
                 w.configure(state=st)
@@ -638,10 +666,86 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         if not on:
             self.status_var.set(tr("Idle"))
 
+    # --- worker plumbing: run numbers + the Stop watchdog ---
+    STOP_GRACE_MS = 10000      # a stopped job that is still busy after this is abandoned
+
+    def _spawn(self, target, *args):
+        """Start a job's worker thread (right after _running(True))."""
+        t = threading.Thread(target=target, args=args, daemon=True)
+        self._worker = t
+        t.start()
+        return t
+
+    def _run_ctx(self):
+        """Worker side, first thing: (stop event, run number) of this run."""
+        return self.stop_event, self._run_seq
+
+    def _finish(self, seq, fn):
+        """Worker -> Tk thread: run the job's done handler `fn` (it calls
+        _running(False)) - unless that run was abandoned meanwhile."""
+        def _a():
+            if seq != self._run_seq:
+                self.log("[STOP] a job abandoned earlier has ended now - its results "
+                         "were ignored.")
+                return
+            fn()
+        _call_tk(_a)        # the same FIFO as the worker's log / progress calls
+
+    def _cancel_watchdog(self):
+        if self._watchdog is not None:
+            try:
+                self.after_cancel(self._watchdog)
+            except (tk.TclError, ValueError):
+                pass
+            self._watchdog = None
+
+    def _arm_watchdog(self):
+        if self._watchdog is None and self._busy:
+            seq = self._run_seq
+            self._watchdog = self.after(self.STOP_GRACE_MS, lambda: self._stop_watchdog(seq))
+
+    def _stop_poll(self, seq):
+        """While run `seq` is busy: once its stop event is set (Stop here, the
+        Queue window, Stop all) arm the abandon timer."""
+        if seq != self._run_seq or not self._busy:
+            return
+        if self.stop_event.is_set():
+            self._arm_watchdog()
+            return
+        self.after(1000, lambda: self._stop_poll(seq))
+
+    def _stop_watchdog(self, seq):
+        """STOP_GRACE_MS after Stop the run still hasn't reported back (a hung
+        engine call): end its job, free the tab and ignore what it still sends."""
+        self._watchdog = None
+        if seq != self._run_seq or not self._busy:
+            return
+        w = self._worker
+        if w is not None and w.is_alive():
+            self.log("[STOP] the stopped job is still busy after "
+                     f"{self.STOP_GRACE_MS // 1000} s (a stuck ffmpeg / ffprobe call?) - "
+                     "abandoned so Cut / Edit can be used again; its late results are "
+                     "ignored.")
+        else:
+            self.log("[STOP] the stopped job ended without reporting back - Cut / Edit is "
+                     "usable again.")
+        jobreg.end(self._jid, ok=False, summary=tr("Abandoned - it did not stop in time"))
+        self._run_seq += 1            # late done-callbacks of that run are ignored
+        self._running(False)
+        try:
+            self.bar.stop()
+            self.bar.configure(mode="determinate")
+            self.bar["value"] = 0
+            self.pct_var.set("")
+        except tk.TclError:
+            pass
+        self.status_var.set(tr("Stopped - the job did not end in time and was abandoned."))
+
     def stop(self):
         self.stop_event.set()
         self.log("Stopping - the running ffmpeg step is killed now and its partial output "
                  "discarded...")
+        self._arm_watchdog()
 
     def snapshot(self):
         return {

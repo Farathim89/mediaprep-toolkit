@@ -11,8 +11,15 @@
 ;
 ; Upgrade in place: an existing install (registry InstallLocation) is used as
 ; the folder; a running MediaPrep from that folder is closed first (asked in
-; the UI; /S waits up to ~20 s, then asks it to close); _internal\ is removed
-; before the new files are copied. Media\ and Data\ are never touched.
+; the UI; /S waits up to ~20 s, then asks it to close), then every other
+; program still running from the program folder (ffmpeg / ffprobe / mpv the
+; app started) is ended. The old program files (_internal\ + the exe) are
+; MOVED aside to _old_version\ first - if that fails nothing has changed and
+; Setup stops - and deleted only after the new files are in place (a failed
+; copy puts them back). Media\ and Data\ are never touched.
+; A failed install shows why (/S: no dialog), exits with code 2 and leaves
+; the reason in the uninstall key (LastSetupError) for the in-app updater;
+; a successful one removes that value.
 ;
 ; Command line:
 ;   /S              silent install (the in-app updater uses /S /RUN /D=<dir>)
@@ -35,6 +42,13 @@ SetCompressorDictSize 32
 !ifndef VERSION
   !error "VERSION not defined (build with tools/build_exe.py --installer)"
 !endif
+; user data must never be packed (an upgrade would overwrite the user's)
+!if /FileExists "${SRCDIR}\Data"
+  !error "${SRCDIR} contains Data\ (user data) - rebuild the folder build"
+!endif
+!if /FileExists "${SRCDIR}\Media"
+  !error "${SRCDIR} contains Media\ (user data) - rebuild the folder build"
+!endif
 
 !define APPNAME "MediaPrep Toolkit"
 !define APPEXE "MediaPrep Toolkit.exe"
@@ -43,6 +57,7 @@ SetCompressorDictSize 32
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 !define UNINSTALLER "Uninstall.exe"
 !define USERS_SID "*S-1-5-32-545"
+!define OLDDIR "_old_version"
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -72,6 +87,8 @@ Var Upgrade
 Var RunAfter
 Var UnAllUsers
 Var GotD
+Var ErrMsg
+Var Staged
 
 ; ---------------------------------------------------------------- pages
 !define MUI_ICON "${ROOT}\app\assets\icon.ico"
@@ -95,6 +112,30 @@ Var GotD
 !insertmacro MUI_LANGUAGE "English"
 
 ; ---------------------------------------------------------------- helpers
+; a failed install: say why (silent: no dialog), leave the reason for the
+; in-app updater (LastSetupError in the uninstall key), exit code 2
+Function InstallFailed
+  WriteRegStr SHCTX "${UNINST_KEY}" "LastSetupError" "$ErrMsg"
+  DetailPrint "$ErrMsg"
+  MessageBox MB_OK|MB_ICONSTOP "$ErrMsg" /SD IDOK
+  SetErrorLevel 2
+  Abort
+FunctionEnd
+
+; put the program files moved to ${OLDDIR}\ back (a failed upgrade)
+Function RestoreOld
+  ${If} ${FileExists} "$INSTDIR\${OLDDIR}\_internal\*.*"
+    RMDir /r "$INSTDIR\_internal"
+    Rename "$INSTDIR\${OLDDIR}\_internal" "$INSTDIR\_internal"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\${OLDDIR}\${APPEXE}"
+    Delete "$INSTDIR\${APPEXE}"
+    Rename "$INSTDIR\${OLDDIR}\${APPEXE}" "$INSTDIR\${APPEXE}"
+  ${EndIf}
+  RMDir "$INSTDIR\${OLDDIR}"
+  DetailPrint "The previous program files were put back."
+FunctionEnd
+
 ; Is "<dir>\MediaPrep Toolkit.exe" running? (a running exe can't be opened
 ; for writing). Pushes 1 / 0.
 !macro _IsRunning UN
@@ -116,17 +157,42 @@ Function ${UN}IsRunning
   Exch $0
 FunctionEnd
 
-; ask the app(s) running from $INSTDIR to close: taskkill WITHOUT /F posts
-; WM_CLOSE to their windows -> the app saves its settings like with its X
-; button (only processes started from this folder)
-Function ${UN}AskAppToClose
-  ; the 64-bit PowerShell (Sysnative from this 32-bit installer): a 32-bit
-  ; one can't read the exe path of the 64-bit app
+; $1 = the 64-bit PowerShell (Sysnative from this 32-bit installer: a 32-bit
+; one can't read the exe path of a 64-bit process). The folder and this
+; process' id go to it as environment variables (MP_INSTDIR, MP_SETUP_PID) -
+; never pasted into its command line, where a ' or $ in a folder name
+; would break (or change) the command.
+Function ${UN}PowerShellEnv
   StrCpy $1 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   ${IfNot} ${FileExists} $1
     StrCpy $1 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
   ${EndIf}
-  nsExec::Exec `"$1" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-Process -Name 'MediaPrep Toolkit' -ErrorAction SilentlyContinue | Where-Object { $$_.Path -eq '$INSTDIR\${APPEXE}' } | ForEach-Object { & '$SYSDIR\taskkill.exe' /PID $$_.Id }"`
+  StrCpy $0 $INSTDIR
+  System::Call 'kernel32::SetEnvironmentVariable(t "MP_INSTDIR", t r0)'
+  System::Call 'kernel32::GetCurrentProcessId() i .r0'
+  System::Call 'kernel32::SetEnvironmentVariable(t "MP_SETUP_PID", t r0)'
+FunctionEnd
+
+; ask the app(s) running from $INSTDIR to close: taskkill WITHOUT /F posts
+; WM_CLOSE to their windows -> the app saves its settings like with its X
+; button (only processes started from this folder)
+Function ${UN}AskAppToClose
+  Call ${UN}PowerShellEnv
+  nsExec::Exec `"$1" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$exe = $$env:MP_INSTDIR.TrimEnd('\') + '\${APPEXE}'; Get-Process -Name 'MediaPrep Toolkit' -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and ($$_.Path -ieq $$exe) } | ForEach-Object { & '$SYSDIR\taskkill.exe' /PID $$_.Id }"`
+  Pop $0
+FunctionEnd
+
+; after the app itself is closed: end every other program still running from
+; the program folder (the ffmpeg / ffprobe / mpv it started - they would
+; keep their files locked). Media\, Data\ and this installer are left alone.
+Function ${UN}EndHelpers
+  Push $0
+  Push $1
+  Call ${UN}PowerShellEnv
+  DetailPrint "Ending programs still running from $INSTDIR..."
+  nsExec::ExecToLog `"$1" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = $$env:MP_INSTDIR.TrimEnd('\') + '\'; $$c = [StringComparison]::OrdinalIgnoreCase; Get-Process | Where-Object { $$_.Id -ne [int]$$env:MP_SETUP_PID -and $$_.Path -and $$_.Path.StartsWith($$d, $$c) -and -not $$_.Path.StartsWith($$d + 'Media\', $$c) -and -not $$_.Path.StartsWith($$d + 'Data\', $$c) } | ForEach-Object { 'Ending ' + $$_.Path; $$_ | Stop-Process -Force -PassThru -ErrorAction SilentlyContinue | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue }"`
+  Pop $0
+  Pop $1
   Pop $0
 FunctionEnd
 
@@ -173,8 +239,13 @@ Function ${UN}CloseRunningApp
     ${EndIf}
     ${If} $0 == 1
       ; never delete files under a running app
-      MessageBox MB_OK|MB_ICONSTOP "${APPNAME} is still running - close it and try again." /SD IDOK
-      Abort
+      StrCpy $ErrMsg "${APPNAME} is still running - close it and try again."
+      !if "${UN}" == ""
+        Call InstallFailed
+      !else
+        MessageBox MB_OK|MB_ICONSTOP "$ErrMsg" /SD IDOK
+        Abort
+      !endif
     ${EndIf}
     Return
   ${EndIf}
@@ -224,19 +295,56 @@ FunctionEnd
 ; ---------------------------------------------------------------- sections
 Section "${APPNAME} (required)" SecMain
   SectionIn RO
+  StrCpy $Staged 0
   Call CloseRunningApp
+  Call EndHelpers
   SetOutPath "$INSTDIR"
-  ${If} ${FileExists} "$INSTDIR\${APPEXE}"
-    ; upgrade: drop the old program files first so stale ones don't linger
-    DetailPrint "Removing the old program files..."
-    RMDir /r "$INSTDIR\_internal"
+  ; upgrade: MOVE the old program files aside (stale ones must not linger).
+  ; A rename fails while a file in there is in use - then nothing has
+  ; changed yet; they are deleted only once the new files are in place.
+  RMDir /r "$INSTDIR\${OLDDIR}"                 ; leftovers of an earlier update
+  ${If} ${FileExists} "$INSTDIR\${OLDDIR}\*.*"
+    StrCpy $ErrMsg "Could not remove the leftovers of an earlier update in$\r$\n$INSTDIR\${OLDDIR}$\r$\n$\r$\nClose every program started from that folder and run Setup again."
+    Call InstallFailed
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\_internal\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\${APPEXE}"
+    DetailPrint "Moving the old program files aside..."
+    CreateDirectory "$INSTDIR\${OLDDIR}"
+    StrCpy $Staged 1
+    ; ($R1 = a rename failed; a LogicLib "Errors" test would clear the flag)
+    StrCpy $R1 0
     ${If} ${FileExists} "$INSTDIR\_internal\*.*"
-      MessageBox MB_OK|MB_ICONSTOP "Could not remove the old program files in$\r$\n$INSTDIR\_internal$\r$\n$\r$\nClose ${APPNAME} and run Setup again." /SD IDOK
-      Abort
+      ClearErrors
+      Rename "$INSTDIR\_internal" "$INSTDIR\${OLDDIR}\_internal"
+      IfErrors 0 +2
+        StrCpy $R1 1
+    ${EndIf}
+    ${If} $R1 == 0
+    ${AndIf} ${FileExists} "$INSTDIR\${APPEXE}"
+      ClearErrors
+      Rename "$INSTDIR\${APPEXE}" "$INSTDIR\${OLDDIR}\${APPEXE}"
+      IfErrors 0 +2
+        StrCpy $R1 1
+    ${EndIf}
+    ${If} $R1 == 1
+      StrCpy $ErrMsg "Could not replace the program files in$\r$\n$INSTDIR$\r$\n(a file there is in use). Nothing was changed.$\r$\n$\r$\nClose ${APPNAME} - and any ffmpeg / mpv it started - and run Setup again."
+      Call InstallFailed                     ; (.onInstFailed puts them back)
     ${EndIf}
   ${EndIf}
   ; the program files (folder build: exe, README, LICENSE, _internal\)
+  ClearErrors
   File /r "${SRCDIR}\*.*"
+  ${If} ${Errors}
+    ${If} $Staged == 1
+      StrCpy $ErrMsg "Could not write all new program files to$\r$\n$INSTDIR$\r$\n- the previous version was put back. Close ${APPNAME} and run Setup again."
+    ${Else}
+      StrCpy $ErrMsg "Could not write all program files to$\r$\n$INSTDIR$\r$\n- the installation is incomplete. Run Setup again."
+    ${EndIf}
+    Call InstallFailed
+  ${EndIf}
+  StrCpy $Staged 0
+  RMDir /r "$INSTDIR\${OLDDIR}"                 ; (a locked leftover goes next time)
   WriteUninstaller "$INSTDIR\${UNINSTALLER}"
 
   ; user data next to the app, writable for every user (these two only)
@@ -270,6 +378,7 @@ Section "${APPNAME} (required)" SecMain
   WriteRegDWORD SHCTX "${UNINST_KEY}" "EstimatedSize" $0
   WriteRegDWORD SHCTX "${UNINST_KEY}" "ShortcutDesktop" 0
   WriteRegDWORD SHCTX "${UNINST_KEY}" "ShortcutStartMenu" 0
+  DeleteRegValue SHCTX "${UNINST_KEY}" "LastSetupError"
 SectionEnd
 
 Section "Desktop shortcut" SecDesktop
@@ -358,6 +467,13 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+; an aborted / failed upgrade: the old program files go back in place
+Function .onInstFailed
+  ${If} $Staged == 1
+    Call RestoreOld
+  ${EndIf}
+FunctionEnd
+
 Function .onInstSuccess
   ${If} ${Silent}
   ${AndIf} $RunAfter == 1
@@ -381,10 +497,12 @@ FunctionEnd
 
 Section "Uninstall"
   Call un.CloseRunningApp
+  Call un.EndHelpers
   Delete "$DESKTOP\${APPNAME}.lnk"
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
 
   RMDir /r "$INSTDIR\_internal"
+  RMDir /r "$INSTDIR\${OLDDIR}"
   Delete "$INSTDIR\${APPEXE}"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\LICENSE.txt"

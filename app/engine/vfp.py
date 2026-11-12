@@ -289,7 +289,10 @@ def combine_clusters(audio_cl, video_cl, kind):
         for m in ms[1:]:
             parent[find(m)] = find(ms[0])
     groups = {}
-    for m in set(a_by) | set(v_by):
+    # input order (audio episodes, then picture-only ones) - never a set's
+    # order: it depends on the string hash seed, and the member order decides
+    # ties later (the median member a refinement / template is cut from)
+    for m in dict.fromkeys(list(a_by) + list(v_by)):
         groups.setdefault(find(m), []).append(m)
     out = list(known)
     for members in groups.values():
@@ -305,7 +308,7 @@ def combine_clusters(audio_cl, video_cl, kind):
         if len(ranges) < 2:
             continue
         src = ("audio+visual" if "audio+visual" in srcs or len(srcs) > 1
-               else next(iter(srcs)))
+               else min(srcs))
         out.append({"kind": kind, "members": list(ranges), "ranges": ranges,
                     "score": float(sum(scores) / len(scores)), "count": len(ranges),
                     "src": src})

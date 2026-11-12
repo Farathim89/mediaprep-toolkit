@@ -7,7 +7,10 @@ from tkinter import ttk
 
 from ..engine.probe import probe_audio_tracks
 from ..i18n import N_, tr
-from ..ui.widgets import add_tooltip, help_button
+from ..ui.dialogs import ask_choice
+from ..ui.tkthread import _call_tk
+from ..ui.helpwin import help_button
+from ..ui.tooltips import add_tooltip
 
 
 _MEDIA_PATTERN = "*.mp4 *.mkv *.mov *.avi *.webm *.mp3 *.m4a *.aac *.flac *.wav *.ogg *.opus"
@@ -104,7 +107,7 @@ class _TrackPicker:
                 tracks = probe_audio_tracks(path)
             except Exception:
                 tracks = []
-            self.owner.after(0, lambda: self._fill(tok, tracks))
+            _call_tk(lambda: self._fill(tok, tracks))
         threading.Thread(target=work, daemon=True).start()
 
     def _fill(self, tok, tracks):
@@ -194,6 +197,84 @@ def _mtime(path):
         return os.stat(path).st_mtime_ns
     except OSError:
         return None
+
+
+def path_key(p):
+    """Case-/form-insensitive key of a path (Windows: A.mkv == a.MKV)."""
+    return os.path.normcase(os.path.abspath(p))
+
+
+def part_path(out):
+    """'<name>.part<ext>' next to `out`: a job writes there and only a finished
+    file replaces `out` - Stop or a failure never costs an older file of that
+    name (the real extension stays last, so ffmpeg picks the right format)."""
+    root, ext = os.path.splitext(out)
+    return f"{root}.part{ext}"
+
+
+def commit_part(ok, part, out, log):
+    """After a job wrote `part`: ok -> move it over `out` (only now replacing
+    an older file); otherwise delete the partial file. True if `out` now
+    holds the new output."""
+    if ok and os.path.exists(part):
+        try:
+            os.replace(part, out)
+            return True
+        except OSError as e:
+            log(f"  [FAIL] could not write {os.path.basename(out)} (open elsewhere?): {e}")
+    try:
+        if os.path.exists(part):
+            os.remove(part)
+    except OSError as e:
+        log(f"  could not remove the unfinished {os.path.basename(part)}: {e}")
+    return False
+
+
+def free_path(path, taken=()):
+    """'name (2).ext', 'name (3).ext' ... - the first that neither exists nor
+    is in `taken` (path_key()s of outputs / sources of this run)."""
+    root, ext = os.path.splitext(path)
+    n = 2
+    while True:
+        cand = f"{root} ({n}){ext}"
+        if not os.path.exists(cand) and path_key(cand) not in taken:
+            return cand
+        n += 1
+
+
+def ask_existing(parent, path, batch=False):
+    """Tk thread: what to do with an output that exists already - 'over' /
+    'both' / 'skip', or None (Cancel / closed). batch: the answer is used for
+    every existing output of the run."""
+    msg = (tr("The output file exists already:\n\n{path}\n\nWhat should happen to it - and "
+              "to every other output of this run that exists already?",
+              path=os.path.basename(path)) if batch else
+           tr("The output file exists already:\n\n{path}\n\nWhat should happen to it?",
+              path=os.path.basename(path)))
+    choice = ask_choice(parent, tr("Files exist"), msg,
+                        [("over", tr("Overwrite")), ("both", tr("Keep both")),
+                         ("skip", tr("Skip")), ("cancel", tr("Cancel"))],
+                        default="both", cancel="cancel")
+    return choice if choice in ("over", "both", "skip") else None
+
+
+def ask_from_worker(fn, stop_event=None):
+    """Worker thread: run fn() (e.g. a dialog) on the Tk thread and wait for
+    its result. None if it failed - or once stop_event is set."""
+    box, ev = {}, threading.Event()
+
+    def run():
+        try:
+            box["v"] = fn()
+        except Exception:
+            box["v"] = None
+        finally:
+            ev.set()
+    _call_tk(run)
+    while not ev.wait(0.25):
+        if stop_event is not None and stop_event.is_set():
+            return None
+    return box.get("v")
 
 
 def _discard_partial(out, before, log):

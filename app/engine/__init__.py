@@ -13,4 +13,7 @@ package imports tkinter.
     subs        subtitle trim, disposition carry-over
     loudness    measure / gain / loudnorm / peak normalize / theme export
     snap        snap a cut point to silence / black edges
+    refine      frame-exact edges (refine_base / _visual / _audio / _edge /
+                _template)
+    recode      the Convert engine (recode_analyze / _cmd / _run)
 """

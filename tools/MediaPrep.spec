@@ -3,8 +3,8 @@
 # portable exe (build_exe.py --portable) packs this same onedir build behind
 # a small launcher (tools/portable_launcher) - nothing portable-specific here.
 # With MEDIAPREP_PORTABLE=1 (build_exe.py --portable-onefile) it builds the
-# older one-file exe instead (MEDIAPREP_PORTABLE_NAME, e.g.
-# "MediaPrep-Toolkit-Portable-2.0.0"): unpacked to %TEMP%\_MEIxxxx for each
+# older one-file exe instead (MEDIAPREP_PORTABLE_NAME = "MediaPrep-Toolkit-
+# Portable", no version in the name): unpacked to %TEMP%\_MEIxxxx for each
 # run, user data in <exe folder>\mediaprep-data (a runtime hook sets
 # sys.mediaprep_portable, see config.py).
 # Run it through tools/build_exe.py, which also sets the work/dist folders

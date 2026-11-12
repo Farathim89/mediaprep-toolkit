@@ -6,6 +6,9 @@ file's fps from ffprobe, cached per file)."""
 import os
 import threading
 
+# the public helpers (other modules import these by name)
+__all__ = ["file_fps", "cached_fps", "prefetch_fps", "excl_to_shown", "shown_to_excl"]
+
 _fps_cache = {}
 _lock = threading.Lock()
 
@@ -26,7 +29,7 @@ def file_fps(path, player=None):
     if player is not None:
         try:
             pp = getattr(player, "_path", None)
-            if player.has_video() and pp and (os.path.normcase(os.path.abspath(pp))
+            if _ready(player) and pp and (os.path.normcase(os.path.abspath(pp))
                                               == os.path.normcase(os.path.abspath(path))):
                 if player.fps and player.fps > 0:
                     return float(player.fps)
@@ -62,7 +65,10 @@ def excl_to_shown(end, fps):
 
 
 def shown_to_excl(t, fps):
-    """Shown To (last removed frame) -> engine end (the frame after it)."""
+    """Shown To (last removed frame) -> engine end (the frame after it), on
+    the frame grid of `fps`. fps None = unknown: returned unchanged - so a
+    caller applying one shown To time to many files (Apply to ALL with no
+    row selected) passes each file's own fps, e.g. file_fps(path)."""
     if t is None:
         return None
     t = float(t)
@@ -90,10 +96,17 @@ def cached_fps(path, player=None):
     return (False, None) if v is _MISSING else (True, v)
 
 
+def _ready(player):
+    """The player has a video open (not one mpv is still opening: its fps
+    is not known yet)."""
+    loading = getattr(player, "loading", None)
+    return bool(player.has_video() and not (callable(loading) and loading()))
+
+
 def _player_has(player, path):
     try:
         pp = getattr(player, "_path", None)
-        return bool(player.has_video() and pp and path
+        return bool(_ready(player) and pp and path
                     and os.path.normcase(os.path.abspath(pp))
                     == os.path.normcase(os.path.abspath(path)))
     except Exception:

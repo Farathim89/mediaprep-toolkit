@@ -10,8 +10,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from ..engine.probe import quick_check, full_check, probe_duration
-from ..ui.widgets import (info_icon, add_tooltip, enable_file_drop, enable_paths_drop,
-                          bind_status_colors, trim_text_lines, help_button)
+from ..ui.tkthread import _call_tk
+from ..ui.helpwin import help_button
+from ..ui.tooltips import info_icon, add_tooltip
+from ..ui.widgets import enable_file_drop, enable_paths_drop, bind_status_colors, trim_text_lines
 from .. import applog
 from .. import jobs
 from ..i18n import tr, ntr
@@ -70,6 +72,7 @@ class CheckTab(ttk.Frame):
         saved = saved or {}
         self.stop_event = threading.Event()
         self._jid = None              # jobs registry id of the running check
+        self._scan_token = 0          # bumps per folder scan (only the newest fills the list)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
@@ -219,44 +222,81 @@ class CheckTab(ttk.Frame):
     def _drop_paths(self, paths):
         """Add dropped files to the list. Dropping a folder starts a fresh list
         (the folder's media replaces whatever was there); dropping loose files
-        adds them to the current list."""
+        adds them to the current list. Folders are walked off the Tk thread."""
         clean = [(p or "").strip().strip('"') for p in paths]
-        if any(c and os.path.isdir(c) for c in clean):
+        clean = [p for p in clean if p]
+        if not any(os.path.isdir(c) for c in clean):
+            self._add_rows([p for p in clean if os.path.isfile(p)], fresh=False)
+            return
+
+        def walk():
+            found = []
+            for p in clean:
+                if os.path.isdir(p):
+                    found += _walk_media(p)
+                elif os.path.isfile(p):
+                    found.append(p)
+            return found
+        self._scan(walk, lambda found: self._add_rows(found, fresh=True))
+
+    def _add_rows(self, files, fresh):
+        if fresh:
             self.tree.delete(*self.tree.get_children())
         existing = set(self.tree.get_children())
         added = 0
-        for p in clean:
-            if not p:
-                continue
-            if os.path.isdir(p):
-                for fp in _walk_media(p):
-                    if fp not in existing:
-                        self.tree.insert("", "end", iid=fp,
-                                         values=("☑", os.path.basename(fp), "-", ""))
-                        existing.add(fp)
-                        added += 1
-            elif os.path.isfile(p):
-                if p not in existing:
-                    self.tree.insert("", "end", iid=p,
-                                     values=("☑", os.path.basename(p), "-", ""))
-                    existing.add(p)
-                    added += 1
+        for fp in files:
+            if fp not in existing:
+                self.tree.insert("", "end", iid=fp,
+                                 values=("☑", os.path.basename(fp), "-", ""))
+                existing.add(fp)
+                added += 1
         if added:
             self.log(f"[CHECK] added {added} file(s) to the list - tick and Check.")
         else:
             self.log("[CHECK] nothing added (no media files in the drop).")
 
-    def _list_files(self):
+    def _scan(self, walk, done):
+        """Run walk() (os.walk of a folder tree - slow on a big / network
+        drive) in a thread with a 'Scanning...' status, then done(files) on
+        the Tk thread - only for the newest scan."""
+        self._scan_token += 1
+        tok = self._scan_token
+        self.status_var.set(tr("Scanning..."))
+
+        def work():
+            try:
+                files = walk()
+            except OSError:
+                files = []
+
+            def _done():
+                if tok != self._scan_token:
+                    return
+                if self.status_var.get() == tr("Scanning..."):
+                    self.status_var.set(tr("Idle"))
+                done(files)
+            _call_tk(_done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def refresh_list(self, then=None):
+        """(Re)load the Folder's media into the list (recursive, same as
+        dropping the folder); then() afterwards, if given."""
+        self.tree.delete(*self.tree.get_children())
         d = self.dir_var.get().strip()
         if not d or not os.path.isdir(d):
-            return []
-        return _walk_media(d)   # recursive, same as dropping the folder
+            self._scan_token += 1          # an older scan must not fill the list now
+            if then:
+                then()
+            return
 
-    def refresh_list(self):
-        self.tree.delete(*self.tree.get_children())
-        for f in self._list_files():
-            self.tree.insert("", "end", iid=f,
-                             values=("☑", os.path.basename(f), "-", ""))
+        def fill(files):
+            self.tree.delete(*self.tree.get_children())
+            for f in files:
+                self.tree.insert("", "end", iid=f,
+                                 values=("☑", os.path.basename(f), "-", ""))
+            if then:
+                then()
+        self._scan(lambda: _walk_media(d), fill)
 
     def _on_tree_click(self, e):
         if self.tree.identify_region(e.x, e.y) != "cell":
@@ -297,7 +337,7 @@ class CheckTab(ttk.Frame):
             trim_text_lines(self.logbox)
             self.logbox.see("end")
             self.logbox.configure(state="disabled")
-        self.after(0, _a)
+        _call_tk(_a)
 
     def _clear_log(self):
         self.logbox.configure(state="normal")
@@ -305,13 +345,13 @@ class CheckTab(ttk.Frame):
         self.logbox.configure(state="disabled")
 
     def status(self, text):
-        self.after(0, lambda: self.status_var.set(text))
+        _call_tk(lambda: self.status_var.set(text))
 
     def progress(self, frac, text=""):
         def _a():
             self.bar["value"] = int(frac * 1000)
             self.pct_var.set(text)
-        self.after(0, _a)
+        _call_tk(_a)
 
     def _running(self, on):
         for b in (self.folder_btn, self.file_btn):
@@ -336,14 +376,15 @@ class CheckTab(ttk.Frame):
         self.stop_event.clear()
         self._running(True)
         self._jid = jobs.begin(tr("Check file"), stop_event=self.stop_event, tab=self)
-        threading.Thread(target=self._file_worker, args=(f,), daemon=True).start()
+        # Tk variables are read here, never in the worker thread
+        threading.Thread(target=self._file_worker, args=(f, self.depth_var.get()),
+                         daemon=True).start()
 
-    def _file_worker(self, f):
+    def _file_worker(self, f, depth="quick"):
         msg = tr("Failed - see log.")
         failed = True
         jid = self._jid
         try:
-            depth = self.depth_var.get()
             self.status(tr("Checking (full)...") if depth == "full"
                         else tr("Checking (quick)..."))
             self.log(f"[CHECK] {os.path.basename(f)}  ({depth})")
@@ -366,17 +407,17 @@ class CheckTab(ttk.Frame):
         finally:
             jobs.end(jid, ok=not failed,
                      summary=f"{os.path.basename(f)}: {msg}")
-            self.after(0, lambda: (self._running(False), self.status_var.set(msg)))
+            _call_tk(lambda: (self._running(False), self.status_var.set(msg)))
 
     # ---- folder ----
-    def check_folder(self):
-        files = self._ticked_files()
+    def check_folder(self, _again=False):
+        files = self._ticked_files(None if _again else lambda: self.check_folder(True))
         if files:
             self._start_folder(files, self.depth_var.get())
 
-    def queue_folder(self):
+    def queue_folder(self, _again=False):
         """Add to queue: the ticked files and depth as they are now."""
-        files = self._ticked_files()
+        files = self._ticked_files(None if _again else lambda: self.queue_folder(True))
         if not files:
             return
         depth = self.depth_var.get()
@@ -398,15 +439,16 @@ class CheckTab(ttk.Frame):
         threading.Thread(target=self._folder_worker, args=(files, depth), daemon=True).start()
         return self._jid
 
-    def _ticked_files(self):
-        """The ticked rows (loads the folder if the list is empty); shows an
-        error and returns [] when there is nothing to check."""
+    def _ticked_files(self, retry=None):
+        """The ticked rows; shows an error and returns [] when there is
+        nothing to check. An empty list with a Folder set: the folder is
+        loaded first (in the background) and retry() runs afterwards."""
         rows = self.tree.get_children()
-        if not rows:
+        if not rows and retry is not None:
             d = self.dir_var.get().strip()
             if d and os.path.isdir(d):
-                self.refresh_list()
-                rows = self.tree.get_children()
+                self.refresh_list(then=retry)
+                return []
         if not rows:
             messagebox.showerror(tr("Error"), tr("Drop files/folders onto the list (or pick a "
                                                  "folder), then tick some."))
@@ -450,7 +492,7 @@ class CheckTab(ttk.Frame):
                     res, tag = tr("BROKEN"), "bad"
                     badc += 1
                     self.log(f"  [BROKEN] {name}: {detail}")
-                self.after(0, lambda p=f, r=res, d=detail, t=tag: self._set_result(p, r, d, t))
+                _call_tk(lambda p=f, r=res, d=detail, t=tag: self._set_result(p, r, d, t))
                 self.progress(i / n, f"{i}/{n}")
         except Exception as e:
             failed = True
@@ -469,7 +511,7 @@ class CheckTab(ttk.Frame):
                                 ok=okc, bad=badc, extra=ui_extra)
             jobs.end(jid, ok=not failed, summary=ui_summary)
             self.log(f"[CHECK] {summary}")
-            self.after(0, lambda: (self._running(False), self.status_var.set(ui_summary)))
+            _call_tk(lambda: (self._running(False), self.status_var.set(ui_summary)))
 
     def _set_result(self, path, res, detail, tag):
         if not self.tree.exists(path):   # row removed from the list mid-run

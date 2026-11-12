@@ -6,12 +6,13 @@ import subprocess
 import threading
 
 from ..config import (AUDIO_RECODE_MAP, AUTO_CODEC_MAP, AUTO_GPU_CODEC_MAP,
-                      DEFAULT_AUDIO_RECODE, NVENC_PRESET_MAP, popen_flags,
-                      SVT_PRESET_MAP)
+                      DEFAULT_AUDIO_RECODE, limit_cmd, NVENC_PRESET_MAP, popen_flags,
+                      SVT_PRESET_MAP, TEMP_DIR)
 from .formatting import format_ffmpeg_timestamp, format_size
-from .probe import (_probe_json, count_frames_between, probe_source_video_bitrate,
-                    probe_streams, probe_video_info)
-from .process import run_ffmpeg_with_progress
+from .probe import (_probe_json, count_frames_between, probe_first_frame_at,
+                    probe_source_video_bitrate, probe_start_time, probe_streams,
+                    probe_video_info)
+from .process import _run_exempt, run_ffmpeg_with_progress, temp_tag
 
 
 # NVENC encoder -> CPU encoder of the same family, used when there's no GPU
@@ -33,10 +34,11 @@ def nvenc_available(codec="h264_nvenc"):
     with _nvenc_lock:
         if codec not in _nvenc_cache:
             try:
+                # limit_cmd + popen_flags: the "Limit CPU use" caps apply here too
                 r = subprocess.run(
-                    ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error",
-                     "-f", "lavfi", "-i", "color=s=256x256:d=0.1", "-frames:v", "1",
-                     "-c:v", codec, "-f", "null", "-"],
+                    limit_cmd(["ffmpeg", "-hide_banner", "-nostdin", "-v", "error",
+                               "-f", "lavfi", "-i", "color=s=256x256:d=0.1", "-frames:v", "1",
+                               "-c:v", codec, "-f", "null", "-"]),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=popen_flags(), timeout=30)
                 _nvenc_cache[codec] = r.returncode == 0
@@ -189,15 +191,6 @@ def plex_plan(preset_key, input_file, ui_preset="medium", log=None):
             "maxrate": maxrate}
 
 
-def _plex_maps(input_file, subs_lang):
-    """Stream maps for Plex-ready output (MKV): like build_stream_maps but never
-    cover art (0:V skips attached pictures) or data streams MKV can't hold."""
-    maps = build_stream_maps(input_file, subs_lang)
-    if maps == ["-map", "0"]:
-        return ["-map", "0:V", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?"]
-    return ["0:V" if m == "0:v" else m for m in maps]
-
-
 def _plex_sub_args(plan, subs_lang, shift=None):
     """MP4 text subtitles (mov_text) can't be copied into MKV -> SRT.
     shift: the cut segment's start (s). ffmpeg doesn't apply
@@ -239,13 +232,57 @@ def audio_track_codecs(audio_streams, plex=None):
         return list(plex.get("audio_codecs") or [])
     out = []
     for s in audio_streams:
-        out_codec, bitrate = AUDIO_RECODE_MAP.get(s["codec_name"], DEFAULT_AUDIO_RECODE)
+        name = s["codec_name"]
+        out_codec, bitrate = (AUDIO_RECODE_MAP.get(name) or _AUDIO_RECODE_EXTRA.get(name)
+                              or DEFAULT_AUDIO_RECODE)
         ch = s["channels"]
         # ffmpeg's (E-)AC3 encoders top out at 5.1 - fold 7.1 down instead of failing
         if out_codec in ("ac3", "eac3") and ch and ch > 6:
             ch = 6
+        # MPEG-1 Layer II is mono/stereo only (384k max stereo, 192k mono)
+        if out_codec == "mp2":
+            ch = min(ch or 2, 2)
+            bitrate = "384k" if ch >= 2 else "192k"
+        # libopus refuses more than 256k per channel (a mono 320k fails)
+        if out_codec == "libopus" and bitrate and str(bitrate).endswith("k"):
+            try:
+                bitrate = f"{min(int(bitrate[:-1]), 256 * (ch or 2))}k"
+            except ValueError:
+                pass
         out.append((out_codec, bitrate, ch))
     return out
+
+
+# source codecs the shared AUDIO_RECODE_MAP (config) doesn't list: MP2 (DVB
+# TS recordings, .mpg/.vob) stays MP2 - every container that held it can
+# again, while AAC is refused by MPEG-PS
+_AUDIO_RECODE_EXTRA = {"mp2": ("mp2", "384k")}
+
+# what a re-encoding cut / inject may keep the SOURCE container for: a WebM
+# only holds VP8/VP9/AV1 + Opus/Vorbis, MPEG-PS (.mpg/.vob) is for MPEG-1/2
+# video (our encoders are H.264/H.265/AV1), FLV for H.264 + AAC/MP3
+_WEBM_VIDEO = ("libvpx-vp9", "libvpx", "libsvtav1", "libaom-av1", "av1_nvenc")
+_WEBM_AUDIO = ("libopus", "libvorbis")
+_MPEG_PS_EXTS = (".mpg", ".mpeg", ".vob", ".m2p", ".mpe")
+
+
+def fit_container(ext, encoder, audio_codecs):
+    """Output extension for a cut / inject that re-encodes the video with
+    `encoder` and the audio as audio_codecs (audio_track_codecs() items, None
+    = stream copy): the source's own `ext` when that container can hold
+    them, else '.mkv' (e.g. a VP9 .webm cut with libx265, an .mpg)."""
+    e = (ext or "").lower()
+    out = [c[0] for c in audio_codecs or () if c]
+    if e == ".webm":
+        ok = encoder in _WEBM_VIDEO and all(a in _WEBM_AUDIO for a in out)
+    elif e in _MPEG_PS_EXTS:
+        ok = False
+    elif e == ".flv":
+        ok = (encoder in ("libx264", "h264_nvenc")
+              and all(a in ("aac", "libmp3lame") for a in out))
+    else:
+        ok = True
+    return ext if ok else ".mkv"
 
 
 def _audio_codec_args(i, codec):
@@ -273,20 +310,30 @@ def build_audio_pass(input_file, output_file, ranges, tracks, **cb):
     that trims every kept range of each audio track (sample-accurate atrim)
     and joins them with the concat FILTER, so the pieces meet without the
     encoder-priming silence that per-piece audio encodes leave at each join.
-    ranges: [(start, end)] in source timestamps (-copyts, the same timeline
-    build_ffmpeg_cut's -ss uses). tracks: [(source audio index, (codec,
-    bitrate, channels))] - output audio track j = tracks[j]. Language, title
-    and dispositions are carried over from the source track."""
+    ranges: [(start, end)] counted from the file start (format.start_time =
+    0, the timeline build_ffmpeg_cut uses; -copyts raw timestamps get that
+    start time added here). tracks:
+    [(source audio index, (codec, bitrate, channels))] - output audio track
+    j = tracks[j]. Language, title and dispositions are carried over from
+    the source track.
+    Each piece is rebased on ITS range start (PTS - s0), not on its first
+    sample: an audio track that starts later than the video (or has a gap)
+    keeps that offset - aresample first_pts=0 fills it with silence - and
+    apad makes every piece exactly its range long, so a short track can't
+    pull the following pieces early (both broke A/V sync before)."""
     data = _probe_json(input_file, ["-show_streams", "-select_streams", "a"])
     src = data.get("streams") or []
+    base = probe_start_time(input_file)
     n = len(ranges)
     graph, maps, args = [], [], []
     for j, (k, codec) in enumerate(tracks):
         outs = "".join(f"[s{j}_{i}]" for i in range(n))
         chain = [f"[0:a:{k}]asplit={n}{outs}" if n > 1 else f"[0:a:{k}]anull[s{j}_0]"]
         for i, (s0, s1) in enumerate(ranges):
-            chain.append(f"[s{j}_{i}]atrim=start={s0:.6f}:end={s1:.6f},"
-                         f"asetpts=PTS-STARTPTS[p{j}_{i}]")
+            r0, r1 = s0 + base, s1 + base
+            chain.append(f"[s{j}_{i}]atrim=start={r0:.6f}:end={r1:.6f},"
+                         f"asetpts=PTS{-r0:+.6f}/TB,aresample=async=1:first_pts=0,"
+                         f"apad=whole_dur={max(0.0, s1 - s0):.6f}[p{j}_{i}]")
         chain.append("".join(f"[p{j}_{i}]" for i in range(n))
                      + f"concat=n={n}:v=0:a=1[a{j}]")
         graph.append(";".join(chain))
@@ -306,26 +353,128 @@ def build_audio_pass(input_file, output_file, ranges, tracks, **cb):
     return run_ffmpeg_with_progress(cmd, total, **cb)
 
 
-def build_stream_maps(input_file, subs_lang=None):
-    """ffmpeg -map args. subs_lang=None (or empty) keeps EVERYTHING (-map 0).
-    Otherwise keeps video, all audio, all attachments (fonts), and only the
-    subtitle tracks whose language is in subs_lang (a set like {"eng"}) - this
-    keeps English 'forced' tracks too, since they're tagged eng. Falls back to
-    -map 0 if the subtitle languages can't be probed."""
-    if not subs_lang:
-        return ["-map", "0"]
-    info = probe_streams(input_file)
-    if not info:
-        return ["-map", "0"]
-    maps = ["-map", "0:v", "-map", "0:a?"]
-    for i, s in enumerate(info["subtitle"]):
-        if (s.get("lang") or "und").lower() in subs_lang:
-            maps += ["-map", f"0:s:{i}"]
+def build_stream_maps(input_file, subs_lang=None, data=False):
+    """ffmpeg -map args: the REAL video (0:V - never attached cover art,
+    which -map 0 / 0:v would encode as a 1-frame video track or, in MKV,
+    leave as an empty file; restore_covers() puts covers back afterwards),
+    every audio track, the subtitles, attachments (fonts) and - data=True,
+    for a stream copy into the source's own container - data streams (an
+    MKV can't hold those). subs_lang=None (or empty) keeps every subtitle;
+    otherwise only the tracks whose language is in subs_lang (a set like
+    {"eng"}) - this keeps English 'forced' tracks too, since they're tagged
+    eng. Every subtitle is kept if the languages can't be probed."""
+    maps = ["-map", "0:V?", "-map", "0:a?"]
+    info = probe_streams(input_file) if subs_lang else None
+    if info:
+        for i, s in enumerate(info["subtitle"]):
+            if (s.get("lang") or "und").lower() in subs_lang:
+                maps += ["-map", f"0:s:{i}"]
+    else:
+        maps += ["-map", "0:s?"]
+    if data:
+        maps += ["-map", "0:d?"]
     # attachments (fonts) LAST - mapping them before the subtitle streams makes
     # the muxer reject packets ("Invalid argument") under -copyts, the same
     # order -map 0 uses
     maps += ["-map", "0:t?"]
     return maps
+
+
+# ======================= cover art (attached pictures) =======================
+_COVER_IMG = {"mjpeg": (".jpg", "image/jpeg"), "png": (".png", "image/png"),
+              "bmp": (".bmp", "image/bmp"), "gif": (".gif", "image/gif"),
+              "webp": (".webp", "image/webp")}
+
+
+def cover_streams(path):
+    """The attached pictures (cover art) of a file: [{"index", "codec",
+    "filename", "mimetype"}] - an MKV's image attachment shows up as one."""
+    out = []
+    for s in _probe_json(path, ["-show_streams"]).get("streams") or []:
+        if s.get("codec_type") == "video" and (s.get("disposition") or {}).get("attached_pic"):
+            tags = {k.lower(): v for k, v in (s.get("tags") or {}).items()}
+            out.append({"index": s.get("index"), "codec": (s.get("codec_name") or "").lower(),
+                        "filename": tags.get("filename") or "",
+                        "mimetype": tags.get("mimetype") or ""})
+    return out
+
+
+def restore_covers(src, out, log=None, covers=None):
+    """Put the source's cover art back into a finished output (stream copy
+    of `out` + the pictures; encodes map 0:V and leave covers out). MP4 /
+    M4V / MOV get attached-picture streams; MKV gets image ATTACHMENTS (an
+    attached_pic stream copied into MKV would become a 1-frame video track).
+    Other containers: nothing. Best effort - on any problem `out` stays as
+    it is (without the covers) and a [WARN] is logged. True if changed."""
+    covers = cover_streams(src) if covers is None else covers
+    ext = os.path.splitext(out)[1].lower()
+    if not covers or ext not in (".mkv", ".mp4", ".m4v", ".mov") or not os.path.isfile(out):
+        return False
+    log = log or (lambda m: None)
+    have = _probe_json(out, ["-show_streams"]).get("streams") or []
+    if any((s.get("disposition") or {}).get("attached_pic") for s in have):
+        return False                                   # already there
+    n_v = sum(1 for s in have if s.get("codec_type") == "video")
+    n_t = sum(1 for s in have if s.get("codec_type") == "attachment")
+    tag = temp_tag()
+    tmp = f"{os.path.splitext(out)[0]}.part{ext}"
+    imgs, cmd = [], ["ffmpeg", "-y", "-i", out]
+    if ext == ".mkv":
+        extra = []
+        for k, c in enumerate(covers):
+            img_ext, mime = _COVER_IMG.get(c["codec"], (None, None))
+            if not img_ext:
+                continue
+            img = os.path.join(TEMP_DIR, f"cover_{tag}_{k}{img_ext}")
+            os.makedirs(TEMP_DIR, exist_ok=True)
+            r = _run_exempt(["ffmpeg", "-y", "-i", src, "-map", f"0:{c['index']}", "-c", "copy",
+                             "-frames:v", "1", "-f", "image2", "-update", "1", img])
+            if r.returncode != 0 or not os.path.isfile(img) or not os.path.getsize(img):
+                continue
+            imgs.append(img)
+            j = n_t + len(imgs) - 1
+            extra += ["-attach", img,
+                      f"-metadata:s:t:{j}", f"mimetype={c['mimetype'] or mime}",
+                      f"-metadata:s:t:{j}", f"filename={c['filename'] or 'cover' + img_ext}"]
+        if not imgs:
+            log("   [WARN] could not copy the cover art into the output")
+            return False
+        cmd += ["-map", "0", "-c", "copy"] + extra
+    else:
+        cmd += ["-i", src, "-map", "0"]
+        for c in covers:
+            cmd += ["-map", f"1:{c['index']}"]
+        cmd += ["-c", "copy"]
+        for k in range(len(covers)):
+            cmd += [f"-disposition:v:{n_v + k}", "attached_pic"]
+        cmd += ["-movflags", "+faststart"]
+    cmd += ["-map_metadata", "0", "-map_chapters", "0", tmp]
+    r = _run_exempt(cmd)
+    ok = r.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0
+    if ok:
+        try:
+            os.replace(tmp, out)
+        except OSError:
+            ok = False
+    for p in imgs + ([] if ok else [tmp]):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+    log("   Cover art copied into the output" if ok else
+        "   [WARN] could not copy the cover art into the output (kept without it)")
+    return ok
+
+
+def _even_size_vf(input_file):
+    """['-vf', crop] when the source picture has an odd width / height:
+    4:2:0 x264 / x265 / NVENC refuse e.g. 853x480, so the last column / row
+    is cropped off (no resampling). [] otherwise."""
+    v = probe_video_info(input_file)
+    if v["w"] and v["h"] and (v["w"] % 2 or v["h"] % 2):
+        return ["-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0"]
+    return []
 
 
 # cut points are frame times rounded to the millisecond (detectors, the UI),
@@ -346,6 +495,9 @@ def build_ffmpeg_cut(input_file, output_file, start_sec, end_sec, audio_streams,
       input -ss (start-10s) fast keyframe seek, -copyts to keep original
       timestamps, output -ss for the exact frame, -output_ts_offset -start
       to rebase the segment to 0 so segments stand alone and stitch cleanly.
+      start_sec / end_sec count from the file start (format.start_time = 0,
+      like the detectors, the player and the frame-count probes); a TS that
+      starts at 1.48 s or 1001 s gets that start added for the raw -ss.
     subs_lang: keep only these subtitle languages (e.g. {"eng"}); None = all.
     plex: a plex_plan() dict -> its video/audio/subtitle args replace the
     encoder/crf/bit_depth ones (Plex-direct-play audio is stream-copied,
@@ -353,24 +505,46 @@ def build_ffmpeg_cut(input_file, output_file, start_sec, end_sec, audio_streams,
     audio=False (non-Plex only): leave the audio out - a multi-piece cut
     encodes it in one seamless pass instead (build_audio_pass).
     """
+    base = probe_start_time(input_file)
+    # start ON the first video frame the cut keeps, not at the requested
+    # point between two frames: -t is checked on the encoder's 1/fps grid,
+    # and a first frame more than half a frame after the start (a detector
+    # time, or a TS whose audio starts before the video) rounds the LAST
+    # frame onto the end point - it was dropped. Audio / subtitles then
+    # start with the picture (< 1 frame later than asked).
+    try:
+        first = probe_first_frame_at(input_file, start_sec, base=base)
+    except Exception:
+        first = None
+    if first is not None and start_sec - CUT_EPS <= first < start_sec + 0.25:
+        start_sec = max(start_sec, first)
     if start_sec > CUT_EPS:
         start_sec -= CUT_EPS
     end_sec -= CUT_EPS
     seg_duration = end_sec - start_sec
-    seek1 = max(0.0, start_sec - 10.0)
-    maps = _plex_maps(input_file, subs_lang) if plex else build_stream_maps(input_file, subs_lang)
-    cmd = ["ffmpeg", "-y", "-ss", f"{seek1:.6f}", "-copyts", "-i", input_file,
-           "-ss", f"{start_sec:.6f}", "-t", f"{seg_duration:.6f}",
-           "-output_ts_offset", f"{-start_sec:.6f}"] + maps
+    seek1 = max(0.0, start_sec - 10.0)       # input -ss counts from the file start
+    # -copyts keeps the RAW timestamps (what ffprobe shows), so the output -ss
+    # is start + format.start_time. (-start_at_zero is no substitute: its zero
+    # is the earliest of the streams USED - a video-only piece of a TS whose
+    # audio starts first would be cut one frame late.)
+    raw_start = start_sec + base
+    maps = build_stream_maps(input_file, subs_lang)
+    # no input seek at all near the file start: an '-ss 0' seek on a TS whose
+    # first video frame comes after the audio lost that first frame
+    cmd = (["ffmpeg", "-y"] + (["-ss", f"{seek1:.6f}"] if seek1 > 0 else [])
+           + ["-copyts", "-i", input_file,
+              "-ss", f"{raw_start:.6f}", "-t", f"{seg_duration:.6f}",
+              "-output_ts_offset", f"{-raw_start:.6f}"] + maps)
     # -t is checked on the ENCODER's frame-grid timestamps, which can let the
     # frame at the end point slip in: the video is limited by its real frame
     # count (start <= pts < end) as well
     try:
-        n_frames = count_frames_between(input_file, start_sec, end_sec)
+        n_frames = count_frames_between(input_file, start_sec, end_sec, base=base)
     except Exception:
         n_frames = None
     if n_frames:
         cmd += ["-frames:v", str(n_frames)]
+    cmd += _even_size_vf(input_file)
     cmd += (list(plex["video_args"]) if plex else
             build_video_codec_args(encoder, crf, preset, output_file, bit_depth))
     # dense keyframes only for SHORT cold-open / post-credits pieces (so they
@@ -384,7 +558,7 @@ def build_ffmpeg_cut(input_file, output_file, start_sec, end_sec, audio_streams,
     # frame, silently producing all-intra video 3-4x the normal size - this
     # was the real cause of 800 MB files ballooning to 2-3 GB.
     if plex:
-        cmd += list(plex["audio_args"]) + _plex_sub_args(plex, subs_lang, start_sec)
+        cmd += list(plex["audio_args"]) + _plex_sub_args(plex, subs_lang, raw_start)
     else:
         cmd += ((build_audio_recode_args(audio_streams) if audio else ["-an"])
                 + ["-c:s", "copy", "-c:d", "copy"])
@@ -403,11 +577,12 @@ def build_ffmpeg_inject(input_file, output_file, kf_times, total_duration,
                         subs_lang=None, plex=None, **cb):
     """Re-encode the whole file with forced keyframes at the given times.
     plex: a plex_plan() dict (see build_ffmpeg_cut)."""
+    # (no -copyts: the output counts from the file start, like kf_times)
+    cmd = (["ffmpeg", "-y", "-i", input_file] + build_stream_maps(input_file, subs_lang)
+           + _even_size_vf(input_file))
     if plex:
-        cmd = (["ffmpeg", "-y", "-i", input_file] + _plex_maps(input_file, subs_lang)
-               + list(plex["video_args"]))
+        cmd += list(plex["video_args"])
     else:
-        cmd = ["ffmpeg", "-y", "-i", input_file] + build_stream_maps(input_file, subs_lang)
         cmd += build_video_codec_args(encoder, crf, preset, output_file, bit_depth)
     if kf_times:
         cmd += ["-force_key_frames", ",".join(format_ffmpeg_timestamp(t) for t in kf_times)]

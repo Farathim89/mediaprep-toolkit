@@ -17,7 +17,8 @@ from ..config import limit_cmd, popen_flags
 _RATE = 48000
 _CHANNELS = 2
 _BYTES_PER_FRAME = _CHANNELS * 4          # float32 stereo
-_PREFETCH_BYTES = (_RATE // 20) * _BYTES_PER_FRAME   # first 50 ms of sound
+_BUFFER_MAX = _RATE * _BYTES_PER_FRAME    # read ahead at most ~1 s of sound
+_READ_CHUNK = 8192 * _BYTES_PER_FRAME
 
 _sd = None            # sounddevice module (lazy)
 _np = None            # numpy module (lazy)
@@ -41,6 +42,56 @@ def _ensure_libs():
         return False
 
 
+class _PcmReader:
+    """Reads ffmpeg's PCM pipe on its own thread into a bounded buffer (about
+    a second ahead), so neither the Tk thread nor the audio callback ever
+    waits on the pipe."""
+
+    def __init__(self, proc):
+        self._out = proc.stdout
+        self._buf = bytearray()
+        self._cv = threading.Condition()
+        self._closed = False
+        self.eof = False
+        threading.Thread(target=self._run, name="audio-pcm", daemon=True).start()
+
+    def _run(self):
+        read = getattr(self._out, "read1", None) or self._out.read
+        try:
+            while True:
+                with self._cv:
+                    while len(self._buf) >= _BUFFER_MAX and not self._closed:
+                        self._cv.wait(0.5)
+                    if self._closed:
+                        return
+                try:
+                    chunk = read(_READ_CHUNK)
+                except (ValueError, OSError):       # pipe closed by stop()
+                    chunk = b""
+                if not chunk:
+                    return
+                with self._cv:
+                    self._buf += chunk
+        finally:
+            with self._cv:
+                self.eof = True
+
+    def take(self, n):
+        """(up to n bytes of whole frames available now, finished) - never
+        waits; finished = the stream ended and everything was taken."""
+        with self._cv:
+            k = min(n, len(self._buf)) // _BYTES_PER_FRAME * _BYTES_PER_FRAME
+            data = bytes(self._buf[:k])
+            del self._buf[:k]
+            self._cv.notify()
+            return data, self.eof and len(self._buf) < _BYTES_PER_FRAME
+
+    def close(self):
+        with self._cv:
+            self._closed = True
+            self._cv.notify_all()
+
+
 class AudioPlayer:
     """Plays the audio track of a video file from a given offset.
 
@@ -57,6 +108,7 @@ class AudioPlayer:
         self.track = None        # audio stream 0:a:N to play (None = ffmpeg's pick)
         self._proc = None
         self._stream = None
+        self._reader = None
         self._lock = threading.Lock()
         self._warned = False
 
@@ -69,10 +121,13 @@ class AudioPlayer:
             self.go()
 
     def prepare(self, path, offset_sec):
-        """Start ffmpeg and wait for the first block of sound, but don't start
-        the output stream yet (go() does). Lets callers start the picture clock
-        - and the Dual Player both sides - only once sound can flow at once.
-        Returns True when a stream is ready."""
+        """Start ffmpeg (decoding on its own thread) and set up the output
+        stream, but don't start it yet (go() does) - so the Dual Player can
+        start both sides together. Never waits for ffmpeg: until its first
+        sound arrives the stream plays silence, and as much sound as that
+        silence lasted is skipped once it comes in, so the sound stays on
+        the wall clock the picture follows. Returns True when a stream is
+        ready."""
         self.stop()
         if not path:
             return False
@@ -99,33 +154,24 @@ class AudioPlayer:
         except Exception as exc:
             self._log(f"[audio] could not start ffmpeg: {exc}")
             return False
-
-        # pre-read the first block so the first callback doesn't sit waiting
-        # for ffmpeg to spin up (that wait used to make the sound lag the video)
-        try:
-            pending = [proc.stdout.read(_PREFETCH_BYTES)]
-        except Exception:
-            pending = [b""]
-        if not pending[0]:                 # no audio track / ffmpeg failed
-            self._kill_proc(proc)
-            return False
+        reader = _PcmReader(proc)
+        owed = [0]          # bytes of sound played as silence while ffmpeg lagged
 
         def callback(outdata, frames, _time, _status):
             need = frames * _BYTES_PER_FRAME
-            buf = pending[0][:need]
-            pending[0] = pending[0][len(buf):]
+            while owed[0]:                          # catch up with the clock first
+                skipped, _done = reader.take(owed[0])
+                if not skipped:
+                    break
+                owed[0] -= len(skipped)
+            buf, done = reader.take(need) if not owed[0] else (b"", reader.eof)
+            if not buf and done:
+                raise _sd.CallbackStop              # end of the sound (or none)
             if len(buf) < need:
-                try:
-                    buf += proc.stdout.read(need - len(buf))
-                except (ValueError, OSError):      # pipe closed by stop()
-                    raise _sd.CallbackStop
-            buf = buf[:len(buf) // 4 * 4]           # whole float32 samples only
-            if not buf:
-                raise _sd.CallbackStop
+                if not done:
+                    owed[0] += need - len(buf)      # ffmpeg is behind: silence now
+                buf += bytes(need - len(buf))
             arr = _np.frombuffer(buf, dtype=_np.float32)
-            if len(arr) < frames * _CHANNELS:      # end of file: pad the tail
-                arr = _np.concatenate(
-                    [arr, _np.zeros(frames * _CHANNELS - len(arr), dtype=_np.float32)])
             gain = 0.0 if self.muted else self.volume * self.volume
             outdata[:] = (arr * gain).reshape(-1, _CHANNELS)
 
@@ -133,13 +179,14 @@ class AudioPlayer:
             stream = _sd.OutputStream(samplerate=_RATE, channels=_CHANNELS,
                                       dtype="float32", callback=callback)
         except Exception as exc:
+            reader.close()
             self._kill_proc(proc)
             if not self._warned:
                 self._warned = True
                 self._log(f"[audio] no audio output available: {exc}")
             return False
         with self._lock:
-            self._proc, self._stream = proc, stream
+            self._proc, self._stream, self._reader = proc, stream, reader
         return True
 
     def go(self):
@@ -169,10 +216,11 @@ class AudioPlayer:
 
     def stop(self):
         with self._lock:
-            proc, stream = self._proc, self._stream
-            self._proc = self._stream = None
-        # kill ffmpeg first: a callback blocked reading its pipe then returns
-        # at once, so abort() below can't hang waiting for it
+            proc, stream, reader = self._proc, self._stream, self._reader
+            self._proc = self._stream = self._reader = None
+        # kill ffmpeg first: the reader thread's pending read then returns
+        if reader is not None:
+            reader.close()
         if proc is not None:
             self._kill_proc(proc)
         if stream is not None:

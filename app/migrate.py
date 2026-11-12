@@ -22,7 +22,8 @@ run() is called by app.main() BEFORE the settings are loaded. Rules:
     the original settings file is first copied to Data\backups\;
   * a locked / failing item is left where it is with a warning, never a crash;
   * idempotent: once migrated there is nothing left to do;
-  * set MEDIAPREP_NO_MIGRATE=1 to skip it entirely.
+  * set MEDIAPREP_NO_MIGRATE=1 to skip it entirely; a frozen build (exe:
+    portable, zip or installed) always skips it (only 1.x ran from source).
 The messages are returned (the session log isn't open yet - logs\ may be one
 of the things being moved) and app.main() records them."""
 import glob
@@ -301,9 +302,11 @@ def run(root=None, app_dir=None, frozen=None):
     list of log messages (empty when there was nothing to do). Never raises."""
     if os.environ.get("MEDIAPREP_NO_MIGRATE", "").strip() not in ("", "0"):
         return ["[migrate] skipped (MEDIAPREP_NO_MIGRATE is set)"]
-    if C.PORTABLE and root is None:
-        # the portable exe's mediaprep-data\ never had the old flat layout,
-        # and the exe folder itself holds the user's other files - leave it
+    if root is None and (C.PORTABLE or getattr(sys, "frozen", False)):
+        # only the 1.x SOURCE version had the old flat layout. A frozen build
+        # (portable, zip or installed exe) never did - its folder may hold
+        # the user's other files (or another program's "temp" / "output") -
+        # leave it; README: copy Media\ and Data\ next to the exe
         return []
     root = os.path.abspath(root or C.APP_ROOT)
     m = _Migrator(root, app_dir or C.APP_DIR,

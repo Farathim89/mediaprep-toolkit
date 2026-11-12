@@ -23,6 +23,11 @@ def _same_path(a, b):
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+def _path_key(p):
+    """Case-insensitive, absolute key of a path (for sets of paths)."""
+    return os.path.normcase(os.path.abspath(p))
+
+
 def _part_path(final):
     """Temp sibling '<name>.part<ext>' to write an output into. Keeps the real
     extension so ffmpeg still picks the right muxer."""
@@ -30,36 +35,72 @@ def _part_path(final):
     return f"{root}.part{ext}"
 
 
-def _commit_part(rc, part, final, log):
+def _keep_new_path(final):
+    """'<name> (new).<ext>' (then '(new 2)', ...) - the first that doesn't
+    exist: where a finished output goes when `final` stays locked."""
+    root, ext = os.path.splitext(final)
+    cand, n = f"{root} (new){ext}", 2
+    while os.path.exists(cand):
+        cand, n = f"{root} (new {n}){ext}", n + 1
+    return cand
+
+
+def _commit_part(rc, part, final, log, check=None, tries=6, delay=0.5):
     """ffmpeg wrote `part` with return code rc: on success swap it into place
     (only now replacing any previous output), else delete the partial file so
     a failed/stopped run never leaves a truncated file under the final name.
-    Returns True if `final` now holds the new output."""
+    check: optional safety gate, check(part) -> None if the file is fine,
+    else a reason - a rejected output is deleted and nothing is replaced.
+    An old output held open by a player (WinError 32) is retried a few
+    times; if it stays locked the finished file is KEPT as
+    '<name> (new).<ext>' (logged) instead of being thrown away.
+    Returns the path that now holds the new output (final, or the '(new)'
+    name), or None - so `if _commit_part(...)` still reads as success."""
     if rc == 0 and os.path.exists(part):
-        try:
-            os.replace(part, final)
-            return True
-        except OSError as e:
-            log(f"   [FAIL] could not write output (file open elsewhere?): {e}\n")
+        problem = check(part) if check else None
+        if problem:
+            log(f"   [FAIL] output rejected: {problem} - nothing was replaced\n")
+        else:
+            err = None
+            for attempt in range(tries):
+                try:
+                    os.replace(part, final)
+                    return final
+                except PermissionError as e:       # in use - wait and retry
+                    err = e
+                    if attempt < tries - 1:
+                        time.sleep(delay)
+                except OSError as e:
+                    err = e
+                    break
+            alt = _keep_new_path(final)
+            try:
+                os.replace(part, alt)
+                log(f"   [WARN] {os.path.basename(final)} is in use ({err}) - the new"
+                    f" output was saved as: {alt}")
+                return alt
+            except OSError as e:
+                log(f"   [FAIL] could not write output (file open elsewhere?): {e}\n")
     try:
         if os.path.exists(part):
             os.remove(part)
     except OSError:
         pass
-    return False
+    return None
 
 
-def _place_output(src, final, log):
+def _place_output(src, final, log, check=None):
     """Move a finished temp segment to `final` via a .part sibling (the temp
     folder may be on another drive, so the move itself isn't atomic). Logs
-    [FAIL] instead of raising if the existing output is locked."""
+    [FAIL] instead of raising if the existing output is locked. check: the
+    safety gate (see _commit_part). Returns the output path or None."""
     part = _part_path(final)
     try:
         shutil.move(src, part)
     except OSError as e:
         log(f"   [FAIL] could not write output: {e}\n")
         return _commit_part(1, part, final, log)
-    return _commit_part(0, part, final, log)
+    return _commit_part(0, part, final, log, check)
 
 
 def _move_to_done(video, dst, log, tries=6, delay=0.5):

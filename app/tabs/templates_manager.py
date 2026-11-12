@@ -12,8 +12,10 @@ from ..engine.files import move_to_trash
 from ..engine.probe import probe_audio_streams, probe_duration
 from ..ui.dialogs import ask_string
 from ..ui.player import VideoPlayer
-from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, bind_status_colors,
-                          enable_paths_drop, help_button)
+from ..ui.tkthread import _call_tk
+from ..ui.helpwin import help_button
+from ..ui.tooltips import info_icon, add_tooltip
+from ..ui.widgets import KeyedCombobox, bind_status_colors, enable_paths_drop
 from .common import (_KIND_NAMES, _MEDIA_EXTS, _VIDEO_TYPES, _existing_template,
                      _list_media, _same_dir, _same_file)
 from .. import applog
@@ -192,7 +194,7 @@ class TemplatesManagerMixin:
                 self.tm_tree.set(iid, "lang", lg)
                 if bad:
                     self.tm_tree.item(iid, tags=("bad",))
-            self.after(0, _set)
+            _call_tk(_set)
 
     def _tm_selected(self, many=False):
         paths = [self._tm_paths[i] for i in self.tm_tree.selection() if i in self._tm_paths]
@@ -314,5 +316,5 @@ class TemplatesManagerMixin:
             except Exception as exc:
                 self.log(f"[FAIL] import crashed: {exc}")
             finally:
-                self.after(0, self._tm_refresh)
+                _call_tk(self._tm_refresh)
         threading.Thread(target=work, daemon=True).start()

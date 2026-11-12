@@ -6,7 +6,6 @@
 * Multi cut -> Plex-style scan (no templates) and Review first's Plex-style
   option (engine.plexscan.scan_season)."""
 import os
-import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -14,8 +13,10 @@ from ..config import AUDIO_LANG_CHOICES
 from ..engine.detect import detect_segments, load_templates_for
 from ..engine.plexscan import scan_season
 from ..i18n import ntr, tr
-from ..ui.widgets import KeyedCombobox, add_tooltip
-from .common import approx_edge_notes, edges_for_range
+from ..ui.dialogfit import ScrollBody
+from ..ui.tooltips import add_tooltip
+from ..ui.widgets import KeyedCombobox
+from .common import approx_edge_notes, edges_for_range, opt_kwargs
 from .cut_common import (_SEGS, _ask_choice, _best_ok, _detect_notes, _mmss, _src_label,
                          margin_widgets, mode_combobox, norm_margin)
 from .templates_detect import _EPLEN, _SENS, eplen_values
@@ -54,19 +55,22 @@ class ScanMixin:
              ("cancel", tr("Cancel"))])
         return choice if choice in ("overwrite", "fill") else None
 
-    def _multi_apply_results(self, entries, policy="overwrite"):
+    def _multi_apply_results(self, entries, policy="overwrite", add_new=True):
         """Put detection results into the Multi cut list. entries =
         [(path, ranges, notes, warn, cands[, edges])]: ranges = {key: [from, to]}
         for the sections that were searched (others are left alone); edges =
         {key: {"start", "end"}} how detection placed them (approximate ones get
         a ⚠ on their box); policy 'fill' only sets sections that are still
-        empty. New files are added.
+        empty. New files are added - unless add_new=False (a scan of the
+        list's own files: a row removed meanwhile stays removed).
         Returns (n_new, n_updated, first_iid, first_warn_iid)."""
         n_new = n_upd = 0
         first = first_warn = None
         for path, ranges, notes, warn, cands, *more in entries:
             edges = (more[0] if more else None) or {}
             iid = self._multi_iid_for(path)
+            if iid is None and not add_new:
+                continue
             if iid is None:
                 iid = self.multi_tree.insert(
                     "", "end", values=(os.path.basename(path),) + ("-",) * len(_SEGS))
@@ -83,6 +87,12 @@ class ScanMixin:
                 cur[key] = [rng[0], rng[1]]
                 self._multi_edges.setdefault(iid, {})[key] = edges_for_range(
                     edges.get(key), rng)
+                bad = self._multi_bad.get(iid)
+                if bad:                     # a mistyped box replaced by a detected time
+                    bad.pop((key, "from"), None)
+                    bad.pop((key, "to"), None)
+                    if not bad:
+                        self._multi_bad.pop(iid, None)
             self._multi_write_row(iid)
             self._multi_set_notes(iid, notes, warn=warn)
             if cands:
@@ -138,38 +148,50 @@ class ScanMixin:
         return (path, ranges, "; ".join(problems + approx_edge_notes(edges)),
                 bool(problems), res or None, edges)
 
-    def _detect_loop(self, files, cfg, tag, review=False):
+    def _detect_loop(self, files, cfg, tag, review=False, stop=None):
         """Worker side: load the templates once, match every file. Returns
         (results {path: detect_segments result | None}, have, n_warn); stops
-        early on Stop (the interrupted file is left out)."""
+        early on Stop (the interrupted file is left out). `stop` = the run's
+        stop event (default: the current one)."""
+        stop = stop or self.stop_event
         results, have, n_warn = {}, None, 0
         n = len(files)
         self.progress(0.0, tr("Loading templates..."))
         self.status(tr("Review: loading templates...") if review else tr("Loading templates..."))
-        templates = load_templates_for(cfg, log=self.log, stop_event=self.stop_event)
+        templates = load_templates_for(cfg, log=self.log, stop_event=stop)
         empty = not templates or (isinstance(templates, dict) and not any(templates.values()))
         if isinstance(templates, dict):
             have = {k for k, v in templates.items() if v}
-        if empty and not self.stop_event.is_set():
+        if empty and not stop.is_set():
             self.log(f"[{tag}] no usable templates in the template folders - nothing to "
                      "detect with.")
         for i, f in enumerate(files if not empty else (), 1):
-            if self.stop_event.is_set():
+            if stop.is_set():
                 break
             name = os.path.basename(f)
+            text = (tr("Review {i}/{n}", i=i, n=n) if review
+                    else tr("Detecting {i}/{n}", i=i, n=n))
             if review:
                 self.status(tr("Review {i}/{n}: {name}", i=i, n=n, name=name))
-                self.progress((i - 1) / n, tr("Review {i}/{n}", i=i, n=n))
             else:
                 self.status(tr("Detecting {i}/{n}: {name}", i=i, n=n, name=name))
-                self.progress((i - 1) / n, tr("Detecting {i}/{n}", i=i, n=n))
+            self.progress((i - 1) / n, text)
+
+            # a slow file still moves the bar (engines that report progress)
+            def prog(frac, _t="", i=i, text=text):
+                try:
+                    frac = max(0.0, min(1.0, float(frac or 0.0)))
+                except (TypeError, ValueError):
+                    return
+                self.progress((i - 1 + frac) / n, text)
             try:
-                res = detect_segments(f, cfg, stop_event=self.stop_event,
-                                      log=None, templates=templates)
+                res = detect_segments(f, cfg, stop_event=stop, log=self.log,
+                                      templates=templates,
+                                      **opt_kwargs(detect_segments, progress=prog))
             except Exception as e:
                 self.log(f"  [{i}/{n}] [FAIL] {name}: {e!r}")
                 res = None
-            if self.stop_event.is_set():
+            if stop.is_set():
                 break               # the interrupted file's result is partial
             results[f] = res
             notes = _detect_notes(res, cfg.get("use", {}), have)
@@ -210,34 +232,40 @@ class ScanMixin:
         policy = self._multi_ask_policy(iids)
         if policy is None:
             return
-        files = [self._multi_paths[i] for i in iids]
+        # the dialog was open for a while: a queued job may have started, or
+        # rows may have been removed meanwhile
+        if self._busy:
+            self.status_var.set(tr("Busy - Stop the current job first."))
+            return
+        files = [self._multi_paths[i] for i in iids if i in self._multi_paths]
+        if not files:
+            return
         if self.save_hook:
             self.save_hook()
-        self.stop_event.clear()
         self._running(True)
         jid = self._jid = jobreg.begin(tr("Multi cut auto-detect"),
                                        stop_event=self.stop_event, tab=self)
-        threading.Thread(target=self._multi_detect_worker, args=(files, cfg, policy, jid),
-                         daemon=True).start()
+        self._spawn(self._multi_detect_worker, files, cfg, policy, jid)
 
     def _multi_detect_worker(self, files, cfg, policy, jid=None):
+        stop, seq = self._run_ctx()
         results, have, n_warn = {}, None, 0
         crashed = False
         try:
             self.log(f"[MULTI-DETECT] matching templates in {len(files)} file(s) "
                      f"({cfg.get('detect_mode') or 'audio'}, "
                      f"{'only filling empty sections' if policy == 'fill' else 'overwriting'})")
-            results, have, n_warn = self._detect_loop(files, cfg, "MULTI-DETECT")
+            results, have, n_warn = self._detect_loop(files, cfg, "MULTI-DETECT", stop=stop)
         except Exception as e:
             crashed = True
             self.log(f"[FAIL] auto-detect crashed: {e!r}")
         finally:
-            stopped = self.stop_event.is_set()
+            stopped = stop.is_set()
             jobreg.end(jid, ok=not crashed and not stopped,
                        summary=tr("{done}/{n} detected, {warn} need a look",
                                   done=len(results), n=len(files), warn=n_warn))
-            self.after(0, lambda: self._multi_detect_done(files, cfg, policy, results,
-                                                          have, stopped))
+            self._finish(seq, lambda: self._multi_detect_done(files, cfg, policy, results,
+                                                              have, stopped))
 
     def _multi_detect_done(self, files, cfg, policy, results, have, stopped):
         self._running(False)
@@ -251,7 +279,13 @@ class ScanMixin:
             self.status_var.set(tr("Auto-detect stopped before any file finished.") if stopped
                                 else tr("Auto-detect: nothing to fill."))
             return
-        _new, _upd, first, first_warn = self._multi_apply_results(entries, policy)
+        # files removed from the list while detecting are not put back
+        entries = [e for e in entries if self._multi_iid_for(e[0]) is not None]
+        if not entries:
+            self.status_var.set(tr("Auto-detect: nothing to fill."))
+            return
+        _new, _upd, first, first_warn = self._multi_apply_results(entries, policy,
+                                                                  add_new=False)
         self._multi_reselect(first_warn or first)
         n_warn = sum(1 for e in entries if e[3])
         shown = ntr("Auto-detect filled {n} file: {ok} complete, {warn} need a look (⚠)",
@@ -305,8 +339,12 @@ class ScanMixin:
         dlg.title(tr("Plex-style scan (no templates)"))
         dlg.transient(self.winfo_toplevel())
         dlg.resizable(False, False)
-        body = ttk.Frame(dlg, padding=12)
-        body.pack(fill="both", expand=True)
+        outer = ttk.Frame(dlg, padding=12)
+        outer.pack(fill="both", expand=True)
+        # the options scroll when the dialog is taller than the screen
+        # (ui/dialogfit.py); Scan / Cancel stay below them
+        sb = ScrollBody(outer)
+        body = sb.interior
         ttk.Label(body, text=tr(
             "Finds the intro (what recurs near the start of the episodes) and the credits "
             "(a recurring ending, or credits-like pictures near the end) without any "
@@ -400,8 +438,9 @@ class ScanMixin:
                         snap=saved["snap"], sens_label=saved["sens"], margin_frames=margin)
             out["v"] = (opts, policy_v.get())
             dlg.destroy()
-        br = ttk.Frame(body)
-        br.grid(row=9, column=0, columnspan=4, sticky="e", pady=(12, 0))
+        br = ttk.Frame(outer)
+        br.pack(side="bottom", anchor="e", pady=(12, 0))
+        sb.pack(fill="both", expand=True)
         icons.decorate(ttk.Button(br, style="Accent.TButton", text=tr("Scan"), command=ok), "detect").pack(side="left")
         ttk.Button(br, text=tr("Cancel"), command=dlg.destroy).pack(side="left", padx=(6, 0))
         dlg.bind("<Return>", lambda e: ok())
@@ -424,8 +463,9 @@ class ScanMixin:
         if not got:
             return
         opts, policy = got
-        self._plex_start([self._multi_paths[i] for i in iids], opts,
-                         {"mode": "multi", "policy": policy})
+        files = [self._multi_paths[i] for i in iids if i in self._multi_paths]
+        if files:
+            self._plex_start(files, opts, {"mode": "multi", "policy": policy})
 
     def _plex_review(self, files):
         """Review first with 'Plex-style scan': scan the Videos folder and
@@ -439,16 +479,19 @@ class ScanMixin:
         self._plex_start(files, got[0], {"mode": "review", "replace": mode == "replace"})
 
     def _plex_start(self, files, opts, target):
+        # re-checked after the options dialog: a queued job may have started
+        if self._busy:
+            self.status_var.set(tr("Busy - Stop the current job first."))
+            return
         if self.save_hook:
             self.save_hook()
-        self.stop_event.clear()
         self._running(True)
         jid = self._jid = jobreg.begin(tr("Plex-style scan"), stop_event=self.stop_event,
                                        tab=self)
-        threading.Thread(target=self._plex_worker, args=(files, opts, target, jid),
-                         daemon=True).start()
+        self._spawn(self._plex_worker, files, opts, target, jid)
 
     def _plex_worker(self, files, opts, target, jid=None):
+        stop, seq = self._run_ctx()
         res = {}
         crashed = False
         n = len(files)
@@ -465,8 +508,8 @@ class ScanMixin:
                          "opening - looking for credits pictures only")
             self.status(tr("Plex-style scan of {n} file(s)...", n=n))
             res = scan_season(files, opts, progress=lambda f, t="": self.progress(f, t),
-                              stop_event=self.stop_event, log=self.log)
-            if not self.stop_event.is_set():
+                              stop_event=stop, log=self.log)
+            if not stop.is_set():
                 for i, f in enumerate(files, 1):
                     r = res.get(f) or {}
                     bits = []
@@ -484,12 +527,12 @@ class ScanMixin:
             crashed = True
             self.log(f"[FAIL] Plex-style scan crashed: {e!r}")
         finally:
-            stopped = self.stop_event.is_set()
+            stopped = stop.is_set()
             jobreg.end(jid, ok=not crashed and not stopped,
                        summary=tr("{done}/{n} scanned, {warn} need a look",
                                   done=0 if (stopped or crashed) else n, n=n, warn=n_warn))
-            self.after(0, lambda: self._plex_done(files, res, opts, target,
-                                                  stopped or crashed))
+            self._finish(seq, lambda: self._plex_done(files, res, opts, target,
+                                                      stopped or crashed))
 
     def _plex_notes(self, r, opts, n_files):
         """(notes text for the Notes column, warn) of one scan result."""
@@ -539,8 +582,11 @@ class ScanMixin:
                 if lst:
                     cands[key] = lst
             entries.append((f, ranges, notes, warn, cands or None, edges))
+        multi = target.get("mode") == "multi"
+        if multi:       # rows removed from the list while scanning stay removed
+            entries = [e for e in entries if self._multi_iid_for(e[0]) is not None]
         _new, _upd, first, first_warn = self._multi_apply_results(
-            entries, target.get("policy", "overwrite"))
+            entries, target.get("policy", "overwrite"), add_new=not multi)
         self._multi_reselect(first_warn or first)
         n_warn = sum(1 for e in entries if e[3])
         self.status_var.set(ntr(

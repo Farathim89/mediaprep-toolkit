@@ -1,6 +1,7 @@
 """MediaPrep Toolkit - package.
 
     app.py      main(): builds the window and wires the tabs together
+    window, banners, statusbar   its shell helpers, info bars, status bar
     config      constants, codec/audio maps, settings persistence, themes
     applog, jobs, notify, updater, presets, helpdocs   app-wide services
     engine/     UI-free ffmpeg/ffprobe/librosa engine (probe, encode, detect,

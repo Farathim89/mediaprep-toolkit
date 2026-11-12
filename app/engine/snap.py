@@ -14,6 +14,7 @@ silence/black STARTS. Edges of the other type are only used when no preferred
 one is in range. edge=None takes the nearest edge of any type."""
 import re
 import subprocess
+import time
 
 from ..config import limit_cmd, popen_flags
 
@@ -32,26 +33,39 @@ SCENE_TH = 0.22      # ffmpeg scene score for a hard cut (bright-to-bright cuts 
 _RE_BLACK = re.compile(r"black_start:\s*" + _NUM + r"\s+black_end:\s*" + _NUM)
 
 
-def _run(cmd, timeout):
+def _run(cmd, timeout, stop_event=None):
     """ffmpeg stderr text, or None if ffmpeg is missing / timed out / failed
-    (unreadable file, no such stream)."""
-    try:
-        proc = subprocess.run(limit_cmd(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                              creationflags=popen_flags(), timeout=timeout)
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+    (unreadable file, no such stream) / stop_event was set (ffmpeg killed)."""
+    if stop_event is not None and stop_event.is_set():
         return None
+    try:
+        proc = subprocess.Popen(limit_cmd(cmd), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                creationflags=popen_flags())
+    except (FileNotFoundError, OSError):
+        return None
+    t_end = time.monotonic() + float(timeout)
+    while True:
+        try:
+            _out, err = proc.communicate(timeout=0.2)
+            break
+        except subprocess.TimeoutExpired:
+            if (stop_event is not None and stop_event.is_set()) or time.monotonic() > t_end:
+                proc.kill()
+                proc.communicate()
+                return None
     if proc.returncode != 0:
         return None
-    return proc.stderr.decode("utf-8", errors="replace")
+    return (err or b"").decode("utf-8", errors="replace")
 
 
-def _silence_edges(path, a, length, audio_track, timeout):
+def _silence_edges(path, a, length, audio_track, timeout, stop_event=None):
     """[(time, 'start'|'end')] of silences inside [a, a+length] (absolute s)."""
     cmd = ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{a:.3f}", "-t", f"{length:.3f}",
            "-i", path, "-map", f"0:a:{int(audio_track)}?", "-vn", "-sn", "-dn",
            "-af", f"silencedetect=noise={SILENCE_NOISE}:d={SILENCE_MIN}",
            "-f", "null", "-"]
-    err = _run(cmd, timeout)
+    err = _run(cmd, timeout, stop_event)
     if err is None:
         return None
     out = [(a + float(m.group(1)), "start") for m in _RE_SIL_START.finditer(err)]
@@ -59,13 +73,13 @@ def _silence_edges(path, a, length, audio_track, timeout):
     return out
 
 
-def _black_edges(path, a, length, timeout):
+def _black_edges(path, a, length, timeout, stop_event=None):
     """[(time, 'start'|'end')] of black stretches inside [a, a+length]."""
     cmd = ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{a:.3f}", "-t", f"{length:.3f}",
            "-i", path, "-map", "0:v:0?", "-an", "-sn", "-dn",
            "-vf", f"scale=320:-2,blackdetect=d={BLACK_MIN}:pix_th={BLACK_PIX_TH}",
            "-f", "null", "-"]
-    err = _run(cmd, timeout)
+    err = _run(cmd, timeout, stop_event)
     if err is None:
         return None
     out = []
@@ -75,27 +89,28 @@ def _black_edges(path, a, length, timeout):
     return out
 
 
-def _cut_edges(path, a, length, timeout):
+def _cut_edges(path, a, length, timeout, stop_event=None):
     """Times of hard picture cuts (first frame of the new shot) inside
     [a, a+length]."""
     cmd = ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{a:.3f}", "-t", f"{length:.3f}",
            "-i", path, "-map", "0:v:0?", "-an", "-sn", "-dn",
            "-vf", f"scale=160:-2,select='gt(scene,{SCENE_TH})',showinfo",
            "-f", "null", "-"]
-    err = _run(cmd, timeout)
+    err = _run(cmd, timeout, stop_event)
     if err is None:
         return None
     return [a + float(m.group(1)) for m in _RE_PTS.finditer(err)]
 
 
 def find_snap(path, t, kind=None, radius=1.0, audio_track=0, edge="start",
-              timeout=60):
+              timeout=60, stop_event=None):
     """Nearest silence edge / black boundary to `t` within ±radius seconds.
 
     kind: 'silence', 'black', 'cut' or None/'both' (None/'both' = all three;
     a picture cut in range always wins).
     edge: 'start' (segment start: prefer where silence/black ends), 'end'
     (segment end: prefer where it starts) or None (nearest of any).
+    stop_event set = the running ffmpeg is killed (as if it had failed).
     Returns (new_t, reason) - e.g. (90.112, 'end of silence + black') - or
     (None, reason) when there is nothing to snap to / ffmpeg failed."""
     try:
@@ -113,17 +128,17 @@ def find_snap(path, t, kind=None, radius=1.0, audio_track=0, edge="start",
     lo, hi = a, a + length
     cuts = []
     if use_cut:
-        c = _cut_edges(path, a, length, timeout)
+        c = _cut_edges(path, a, length, timeout, stop_event)
         if c is not None:
             ran = True
             cuts = c
     if use_sil:
-        e = _silence_edges(path, a, length, audio_track, timeout)
+        e = _silence_edges(path, a, length, audio_track, timeout, stop_event)
         if e is not None:
             ran = True
             edges += [(x, side, "silence") for x, side in e]
     if use_black:
-        e = _black_edges(path, a, length, timeout)
+        e = _black_edges(path, a, length, timeout, stop_event)
         if e is not None:
             ran = True
             edges += [(x, side, "black") for x, side in e]

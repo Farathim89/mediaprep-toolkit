@@ -8,8 +8,11 @@ from tkinter import filedialog, messagebox, ttk
 from ..config import AUDIO_LANG_CHOICES, VIDEO_DIR
 from ..engine.formatting import fmt_time
 from ..engine.recurring import detect_recurring, representative_member
-from ..ui.widgets import (info_icon, KeyedCombobox, add_tooltip, bind_status_colors,
-                          enable_file_drop, help_button)
+from ..ui.frametime import excl_to_shown, file_fps
+from ..ui.tkthread import _call_tk
+from ..ui.helpwin import help_button
+from ..ui.tooltips import info_icon, add_tooltip
+from ..ui.widgets import KeyedCombobox, bind_status_colors, enable_file_drop
 from .audition import _AuditionWindow
 from .common import _KIND_NAMES, _list_media, _template_stem, edge_is_approx, mark_edges
 from .cut_common import margin_widgets, mode_combobox, norm_margin, norm_tpl_margin
@@ -298,7 +301,7 @@ class TemplateDetectMixin:
         def _a():
             self.detect_bar["value"] = int(frac * 1000)
             self.detect_status.set(msg)
-        self.after(0, _a)
+        _call_tk(_a)
 
     def start_detect(self):
         folder = self.detect_dir.get().strip().strip('"')
@@ -381,6 +384,7 @@ class TemplateDetectMixin:
     def _detect_worker(self, files, kinds, window, minlens, thresh, known=None, lang=None,
                        sens_label="", jid=None, mode="audio", margins=None):
         found = []
+        fps_of = {}         # representative episode -> fps (the End column is inclusive)
         crashed = False
         try:
             self.log(f"[DETECT] {len(files)} episode(s) - detecting {', '.join(kinds)} "
@@ -394,6 +398,13 @@ class TemplateDetectMixin:
             order = {"preintro": 0, "intro": 1, "credits": 2, "aftercredits": 3}
             found.sort(key=lambda c: (order.get(c["kind"], 9),
                                       c.get("known") is not None, -c["count"]))
+            for c in found:
+                rep = representative_member(c)
+                if rep not in fps_of:
+                    try:
+                        fps_of[rep] = file_fps(rep)
+                    except Exception:
+                        fps_of[rep] = None
             if self.detect_stop.is_set():
                 self.log("[DETECT] stopped.")
             else:
@@ -453,7 +464,9 @@ class TemplateDetectMixin:
                     # ⚠ before an edge placed by sound / a fade (approximate)
                     es = (c.get("edge_src") or {}).get(rep) or {}
                     sa = ("⚠ " if edge_is_approx(es.get("start")) else "") + fmt_time(a)
-                    sb = ("⚠ " if edge_is_approx(es.get("end")) else "") + fmt_time(b)
+                    # End = the last frame of the range (inclusive), like every To box
+                    sb = (("⚠ " if edge_is_approx(es.get("end")) else "")
+                          + fmt_time(excl_to_shown(b, fps_of.get(rep))))
                     self.detect_tree.insert(
                         "", "end", iid=iid,
                         values=(self._kind_disp(c), c["count"], sa, sb,
@@ -470,7 +483,7 @@ class TemplateDetectMixin:
                 else:
                     self.detect_status.set(tr("Found {n} segment(s). Select one -> Fill times, "
                                               "or Auto-cut all.", n=len(found)))
-            self.after(0, _fill)
+            _call_tk(_fill)
 
     def _det_margins(self):
         """{'margin_frames', 'template_margin'} for the detectors."""
@@ -514,7 +527,9 @@ class TemplateDetectMixin:
             messagebox.showinfo(tr("Partial results"), tr("These rows come from a stopped detect. "
                                                           "Run Detect to the end before Auto-cut."))
             return
-        if self._cutting or self._autocutting or self._detecting:
+        # one job at a time: not while a template cut / Detect / Cut template ->
+        # Auto-detect runs (Stop must never end the wrong one)
+        if self._cutting or self._autocutting or self._detecting or self._tpl_detecting:
             return
         clusters = list(self._clusters.values())
         todo = [c for c in clusters if not c.get("known")]
@@ -527,13 +542,17 @@ class TemplateDetectMixin:
                                                          "covered by a template."))
             return
         items = []
+        dirs = self.DIRMAP
         for i, c in enumerate(todo):
             name = os.path.splitext(os.path.basename(representative_member(c)))[0]
-            items.append((i, self.DIRMAP[c["kind"]], f"{_template_stem(name)}_{c['kind']}"))
+            items.append((i, dirs[c["kind"]], f"{_template_stem(name)}_{c['kind']}"))
         plan = self._plan_outputs(items)        # asks once for the whole batch
         jobs = [(c,) + plan[i] for i, c in enumerate(todo) if i in plan]
         if not jobs:
             self.detect_status.set(tr("Nothing cut - every template was skipped."))
+            return
+        # re-checked after the dialog: something may have started meanwhile
+        if self._cutting or self._autocutting or self._detecting or self._tpl_detecting:
             return
         self.detect_stop.clear()
         self.cut_stop.clear()
@@ -580,7 +599,7 @@ class TemplateDetectMixin:
                 self._autocutting = False
                 self._sync_buttons()
                 self._tm_refresh()
-            self.after(0, _f)
+            _call_tk(_f)
 
     # ---------------- detected-row audition ----------------
     def _on_detect_double(self, event):

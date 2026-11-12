@@ -1,4 +1,5 @@
 """Helpers shared by the Templates and Cut / Edit tabs."""
+import inspect
 import os
 import re
 import threading
@@ -7,6 +8,7 @@ from ..config import MEDIA_EXTS
 from ..engine.probe import audio_track_for_lang
 from ..engine.snap import find_snap
 from ..i18n import tr, N_
+from ..ui.tkthread import _call_tk
 
 
 # one shared list of accepted containers (config.MEDIA_EXTS) - the alias keeps
@@ -70,6 +72,18 @@ def edges_for_range(edge_src, rng):
             "end": es.get("end") if to is not None else None}
 
 
+def opt_kwargs(fn, **kw):
+    """The keyword arguments of `kw` that `fn` accepts (an engine function
+    from an older build may not know a newer optional one, e.g. progress=)."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return dict(kw)
+    return {k: v for k, v in kw.items() if k in params}
+
+
 def _same_dir(a, b):
     """True if two folders are the same (case/abspath-insensitive)."""
     try:
@@ -120,7 +134,8 @@ def _same_file(a, b):
 def _snap_in_thread(owner, video, t, edge, lang, done):
     """Run snap.find_snap(video, t, edge=...) in a thread (on the `lang`
     audio track, else the first one) and call done(new_t, reason) on the Tk
-    thread via owner.after. Shared by every Snap button (Templates,
+    thread (tkthread queue; `owner` is kept for the callers). Shared by every
+    Snap button (Templates,
     Manual cut, Multi cut)."""
     def work():
         res = (None, "snap failed")
@@ -135,8 +150,5 @@ def _snap_in_thread(owner, video, t, edge, lang, done):
         except Exception as exc:
             res = (None, f"snap failed: {exc}")
         finally:
-            try:
-                owner.after(0, lambda: done(*res))
-            except Exception:
-                pass
+            _call_tk(lambda: done(*res))
     threading.Thread(target=work, daemon=True).start()

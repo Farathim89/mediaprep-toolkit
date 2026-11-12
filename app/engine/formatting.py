@@ -44,8 +44,11 @@ def fmt_time(sec):
 
 
 def format_ffmpeg_timestamp(t):
-    t = max(0.0, t)
-    h = int(t // 3600)
-    m = int((t % 3600) // 60)
-    s = t - h * 3600 - m * 60
-    return f"{h:02d}:{m:02d}:{s:09.6f}"
+    """HH:MM:SS.ffffff. Rounded to whole microseconds FIRST and split as
+    integers, so e.g. 119.9999999 gives 00:02:00.000000, never the invalid
+    00:01:60.000000 a float split rounds to (ffmpeg rejects that time)."""
+    us = int(round(max(0.0, t) * 1_000_000))
+    h, us = divmod(us, 3_600_000_000)
+    m, us = divmod(us, 60_000_000)
+    s, us = divmod(us, 1_000_000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{us:06d}"
