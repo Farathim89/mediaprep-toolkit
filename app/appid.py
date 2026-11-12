@@ -357,6 +357,99 @@ def shortcut_id(lnk):
         _release(a, store)
 
 
+_FMTID_LINK = "{B9B4B3FC-2B51-4A42-B5D8-324146AFCF25}"     # PKEY_Link_TargetParsingPath, 2
+
+
+def link_target(lnk):
+    """The target path of shortcut `lnk` ("" when unknown)."""
+    a = _win()
+    store = _file_store(a, lnk, False) if a is not None and os.path.isfile(lnk) else None
+    if store is None:
+        return ""
+    ctypes = a["ctypes"]
+    try:
+        g = a["GUID"]()
+        ctypes.oledll.ole32.CLSIDFromString(ctypes.c_wchar_p(_FMTID_LINK), ctypes.byref(g))
+        key = a["PROPERTYKEY"](g, 2)
+        pv = a["PROPVARIANT"]()
+        if _method(a, store, 5, "GetValue")(store, ctypes.byref(key), ctypes.byref(pv)) < 0:
+            return ""
+        try:
+            return ctypes.wstring_at(pv.p) if pv.vt == _VT_LPWSTR and pv.p else ""
+        finally:
+            a["ole32"].PropVariantClear(ctypes.byref(pv))
+    except Exception:
+        return ""
+    finally:
+        _release(a, store)
+
+
+def _shortcut_folders():
+    """Where the user's own shortcuts to the app usually are: taskbar pins,
+    Start menu (per user) and the desktop."""
+    appdata = os.environ.get("APPDATA", "")
+    home = os.environ.get("USERPROFILE", "")
+    out = []
+    if appdata:
+        ql = os.path.join(appdata, "Microsoft", "Internet Explorer", "Quick Launch")
+        out += [os.path.join(ql, "User Pinned", "TaskBar"),
+                os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs")]
+    if home:
+        out.append(os.path.join(home, "Desktop"))
+    return [d for d in out if os.path.isdir(d)]
+
+
+def sync_shortcuts(target=None, log=None):
+    """The portable build's pin is made from the LAUNCHER exe, a different exe
+    than the one that shows the window, so Windows gives the running app a
+    second taskbar button. Stamp APP_ID into the user's shortcuts / taskbar
+    pins that start this app (`target`, default: what relaunch() starts), so
+    the window stacks onto them - no re-pinning needed. Returns the list of
+    shortcuts it changed. Safe to call on every start (only touches .lnk
+    files whose target is exactly this app and whose ID differs)."""
+    a = _win()
+    if a is None:
+        return []
+    if target is None:
+        cmd, _icon = relaunch()
+        target = cmd.split('"')[1] if cmd.startswith('"') else cmd
+    if not target or not os.path.isfile(target):
+        return []
+    want = os.path.normcase(os.path.abspath(target))
+    changed = []
+    for folder in _shortcut_folders():
+        for dirpath, dirs, files in os.walk(folder):
+            if dirpath.count(os.sep) - folder.count(os.sep) >= 2:
+                dirs[:] = []                       # Start menu: 2 levels deep is plenty
+            for f in files:
+                if not f.lower().endswith(".lnk"):
+                    continue
+                lnk = os.path.join(dirpath, f)
+                try:
+                    tgt = link_target(lnk)
+                    if not tgt or os.path.normcase(os.path.abspath(tgt)) != want:
+                        continue
+                    if shortcut_id(lnk) == APP_ID:
+                        continue
+                    if stamp_shortcut(lnk) and shortcut_id(lnk) == APP_ID:
+                        changed.append(lnk)
+                except Exception:
+                    continue
+    if changed:
+        try:
+            # tell Explorer / the taskbar to re-read those shortcuts
+            sh = a["ctypes"].WinDLL("shell32")
+            for lnk in changed:
+                sh.SHChangeNotify(0x00002000, 0x0005, a["ctypes"].c_wchar_p(lnk), None)
+            sh.SHChangeNotify(0x08000000, 0x0000, None, None)        # SHCNE_ASSOCCHANGED
+        except Exception:
+            pass
+        if log:
+            for lnk in changed:
+                log(f"[taskbar] shortcut now stacks with the app window: {lnk}")
+    return changed
+
+
 def cli(paths):
     """`--set-shortcut-aumid <lnk>...` (the installer, after it created its
     shortcuts): stamp each existing one. Exit code 0 = all done (missing

@@ -7,6 +7,7 @@ helpers (geometry, icon, restart) in window.py, the info bars in banners.py,
 the status bar in statusbar.py."""
 import os
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -96,6 +97,11 @@ def main():
     _set_window_icon(root)
     # the taskbar ID + what a pin of the running window starts (app/appid.py)
     appid.install(root)
+    # existing pins / shortcuts of the portable exe (or the app exe) get the
+    # same ID so the running window stacks onto them - background, best effort
+    if getattr(sys, "frozen", False) and not bgmode.enabled():
+        threading.Thread(target=lambda: appid.sync_shortcuts(log=applog.record),
+                         daemon=True, name="taskbar-shortcuts").start()
     root.resizable(True, True)
     # follow each monitor's scaling (ui/dpi.py); the UI is built at the
     # system DPI and rescaled when the window is on another monitor
