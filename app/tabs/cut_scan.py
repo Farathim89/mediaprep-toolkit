@@ -398,7 +398,7 @@ class ScanMixin:
         scb = ttk.Checkbutton(body, text=tr("Snap boundaries to silence / black (±1 s)"),
                               variable=snap_v)
         scb.grid(row=6, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        # the shared safety margin of Cut / Edit → Auto-detect (Detection & mode)
+        # the shared safety margin of Cut / Edit → Settings (Detection & mode)
         shared_m = getattr(self, "margin_frames_var", None)
         margin_v = tk.StringVar(value=str(norm_margin(
             shared_m.get() if shared_m is not None else d.get("margin_frames"))))

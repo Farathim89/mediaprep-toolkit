@@ -401,6 +401,26 @@ Section "-shortcut cleanup"
   ${EndIf}
 SectionEnd
 
+; the app's taskbar ID (app/appid.py, AppUserModelID) in the new shortcuts:
+; the running app stacks onto them on the taskbar - and onto pins made from
+; them. NSIS can't write it itself: the installed app does (no window, quick)
+Section "-shortcut taskbar ID"
+  StrCpy $0 ""
+  ${If} ${SectionIsSelected} ${SecDesktop}
+    StrCpy $0 `"$DESKTOP\${APPNAME}.lnk"`
+  ${EndIf}
+  ${If} ${SectionIsSelected} ${SecStartMenu}
+    StrCpy $0 `$0 "$SMPROGRAMS\${APPNAME}.lnk"`
+  ${EndIf}
+  ${If} $0 != ""
+    nsExec::ExecToLog `"$INSTDIR\${APPEXE}" --set-shortcut-aumid $0`
+    Pop $1
+    ${If} $1 != 0
+      DetailPrint "Note: the taskbar ID was not written into the shortcuts ($1)"
+    ${EndIf}
+  ${EndIf}
+SectionEnd
+
 Function .onInit
   ${IfNot} ${RunningX64}
     MessageBox MB_OK|MB_ICONSTOP "${APPNAME} needs 64-bit Windows." /SD IDOK

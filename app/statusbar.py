@@ -11,6 +11,7 @@ from .ui import themes
 from .ui.dialogs import QueueDialog, _fmt_elapsed
 from .ui.icons import decorate
 from .ui.tooltips import add_tooltip
+from .ui.widgets import elide_label
 from . import applog, jobs
 
 
@@ -41,7 +42,11 @@ class StatusBar:
         themes.on_palette(badge, lambda p: badge.configure(bg=p["accent"], fg=p["accent_fg"]))
         status_prog = ttk.Progressbar(status, style="Chrome.Horizontal.TProgressbar",
                                       mode="indeterminate", length=px(110))
-        ttk.Label(status, textvariable=status_var, style="Chrome.TLabel", anchor="w").pack(
+        # the text takes the room left of the right-hand side (packed first,
+        # so it always keeps its place); a text too long for it is cut at
+        # the END with "…" - never at the start - and its size never depends
+        # on the text (the bar and the window don't grow with it)
+        elide_label(status, textvariable=status_var, style="Chrome.TLabel").pack(
             side="left", fill="x", expand=True)
         self._status_ui = {"busy": False, "n": 0}
         self.status_var, self.queue_btn = status_var, queue_btn

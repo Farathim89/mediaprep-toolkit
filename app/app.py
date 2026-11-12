@@ -34,7 +34,7 @@ from .banners import Banners
 from .statusbar import StatusBar
 from .window import (_enable_dpi_awareness, _geo_rect, _restart_command, _restart_env,
                      _restore_geometry, _set_window_icon)
-from . import applog, i18n, jobs, migrate, notify, updater
+from . import applog, appid, i18n, jobs, migrate, notify, updater
 from .i18n import N_, tr
 
 # ==========================================================================
@@ -94,6 +94,8 @@ def main():
     root = make_root()   # drag-and-drop capable if tkinterdnd2 is installed
     root.title(f"{APP_NAME} v{APP_VERSION}")
     _set_window_icon(root)
+    # the taskbar ID + what a pin of the running window starts (app/appid.py)
+    appid.install(root)
     root.resizable(True, True)
     # follow each monitor's scaling (ui/dpi.py); the UI is built at the
     # system DPI and rescaled when the window is on another monitor

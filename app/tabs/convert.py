@@ -23,8 +23,8 @@ from ..ui.dialogs import ask_choice, ask_string
 from ..ui.tkthread import _call_tk
 from ..ui.helpwin import help_button
 from ..ui.tooltips import add_tooltip, info_icon
-from ..ui.widgets import (bind_status_colors, build_log_tab, enable_paths_drop, trim_text_lines,
-                          KeyedCombobox)
+from ..ui.widgets import (bind_status_colors, build_log_tab, elide_label, enable_paths_drop,
+                          trim_text_lines, KeyedCombobox)
 from . import convert_presets as cpresets
 from .convert_settings import SettingsMixin
 from .convert_tracks import TracksMixin
@@ -134,10 +134,14 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
         # ---- footer: status + progress + Stop (the window's fixed footer) ----
         self.status_var = tk.StringVar(value=tr("Idle"))
         host = bottom if bottom is not None else self
-        lbl = ttk.Label(host, textvariable=self.status_var, style="Hint.TLabel")
+        if bottom is not None:
+            # (a long file name is cut at the end with "…", never at the start)
+            lbl = elide_label(host, textvariable=self.status_var, style="Hint.TLabel")
+        else:
+            lbl = ttk.Label(host, textvariable=self.status_var, style="Hint.TLabel")
         prog = ttk.Frame(host)
         if bottom is not None:
-            lbl.pack(anchor="w", padx=10, pady=(4, 0))
+            lbl.pack(fill="x", padx=10, pady=(4, 0))
             prog.pack(fill="x", padx=10, pady=(2, 6))
         else:
             lbl.grid(row=3, column=0, sticky="w", pady=(6, 0))
@@ -146,8 +150,8 @@ class ConvertTab(SettingsMixin, TracksMixin, ttk.Frame):
         self.bar = ttk.Progressbar(prog, mode="determinate", maximum=1000)
         self.bar.grid(row=0, column=0, sticky="we")
         self.pct_var = tk.StringVar(value="")
-        ttk.Label(prog, textvariable=self.pct_var, width=34).grid(row=0, column=1, sticky="w",
-                                                                  padx=(6, 0))
+        elide_label(prog, textvariable=self.pct_var, width=34).grid(row=0, column=1, sticky="w",
+                                                                    padx=(6, 0))
         self.stop_btn = icons.decorate(ttk.Button(prog, text=tr("Stop"), command=self.stop,
                                                   state="disabled", width=-8), "stop")
         self.stop_btn.grid(row=0, column=2, padx=(6, 0))

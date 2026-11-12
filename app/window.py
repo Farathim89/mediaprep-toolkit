@@ -97,13 +97,18 @@ def _geo_rect(geo):
 
 
 def _set_window_icon(root):
-    """Prefer the .ico (best on Windows); fall back to the .png everywhere else."""
+    """Prefer the .ico (best on Windows); fall back to the .png everywhere else.
+    On Windows every window then gets the .ico's pictures at the exact icon
+    sizes of its monitor's scaling (ui/winicon.py) - Tk alone shows the 16 px
+    picture stretched (blurry in the title bar and the taskbar at 150 %+)."""
     ico = resource_path("assets/icon.ico")      # app/assets (or the exe bundle)
     png = resource_path("assets/icon.png")
     try:
         if os.path.exists(ico):
             root.iconbitmap(ico)
             root.iconbitmap(default=ico)    # dialogs + help windows too
+            from .ui import winicon
+            winicon.install(root, os.path.abspath(ico))
             return
     except Exception:
         pass

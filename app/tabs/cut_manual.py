@@ -14,8 +14,8 @@ from ..ui.frametime import file_fps
 from ..ui.player import VideoPlayer
 from ..ui.helpwin import help_button
 from ..ui.timeentry import TimeEntry
-from ..ui.tooltips import info_icon, add_tooltip
-from ..ui.widgets import auto_wrap, enable_file_drop, enable_file_drop_deep
+from ..ui.tooltips import add_tooltip
+from ..ui.widgets import enable_file_drop, enable_file_drop_deep
 from .common import _VIDEO_TYPES, _same_file, edges_for_range, mark_edges, opt_kwargs
 from .cut_common import _best_ok, _cand_label, _resolve_rng, manual_result, tr_key
 from .. import jobs as jobreg
@@ -43,7 +43,7 @@ class ManualCutMixin:
         self.man_detect_btn = icons.decorate(ttk.Button(mtop, text=tr("Auto-detect"), command=self._manual_detect), "detect")
         self.man_detect_btn.pack(side="left", padx=(6, 0))
         add_tooltip(self.man_detect_btn, tr(
-            "Match the templates (Cut / Edit → Auto-detect folders, "
+            "Match the templates (Cut / Edit → Settings folders, "
             "segment ticks, audio language) against THIS video and fill the boxes "
             "below with the best match per segment; segments with no confident match "
             "stay empty. Then nudge with Set / Snap / the arrow keys, or pick another "
@@ -124,7 +124,7 @@ class ManualCutMixin:
             _mrow(label, i, key)
 
         # subtitle-language picker for the previewed file (shares the same
-        # keep-list as Cut / Edit → Auto-detect and Multi cut)
+        # keep-list as Cut / Edit → Settings and Multi cut)
         msubf = ttk.LabelFrame(mright, text=tr("Subtitles"))
         msubf.pack(fill="x", pady=(6, 0))
         manf = ttk.Checkbutton(msubf, text=tr("Keep only chosen subtitle languages"),
@@ -132,7 +132,7 @@ class ManualCutMixin:
         manf.pack(anchor="w")
         add_tooltip(manf, tr("Drop subtitle languages you don't want (video and all audio tracks "
                              "are untouched). This shares the same choice as Cut / Edit → "
-                             "Auto-detect and Multi cut."))
+                             "Settings and Multi cut."))
         manrow = ttk.Frame(msubf)
         manrow.pack(fill="x", pady=1)
         icons.decorate(ttk.Button(manrow, text=tr("Choose languages..."), command=self._manual_choose_subs), "filter").pack(side="left", padx=(0, 6))
@@ -144,18 +144,14 @@ class ManualCutMixin:
         self.cut_sel_btn.pack(fill="x", pady=(6, 0))
         add_tooltip(self.cut_sel_btn, tr("Cut ONLY the previewed video using the ranges above "
                                          "(ignores auto-detect)"))
-        encrow = ttk.Frame(mright)
-        encrow.pack(fill="x", pady=(6, 6))
-        info_icon(encrow, tr(
+        # the encoding in use (set on the Settings sub-tab) + Change...
+        encrow, self.manual_change_btn = self._settings_summary_row(mright, self.cut_summary, tr(
             "Leave a section's boxes empty to skip it. Manual cut removes the "
             "filled ranges and keeps the rest, using the Encoding settings and the "
             "subtitle choice above. From and To are both cut: To = the last frame to "
             "cut (inclusive). Empty Pre-intro/Intro From = start of file; "
-            "empty Credits/After-credits To = end of file."),
-        ).pack(side="left", anchor="n")
-        auto_wrap(ttk.Label(encrow, textvariable=self.enc_summary, style="Hint.TLabel",
-                            wraplength=420, justify="left")).pack(side="left", fill="x",
-                                                                  expand=True)
+            "empty Credits/After-credits To = end of file."), wrap=320)
+        encrow.pack(fill="x", pady=(6, 6))
         self._upd_subs_label()      # fill in the new label now that it exists
 
         enable_file_drop_deep(self.player, self._drop_load_sel)   # drop anywhere in the player
@@ -319,6 +315,7 @@ class ManualCutMixin:
             "encoder": CODECS.get(self.codec_var.get(), "libx264"),
             "bit_depth": BIT_DEPTHS.get(self.depth_var.get(), "auto"),
             "kf_interval": kf,
+            "smart_cut": self.smart_cut_on(),     # Cut method (Encoding card)
             "subs_langs": (sorted(self.subs_langs)
                            if self.subs_filter_var.get() and self.subs_langs else None),
             "move_done": self.move_done_var.get(),
@@ -438,7 +435,7 @@ class ManualCutMixin:
             ef, et = self._manual[key]
             if not use.get(key, True):
                 # not searched: keep what was typed there by hand
-                self.log(f"  {label}: not searched (unticked on Cut / Edit → Auto-detect) - "
+                self.log(f"  {label}: not searched (unticked on Cut / Edit → Settings) - "
                          "boxes left as they were")
                 continue
             self._multi_clear_entry(ef)

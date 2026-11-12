@@ -6,7 +6,8 @@ import math
 import json
 
 from .encode import build_audio_recode_args, cover_streams, restore_covers
-from .probe import has_video_stream, output_problem, probe_audio_streams, probe_duration
+from .probe import (has_video_stream, output_problem, probe_audio_streams, probe_duration,
+                    stats_tag_args)
 from .process import _run_capture_stoppable, _run_exempt, run_ffmpeg_with_progress
 
 
@@ -136,7 +137,7 @@ def export_audio_clip(input_file, output_file, start, end, codec, extra_args,
             codec in ("libmp3lame", "aac")
             or os.path.splitext(output_file)[1].lower() in (".mp3", ".m4a", ".aac")):
         cmd += ["-ac", "2"]
-    cmd += [output_file]
+    cmd += stats_tag_args(input_file) + [output_file]
     if stop_event is not None or on_progress is not None:
         rc = run_ffmpeg_with_progress(cmd, dur, on_progress=on_progress,
                                       on_log=on_log, stop_event=stop_event)
@@ -253,7 +254,8 @@ def _apply_audio_filters(input_file, output_file, keep_video, audio_out, filters
             ti = 0
         enc, suffix = _track_encode_args(0, streams[ti] if streams else {}, codec, bitrate)
         cmd += ["-map", f"0:a:{ti}", "-vn", "-filter:a:0", filters[0] + suffix] + enc
-    cmd += [output_file]
+    # the source's per-stream statistics (BPS, NUMBER_OF_FRAMES ...) are wrong here
+    cmd += stats_tag_args(input_file) + [output_file]
     dur = probe_duration(input_file) or 0
     if stop_event is not None or on_progress is not None:
         rc = run_ffmpeg_with_progress(cmd, dur, on_progress=on_progress,

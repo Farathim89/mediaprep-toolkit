@@ -295,6 +295,190 @@ def fixed_label(parent, samples, style="TLabel", anchor="w", **kw):
     return holder, lbl
 
 
+# ======================= one-line label, cut at the END =======================
+ELLIPSIS = "…"
+
+
+def elide_text(text, measure, room):
+    """`text` (one line) cut at the END with "…" so that measure(result) <=
+    room px; unchanged when it fits. measure(s) = the width of s in px."""
+    text = " ".join(str(text).splitlines())
+    if measure(text) <= room:
+        return text
+    lo, hi = 0, len(text)             # the longest prefix that fits with the "…"
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if measure(text[:mid].rstrip() + ELLIPSIS) <= room:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + ELLIPSIS if lo or measure(ELLIPSIS) <= room else ""
+
+
+def elide_label(parent, textvariable=None, text="", style="TLabel", width=1, **kw):
+    """A one-line ttk.Label whose text never decides its width: it gets its
+    width from the layout (pack it with fill="x" / grid it sticky "we"; or a
+    fixed `width` in characters) and a text that doesn't fit is cut at the
+    END with "…" - the start, what the text is about, always shows. Follows
+    `textvariable` (or lbl.set_text()), the label's size, theme / font
+    changes and display scaling changes (ui/dpi.py). While the text is cut,
+    the full text shows in a hover tooltip."""
+    from .tooltips import Tooltip
+    kw.setdefault("anchor", "w")
+    lbl = ttk.Label(parent, style=style, width=max(1, int(width)), **kw)
+    st = {"full": textvariable.get() if textvariable is not None else str(text), "job": None}
+    tip = Tooltip(lbl, "")
+
+    def font():
+        return (str(lbl.cget("font")) or ttk.Style(lbl).lookup(str(lbl.cget("style")) or style,
+                                                                "font") or "TkDefaultFont")
+
+    def fit(_e=None):
+        st["job"] = None
+        try:
+            full = st["full"]
+            w = lbl.winfo_width()
+            if w <= 1:                    # not laid out yet: <Configure> fits it
+                shown = " ".join(full.splitlines())
+            else:
+                f = font()
+
+                def measure(s):
+                    return int(lbl.tk.call("font", "measure", f, s))
+                # padding / border = requested width minus the text area of
+                # `width` average characters ("0", as ttk measures -width)
+                chrome = lbl.winfo_reqwidth() - int(lbl.cget("width")) * measure("0")
+                shown = elide_text(full, measure, w - max(0, chrome))
+            if str(lbl.cget("text")) != shown:
+                lbl.configure(text=shown)
+            tip.text = full if shown != " ".join(full.splitlines()) else ""
+        except tk.TclError:
+            pass
+
+    def later(_e=None):
+        # fonts / styles change together (theme, font size, display scaling):
+        # fit once they all have
+        if st["job"] is None:
+            try:
+                st["job"] = lbl.after_idle(fit)
+            except tk.TclError:
+                pass
+
+    def set_text(s):
+        st["full"] = "" if s is None else str(s)
+        fit()
+    lbl.set_text = set_text
+    lbl.full_text = lambda: st["full"]
+    lbl.bind("<Configure>", fit, add="+")
+    lbl.bind("<<ThemeChanged>>", later, add="+")
+    if textvariable is not None:
+        cb = textvariable.trace_add("write", lambda *_a: set_text(textvariable.get()))
+
+        def gone(_e=None):
+            try:
+                textvariable.trace_remove("write", cb)
+            except (tk.TclError, ValueError):
+                pass
+        lbl.bind("<Destroy>", gone, add="+")
+    from . import dpi
+    dpi.on_change(lbl, lambda _r: fit(), late=True)
+    fit()
+    return lbl
+
+
+def elide_middle(text, measure, room):
+    """`text` (one word - a folder path) shortened in the MIDDLE with "…" so
+    that measure(result) <= room px; unchanged when it fits. A path keeps
+    its start and as many of its last folders as fit (C:\\Users\\…\\Media\\
+    output); anything else keeps its first 40 % and its end."""
+    if measure(text) <= room:
+        return text
+    seps = [i for i, ch in enumerate(text) if ch in "\\/"]
+    # whole folders: the head up to the 2nd / 1st separator, the tail from
+    # the earliest separator that still fits
+    for cut in seps[1:2] + seps[:1]:
+        head = text[:cut + 1]
+        tails = [text[i:] for i in seps if i > cut]
+        fit = next((t for t in tails if measure(head + ELLIPSIS + t) <= room), None)
+        if fit:
+            return head + ELLIPSIS + fit
+    lo, hi = 0, len(text)              # the most characters that fit
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        a = mid * 2 // 5
+        if measure(text[:a] + ELLIPSIS + text[len(text) - (mid - a):]) <= room:
+            lo = mid
+        else:
+            hi = mid - 1
+    a = lo * 2 // 5
+    return text[:a] + ELLIPSIS + text[len(text) - (lo - a):] if lo else ELLIPSIS
+
+
+def wrap_label(parent, textvariable=None, text="", width=None, style="TLabel", **kw):
+    """A multi-line ttk.Label that wraps at a FIXED width (auto_wrap; width =
+    px at 100 %) and is never wider than that: a word longer than a whole
+    line - a long folder path - is shortened in the middle (elide_middle:
+    C:\\Users\\…\\Media\\output), so it can't widen the page. While anything
+    is shortened, the full text shows in a hover tooltip. Follows
+    `textvariable` (or lbl.set_text()), theme / font changes and display
+    scaling changes (ui/dpi.py)."""
+    from .tooltips import Tooltip
+    kw.setdefault("justify", "left")
+    lbl = auto_wrap(ttk.Label(parent, style=style, **kw), width=width)
+    st = {"full": textvariable.get() if textvariable is not None else str(text), "job": None}
+    tip = Tooltip(lbl, "")
+
+    def fit(_e=None):
+        st["job"] = None
+        try:
+            room = int(float(str(lbl.cget("wraplength")) or 0)) - 2
+            font = (str(lbl.cget("font")) or ttk.Style(lbl).lookup(
+                str(lbl.cget("style")) or style, "font") or "TkDefaultFont")
+
+            def measure(s):
+                return int(lbl.tk.call("font", "measure", font, s))
+            full = st["full"]
+            shown = full
+            if room > 0:
+                shown = "\n".join(
+                    " ".join(w if measure(w) <= room else elide_middle(w, measure, room)
+                             for w in line.split(" "))
+                    for line in full.split("\n"))
+            if str(lbl.cget("text")) != shown:
+                lbl.configure(text=shown)
+            tip.text = full if shown != full else ""
+        except tk.TclError:
+            pass
+
+    def later(_e=None):
+        if st["job"] is None:
+            try:
+                st["job"] = lbl.after_idle(fit)
+            except tk.TclError:
+                pass
+
+    def set_text(s):
+        st["full"] = "" if s is None else str(s)
+        fit()
+    lbl.set_text = set_text
+    lbl.full_text = lambda: st["full"]
+    lbl.tooltip = tip
+    lbl.bind("<<ThemeChanged>>", later, add="+")
+    if textvariable is not None:
+        cb = textvariable.trace_add("write", lambda *_a: set_text(textvariable.get()))
+
+        def gone(_e=None):
+            try:
+                textvariable.trace_remove("write", cb)
+            except (tk.TclError, ValueError):
+                pass
+        lbl.bind("<Destroy>", gone, add="+")
+    from . import dpi
+    dpi.on_change(lbl, lambda _r: later(), late=True)
+    fit()
+    return lbl
+
+
 # ======================= drag-and-drop (optional) =======================
 import re as _re
 

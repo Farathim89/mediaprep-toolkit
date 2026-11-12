@@ -13,7 +13,8 @@ from ..engine.probe import quick_check, full_check, probe_duration
 from ..ui.tkthread import _call_tk
 from ..ui.helpwin import help_button
 from ..ui.tooltips import info_icon, add_tooltip
-from ..ui.widgets import enable_file_drop, enable_paths_drop, bind_status_colors, trim_text_lines
+from ..ui.widgets import (enable_file_drop, enable_paths_drop, bind_status_colors, elide_label,
+                          trim_text_lines)
 from .. import applog
 from .. import jobs
 from ..i18n import tr, ntr
@@ -164,8 +165,9 @@ class CheckTab(ttk.Frame):
         # is given (always visible), else under the content
         self.status_var = tk.StringVar(value="")
         if bottom is not None:
-            ttk.Label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
-                anchor="w", padx=10, pady=(4, 0))
+            # (a long file name is cut at the end with "…", never at the start)
+            elide_label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
+                fill="x", padx=10, pady=(4, 0))
             prog = ttk.Frame(bottom)
             prog.pack(fill="x", padx=10, pady=(2, 6))
         else:

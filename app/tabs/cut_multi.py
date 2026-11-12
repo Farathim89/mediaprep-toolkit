@@ -16,7 +16,7 @@ from ..ui.tkthread import _call_tk
 from ..ui.helpwin import help_button
 from ..ui.timeentry import TimeEntry
 from ..ui.tooltips import info_icon, add_tooltip
-from ..ui.widgets import auto_wrap, bind_status_colors, enable_file_drop_deep, enable_paths_drop
+from ..ui.widgets import bind_status_colors, enable_file_drop_deep, enable_paths_drop
 from .common import _VIDEO_TYPES, mark_edges, opt_kwargs
 from .cut_common import (_SEGS, _TO_END, _ZERO_FROM, _resolve_rng, manual_output,
                          manual_result, tr_key)
@@ -88,7 +88,7 @@ class MultiCutMixin:
         self.multi_detect_mb.pack(side="left")
         add_tooltip(self.multi_detect_mb, tr(
             "Match the templates (folders and Detection settings of Cut / Edit → "
-            "Auto-detect) in the selected files or all files of this list and fill their "
+            "Settings) in the selected files or all files of this list and fill their "
             "times; ⚠ = not found or only weak. Asks before overwriting times a file "
             "already has."))
         self.multi_plex_btn = icons.decorate(ttk.Button(drow, text=tr("Plex-style scan (no templates)"),
@@ -231,7 +231,7 @@ class MultiCutMixin:
                            "all of them."))
 
         # subtitle-language picker for the Multi cut list (shares the same
-        # keep-list as Cut / Edit → Auto-detect, but scans THESE files)
+        # keep-list as Cut / Edit → Settings, but scans THESE files)
         subf = ttk.LabelFrame(mright, text=tr("Subtitles"))
         subf.pack(fill="x", pady=(6, 0))
         msfcb = ttk.Checkbutton(subf, text=tr("Keep only chosen subtitle languages"),
@@ -239,7 +239,7 @@ class MultiCutMixin:
         msfcb.pack(anchor="w")
         add_tooltip(msfcb, tr("Drop subtitle languages you don't want (video and all audio "
                               "tracks are untouched). This shares the same choice as Cut / Edit "
-                              "→ Auto-detect."))
+                              "→ Settings."))
         msubrow = ttk.Frame(subf)
         msubrow.pack(fill="x", pady=1)
         icons.decorate(ttk.Button(msubrow, text=tr("Choose languages..."), command=self._multi_choose_subs), "filter").pack(side="left", padx=(0, 6))
@@ -258,19 +258,15 @@ class MultiCutMixin:
             "Queue cutting THIS list with its current times and "
             "the current encoding settings - it starts when nothing else is running. "
             "See Queue... in the status bar."))
-        encrow = ttk.Frame(mright)
-        encrow.pack(fill="x", pady=(6, 6))
-        info_icon(encrow, tr(
+        # the encoding in use (set on the Settings sub-tab) + Change...
+        encrow, self.multi_change_btn = self._settings_summary_row(mright, self.cut_summary, tr(
             "Each file has its filled sections removed and the rest kept, using the "
-            "Encoding settings from Cut / Edit → Auto-detect and the subtitle choice above. "
+            "Encoding settings from Cut / Edit → Settings and the subtitle choice above. "
             "From and To are both cut: To = the last frame to cut (inclusive). "
             "Files with no sections set are skipped. Empty Pre-intro/Intro From = start "
             "of file; empty Credits/After-credits To = end of file ('?' = incomplete, "
-            "skipped)."),
-        ).pack(side="left", anchor="n")
-        auto_wrap(ttk.Label(encrow, textvariable=self.enc_summary, style="Hint.TLabel",
-                            wraplength=420, justify="left")).pack(side="left", fill="x",
-                                                                  expand=True)
+            "skipped)."), wrap=320)
+        encrow.pack(fill="x", pady=(6, 6))
         self._upd_subs_label()      # fill in the new label now that it exists
         self._multi_restore(saved.get("multi_files"))
 
@@ -747,7 +743,8 @@ class MultiCutMixin:
         # two files whose cut has the same name would write the same output
         # file (Plex-ready writes .mkv: ep.mp4 + ep.mkv collide too)
         # (only files sharing a name stem can collide: just those are probed)
-        enc = {"encoder": CODECS.get(self.codec_var.get(), "libx264"), "output_dir": out_dir}
+        enc = {"encoder": CODECS.get(self.codec_var.get(), "libx264"), "output_dir": out_dir,
+               "smart_cut": self.smart_cut_on()}
         by_stem = {}
         for path in self._multi_paths.values():
             stem = os.path.splitext(os.path.basename(path))[0]
@@ -801,6 +798,7 @@ class MultiCutMixin:
             "encoder": CODECS.get(self.codec_var.get(), "libx264"),
             "bit_depth": BIT_DEPTHS.get(self.depth_var.get(), "auto"),
             "kf_interval": kf,
+            "smart_cut": self.smart_cut_on(),     # Cut method (Encoding card)
             "subs_langs": (sorted(self.subs_langs)
                            if self.subs_filter_var.get() and self.subs_langs else None),
             "move_done": self.move_done_var.get(),

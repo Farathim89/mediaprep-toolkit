@@ -13,7 +13,8 @@ from ..engine.probe import video_kind
 from ..i18n import N_, tr
 from ..ui.tkthread import _call_tk
 from ..ui.tooltips import info_icon, add_tooltip
-from ..ui.widgets import KeyedCombobox, auto_wrap, build_log_tab, enable_file_drop, trim_text_lines
+from ..ui.widgets import (KeyedCombobox, auto_wrap, build_log_tab, elide_label, enable_file_drop,
+                          trim_text_lines)
 from .audio_common import (DEFAULT_TP, GAIN_RANGE, GAIN_WARN, LUFS_RANGE, PEAK_RANGE,
                            TP_RANGE, TRACK_SCOPES, _TrackPicker,
                            _check_range, _first_number,
@@ -213,8 +214,9 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         # is given (always visible), else under the content
         self.status_var = tk.StringVar(value="")
         if bottom is not None:
-            ttk.Label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
-                anchor="w", padx=10, pady=(4, 0))
+            # (a long file name is cut at the end with "…", never at the start)
+            elide_label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
+                fill="x", padx=10, pady=(4, 0))
             prog = ttk.Frame(bottom)
             prog.pack(fill="x", padx=10, pady=(2, 6))
         else:
@@ -226,7 +228,8 @@ class AudioGainTab(BatchGainMixin, ttk.Frame):
         self.bar = ttk.Progressbar(prog, mode="determinate", maximum=1000)
         self.bar.grid(row=0, column=0, sticky="we")
         self.pct_var = tk.StringVar(value="")
-        ttk.Label(prog, textvariable=self.pct_var, width=12).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        elide_label(prog, textvariable=self.pct_var, width=22).grid(row=0, column=1, sticky="w",
+                                                                    padx=(6, 0))
         # single Stop in the right corner beside the progress bar, like the other
         # tools - drives whichever job (single or batch) is running
         self.stop_btn = icons.decorate(ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled"), "stop")

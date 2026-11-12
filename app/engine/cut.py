@@ -7,7 +7,8 @@ import time
 from collections import namedtuple
 
 from ..config import MEDIA_EXTS, TEMP_DIR
-from .chapters import add_chapters, build_chapters
+from .chapters import (add_chapters, build_chapters, probe_chapters, remap_chapters,
+                       write_ffmetadata)
 from .detect import _detect_core, _want_seg, load_templates_for
 from .encode import (PLEX_PRESETS, _SHORT_PIECE, audio_track_codecs, build_audio_pass,
                      build_ffmpeg_cut, build_ffmpeg_inject, build_stream_maps,
@@ -18,8 +19,10 @@ from .files import (_cleanup, _commit_part, _move_to_done, _part_path, _path_key
 from .formatting import fmt_time, format_seconds, format_size
 from .probe import (output_problem, probe_audio_streams, probe_duration,
                     probe_first_frame_at, probe_piece_timing, probe_start_time,
-                    probe_streams, probe_video_duration, probe_video_fps, probe_video_info)
+                    probe_streams, probe_video_duration, probe_video_fps, probe_video_info,
+                    stats_tag_args)
 from .process import run_ffmpeg_with_progress
+from .smartcut import smart_cut, smart_cut_problem
 from .subs import _disposition_args, trim_container_to_video
 
 
@@ -151,6 +154,8 @@ def _plan_output_ext(cfg_encoder, mode, video, ext, vinfo):
     the source's unless it can't hold the codecs (fit_container -> .mkv)."""
     if mode == "chapters":
         return ext
+    if mode == "smartcut" and not smart_cut_problem(video):
+        return ext                     # stream copy + same-codec joins
     if cfg_encoder in PLEX_PRESETS:
         return ".mkv"
     enc = resolve_encoder(cfg_encoder, vinfo["codec"])
@@ -385,39 +390,57 @@ def _batch_one(cfg, ui, stop_event, templates, video, vi, n_videos, subs_lang,
     if abs(start_time) >= 0.05:
         ui.log(f"   Source timestamps start at {start_time:.3f}s - cut points"
                " count from the file start")
-    plex = None
-    if cfg["mode"] == "chapters":       # pure stream copy, no encoder
-        encoder, crf, out_depth = None, None, None
-        ui.log("   Output: stream copy (no re-encode)")
-    elif plex_key:
-        if ext.lower() != ".mkv":
-            ui.log(f"   Plex-ready: source is {ext.lower()} - writing .mkv")
-        plex = plex_plan(plex_key, video, cfg["preset"], ui.log)
-        encoder, crf, out_depth = plex["encoder"], plex["crf"], plex["bit_depth"]
-    else:
-        encoder = resolve_encoder(cfg["encoder"], vinfo["codec"], ui.log)
-        crf = crf_for_encoder(encoder, cfg)
-        if cfg["bit_depth"] == "auto":
-            out_depth = 10 if vinfo["bit_depth"] >= 10 else 8
+    # smart cut: copy the source's packets, re-encode only at the joins;
+    # a file it can't handle (or a smart cut that fails) is re-encoded
+    smart = cfg["mode"] == "smartcut"
+    if smart:
+        why = smart_cut_problem(video)
+        if why:
+            ui.log(f"   [WARN] Smart cut not possible: {why} - re-encoding the whole video")
+            smart = False
         else:
-            out_depth = int(cfg["bit_depth"])
-        if encoder == "h264_nvenc" and out_depth >= 10:
+            ui.log("   Output: smart cut - the source's video / audio copied,"
+                   " re-encoded only around the cut points")
+
+    def setup_encoder():
+        """(encoder, crf, output bit depth, plex plan) - logs the choice."""
+        if cfg["mode"] == "chapters":       # pure stream copy, no encoder
+            ui.log("   Output: stream copy (no re-encode)")
+            return None, None, None, None
+        if plex_key:
+            if ext.lower() != ".mkv":
+                ui.log(f"   Plex-ready: source is {ext.lower()} - writing .mkv")
+            plan = plex_plan(plex_key, video, cfg["preset"], ui.log)
+            return plan["encoder"], plan["crf"], plan["bit_depth"], plan
+        enc = resolve_encoder(cfg["encoder"], vinfo["codec"], ui.log)
+        q = crf_for_encoder(enc, cfg)
+        if cfg["bit_depth"] == "auto":
+            depth = 10 if vinfo["bit_depth"] >= 10 else 8
+        else:
+            depth = int(cfg["bit_depth"])
+        if enc == "h264_nvenc" and depth >= 10:
             ui.log("   [WARN] H.264 NVENC cannot encode 10-bit - using 8-bit.")
-            out_depth = 8
+            depth = 8
         src_eff = 2 if vinfo["codec"] in ("hevc", "av1", "vp9") else 1
-        tgt_eff = 2 if encoder in ("libx265", "hevc_nvenc", "libsvtav1") else 1
-        if tgt_eff < src_eff or (vinfo["bit_depth"] >= 10 and out_depth == 8):
+        tgt_eff = 2 if enc in ("libx265", "hevc_nvenc", "libsvtav1") else 1
+        if tgt_eff < src_eff or (vinfo["bit_depth"] >= 10 and depth == 8):
             ui.log("   [WARN] Source codec/bit depth is more efficient than the"
                    " chosen output - the file may get MUCH bigger."
                    " Consider H.265, 10-bit, CRF 22-24, preset slow.")
-        ui.log(f"   Output: {encoder} {out_depth}-bit,"
-               f" CRF/CQ {crf}, preset {cfg['preset']}")
-        if out_ext.lower() != ext.lower():
-            ui.log(f"   Output container: {ext.lower()} can't hold {encoder} + this"
-                   f" audio - writing {out_ext}")
+        ui.log(f"   Output: {enc} {depth}-bit,"
+               f" CRF/CQ {q}, preset {cfg['preset']}")
+        ext_out = _plan_output_ext(cfg.get("encoder"), "cut", video, ext, vinfo)
+        if ext_out.lower() != ext.lower():
+            ui.log(f"   Output container: {ext.lower()} can't hold {enc} + this"
+                   f" audio - writing {ext_out}")
+        return enc, q, depth, None
+
+    encoder = crf = out_depth = plex = None
+    if not smart:
+        encoder, crf, out_depth, plex = setup_encoder()
 
     keep = []
-    if cfg["mode"] == "cut":
+    if cfg["mode"] in ("cut", "smartcut"):
         drops = []
         if valid_preintro:
             drops.append((preintro_start, preintro_end))
@@ -428,12 +451,40 @@ def _batch_one(cfg, ui, stop_event, templates, video, vi, n_videos, subs_lang,
         if valid_aftercredits:
             drops.append((aftercredits_start, aftercredits_end))
         keep = _seg_names(keep_from_drops(total_duration, drops), total_duration)
+        gate = _gate(_kept_sec(keep, src_vdur), has_video)
+        if smart:
+            ui.log("   Keep: " + " -> ".join(f"{n} [{fmt_time(s)}-{fmt_time(e)}]"
+                                             for n, s, e in keep))
+            ui.status(f"Video {vi}/{n_videos}: {filename}  -  Smart cut")
+            placed, why = _run_smart(video, keep, final_output, cfg, ui, stop_event,
+                                     batch_progress(vb, vspan, vb), subs_lang, gate)
+            if placed:
+                final_output, produced = placed, True
+                ui.log(duration_check_line(
+                    final_output, _kept_sec(keep, src_vdur)).rstrip("\n"))
+                ui.log(saved_size_line(final_output, src_size, video_wall))
+            elif not stop_event.is_set():
+                # the normal re-encode instead (its container may differ:
+                # Plex-ready writes .mkv)
+                ui.log(f"   [WARN] Smart cut failed: {why} - re-encoding the whole video")
+                smart = False
+                encoder, crf, out_depth, plex = setup_encoder()
+                alt = os.path.join(cfg["output_dir"], name + _plan_output_ext(
+                    cfg.get("encoder"), "cut", video, ext, vinfo))
+                if not _same_path(alt, final_output):
+                    if _same_path(alt, video) or _path_key(alt) in source_keys | outputs_made:
+                        ui.log(f"   [FAIL] output {alt} would overwrite a source / output"
+                               " of this batch, skipped\n")
+                        _cleanup(temp_audio, temp_segs)
+                        return "failed", None
+                    final_output, out_ext = alt, os.path.splitext(alt)[1]
 
+    if (cfg["mode"] in ("cut", "smartcut") and not smart and not produced
+            and not stop_event.is_set()):
         steps = [n for n, _, _ in keep] + (["Stitching"] if len(keep) > 1 else [])
         n_steps = len(steps)
         ui.log(f"   Steps: {' -> '.join(steps)}")
         audio_streams = probe_audio_streams(video)
-        gate = _gate(_kept_sec(keep, src_vdur), has_video)
 
         # weight each segment's share of the batch bar by its duration
         total_d = sum(e - s for _, s, e in keep) or 1.0
@@ -475,7 +526,7 @@ def _batch_one(cfg, ui, stop_event, templates, video, vi, n_videos, subs_lang,
             if placed:
                 final_output, produced = placed, True
                 ui.log(duration_check_line(
-                    final_output, sum(e - s for _, s, e in keep)).rstrip("\n"))
+                    final_output, _kept_sec(keep, src_vdur)).rstrip("\n"))
                 ui.log(saved_size_line(final_output, src_size, video_wall))
         elif ok and len(temp_segs) > 1:
             ui.status(f"Video {vi}/{n_videos}: {filename}  -  [{n_steps}/{n_steps}] Stitching")
@@ -489,12 +540,14 @@ def _batch_one(cfg, ui, stop_event, templates, video, vi, n_videos, subs_lang,
             if placed:
                 final_output, produced = placed, True
                 ui.log(duration_check_line(
-                    final_output, sum(e - s for _, s, e in keep)).rstrip("\n"))
+                    final_output, _kept_sec(keep, src_vdur)).rstrip("\n"))
                 ui.log(saved_size_line(final_output, src_size, video_wall))
             elif rc not in (0, -1):    # rc 0 = placing failed, logged already
                 ui.log("   [FAIL] merge failed\n")
         elif not stop_event.is_set():
             ui.log("   [FAIL] skipping this video\n")
+    elif cfg["mode"] in ("cut", "smartcut"):
+        pass                                # smart cut done (or stopped) above
     elif cfg["mode"] == "chapters":
         ch_drops = []
         if valid_preintro:
@@ -565,12 +618,12 @@ def _batch_one(cfg, ui, stop_event, templates, video, vi, n_videos, subs_lang,
     if produced:
         outputs_made.add(_path_key(final_output))
         # cut mode can leave a lingering subtitle past the picture; clip it
-        if cfg["mode"] == "cut" and trim_container_to_video(final_output):
+        if cfg["mode"] in ("cut", "smartcut") and trim_container_to_video(final_output):
             ui.log("   Trimmed a lingering subtitle tail to the video length")
         if covers:
             restore_covers(video, final_output, ui.log, covers)
         if plex:
-            kept = (sum(e - s for _, s, e in keep) if cfg["mode"] == "cut"
+            kept = (sum(e - s for _, s, e in keep) if cfg["mode"] in ("cut", "smartcut")
                     else total_duration)
             plex_size_check(final_output, src_size, kept, total_duration, ui.log)
         warns = verify_output(video, final_output, subs_lang)
@@ -629,7 +682,8 @@ def _stitch(video, temp_segs, keep, final_output, audio_streams, plex, tag, cb,
     piece's own encode starts with encoder priming/padding, an audible
     ~80-120 ms dropout at every join - but made in ONE pass over the source
     (build_audio_pass) whose ranges are cut to exactly those video spans, so
-    it is seamless and stays in sync across any number of joins."""
+    it is seamless and stays in sync across any number of joins. The
+    source's chapters are clipped to those spans too (remap_chapters)."""
     expected = sum(e - s for _, s, e in keep)
     codecs = audio_track_codecs(audio_streams, plex)
     tracks = [(k, c) for k, c in enumerate(codecs) if c]
@@ -660,6 +714,18 @@ def _stitch(video, temp_segs, keep, final_output, audio_streams, plex, tag, cb,
                 log("   [FAIL] audio pass failed")
             return None, rc
 
+    # the source's chapters, clipped to the kept ranges and moved onto the
+    # joined timeline (the concat demuxer carries none of the pieces')
+    chap_file, offs, o = "", [], 0.0
+    for sp in spans:
+        offs.append(o)
+        o += sp
+    chapters = remap_chapters(probe_chapters(video), base,
+                              [(a, b, off) for (a, b), off in zip(ranges, offs)])
+    if chapters:
+        chap_file = os.path.join(TEMP_DIR, f"chapters_{tag}.txt")
+        write_ffmetadata(chap_file, chapters)
+
     concat_list = os.path.join(TEMP_DIR, f"concat_{tag}.txt")
     with open(concat_list, "w", encoding="utf-8") as f:
         for t, d in zip(temp_segs, spans):
@@ -686,25 +752,46 @@ def _stitch(video, temp_segs, keep, final_output, audio_streams, plex, tag, cb,
                     if p[0].startswith("-disposition:a:")])
     disp = [x for p in pairs for x in p]
     part = _part_path(final_output)
+    chap_in = ((["-f", "ffmetadata", "-i", chap_file]
+                + ["-map_chapters", "2" if audio_file else "1"]) if chap_file else [])
     rc = run_ffmpeg_with_progress(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list]
-        + (["-i", audio_file] if audio_file else [])
+        + (["-i", audio_file] if audio_file else []) + chap_in
         # map only real media types (video/audio/subs/fonts). A stray
         # DATA/unknown stream some sources carry (e.g. #0:13) can't be
         # copied into matroska and would abort the whole merge, so we
         # never select it. -ignore_unknown is a belt-and-braces backup.
         + ["-map", "0:v?"] + amaps + ["-map", "0:s?", "-map", "0:t?", "-c", "copy"]
-        + disp + ["-ignore_unknown", part], expected,
+        + disp + stats_tag_args(video) + ["-ignore_unknown", part], expected,
         **dict(cb, on_progress=merge_progress))
     placed = _commit_part(rc, part, final_output, log, check)
-    _cleanup(audio_file, [concat_list])
+    _cleanup(audio_file, [concat_list] + ([chap_file] if chap_file else []))
     return placed, rc
+
+
+def _run_smart(video, keep, final_output, cfg, ui, stop_event, on_progress, subs_lang,
+               gate):
+    """Smart-cut `video` (keep: [(name, start, end)]) into final_output via
+    its .part file, through the safety gate. Returns (output path or None,
+    why) - why: what went wrong (the caller then re-encodes the video)."""
+    part = _part_path(final_output)
+    rc, why = smart_cut(video, keep, part, cfg, ui.log, stop_event,
+                        on_progress=on_progress, subs_lang=subs_lang)
+    if rc == 0:
+        placed = _commit_part(0, part, final_output, ui.log, gate)
+        return placed, ("" if placed else "the output did not pass the safety check")
+    _commit_part(1, part, final_output, ui.log)        # removes a partial file
+    return None, why
 
 
 def run_manual(cfg, keep, ui, stop_event, protect=None):
     """Cut ONE video into the given keep-segments and stitch them, using the
     same encoder settings and ffmpeg helpers as the batch engine. `keep` is a
     list of (start, end) seconds from compute_keep_segments().
+    cfg["smart_cut"] = True: smart cut (smartcut.py) - the source's video /
+    audio packets are copied and only the frames around each cut point are
+    re-encoded; a video it can't handle (or a smart cut that fails its
+    checks) is re-encoded the normal way with the cfg encoder settings.
     protect: optional paths (e.g. every source of a multi-file run) the
     output must never replace, nor the source be moved onto.
     Returns ManualResult(produced, output_path) - a (bool, str or None)
@@ -722,16 +809,23 @@ def run_manual(cfg, keep, ui, stop_event, protect=None):
     prefix = f"{prefix} " if prefix else ""
     plex_key = cfg.get("encoder") if cfg.get("encoder") in PLEX_PRESETS else None
     vinfo = probe_video_info(video)
-    # Plex-ready output is always MKV; a re-encode keeps the source's
-    # container unless it can't hold the codecs (.webm + x265, .mpg)
-    out_ext = _plan_output_ext(cfg.get("encoder"), "cut", video, ext, vinfo)
+    smart = bool(cfg.get("smart_cut"))
+    smart_why = smart_cut_problem(video) if smart else None
+    smart = smart and not smart_why
+    # smart cut keeps the source's container; Plex-ready output is always
+    # MKV; a re-encode keeps the source's container unless it can't hold
+    # the codecs (.webm + x265, .mpg)
+    out_ext = ext if smart else _plan_output_ext(cfg.get("encoder"), "cut", video, ext, vinfo)
     final_output = os.path.join(cfg["output_dir"], f"{name}{out_ext}")
-    video_wall = time.time()
+    video_wall = cfg.get("_wall") or time.time()
     src_size = os.path.getsize(video)
-    ui.log(f"{prefix}[MANUAL] {name}{ext}  ({format_size(src_size)})")
-    if plex_key and ext.lower() != ".mkv":
+    if not cfg.get("_smart_fallback"):
+        ui.log(f"{prefix}[MANUAL] {name}{ext}  ({format_size(src_size)})")
+    if smart_why:
+        ui.log(f"   [WARN] Smart cut not possible: {smart_why} - re-encoding the whole video")
+    if not smart and plex_key and ext.lower() != ".mkv":
         ui.log(f"   Plex-ready: source is {ext.lower()} - writing .mkv")
-    elif out_ext.lower() != ext.lower():
+    elif not smart and out_ext.lower() != ext.lower():
         ui.log(f"   Output container: {ext.lower()} can't hold the chosen codecs"
                f" - writing {out_ext}")
     if _same_path(final_output, video):
@@ -755,6 +849,34 @@ def run_manual(cfg, keep, ui, stop_event, protect=None):
     if abs(start_time) >= 0.05:
         ui.log(f"   Source timestamps start at {start_time:.3f}s - cut points"
                " count from the file start")
+
+    def overall_progress(base, span):
+        """One 0-1 bar for the whole job instead of resetting per segment."""
+        def _cb(frac, text):
+            f = min(1.0, base + frac * span)
+            elapsed = time.time() - video_wall
+            left = (format_seconds(elapsed * (1 - f) / f)
+                    if f > 0.003 and elapsed > 5 else "--:--")
+            ui.progress(f, f"{text} | all {f * 100:.0f}% ~{left}")
+        return _cb
+
+    subs_lang = {s.lower() for s in cfg["subs_langs"]} if cfg.get("subs_langs") else None
+    covers = cover_streams(video)
+    expected = _kept_sec(named, src_total)     # (the video can't run past its end)
+    gate = _gate(_kept_sec(named, src_total), vinfo["codec"] not in ("?", None))
+    if smart:
+        ui.log(f"   Keep: {' -> '.join(f'{n} [{fmt_time(s)}-{fmt_time(e)}]' for n, s, e in named)}")
+        ui.status(f"{prefix}[MANUAL] {name}{ext}  -  Smart cut")
+        placed, why = _run_smart(video, named, final_output, cfg, ui, stop_event,
+                                 overall_progress(0.0, 1.0), subs_lang, gate)
+        if not placed and not stop_event.is_set():
+            ui.log(f"   [WARN] Smart cut failed: {why} - re-encoding the whole video")
+            return run_manual(dict(cfg, smart_cut=False, _smart_fallback=True,
+                                   _wall=video_wall), keep, ui, stop_event, protect)
+        return _manual_finish(cfg, ui, stop_event, video, placed, expected, src_size,
+                              video_wall, covers, None, src_total, subs_lang,
+                              protect_keys, [])
+
     plex = plex_plan(plex_key, video, cfg.get("preset"), ui.log) if plex_key else None
     encoder = plex["encoder"] if plex else resolve_encoder(cfg["encoder"], vinfo["codec"], ui.log)
     crf = plex["crf"] if plex else crf_for_encoder(encoder, cfg)
@@ -768,19 +890,7 @@ def run_manual(cfg, keep, ui, stop_event, protect=None):
         ui.log("   [WARN] H.264 NVENC cannot encode 10-bit - using 8-bit.")
         out_depth = 8
     audio_streams = probe_audio_streams(video)
-    subs_lang = {s.lower() for s in cfg["subs_langs"]} if cfg.get("subs_langs") else None
-    covers = cover_streams(video)
     ui.log(f"   Keep: {' -> '.join(f'{n} [{fmt_time(s)}-{fmt_time(e)}]' for n, s, e in named)}")
-
-    def overall_progress(base, span):
-        """One 0-1 bar for the whole job instead of resetting per segment."""
-        def _cb(frac, text):
-            f = min(1.0, base + frac * span)
-            elapsed = time.time() - video_wall
-            left = (format_seconds(elapsed * (1 - f) / f)
-                    if f > 0.003 and elapsed > 5 else "--:--")
-            ui.progress(f, f"{text} | all {f * 100:.0f}% ~{left}")
-        return _cb
 
     total_d = sum(e - s for _, s, e in named) or 1.0
     multi = len(named) > 1
@@ -788,7 +898,6 @@ def run_manual(cfg, keep, ui, stop_event, protect=None):
     piece_audio = not multi or bool(plex)
     enc_span = 0.85 if multi else 1.0
     done_d = 0.0
-    gate = _gate(_kept_sec(named, src_total), vinfo["codec"] not in ("?", None))
 
     temp_segs, ok = [], True
     for i, (seg_name, s0, s1) in enumerate(named, 1):
@@ -812,7 +921,6 @@ def run_manual(cfg, keep, ui, stop_event, protect=None):
             break
         done_d += s1 - s0
 
-    expected = sum(e - s for _, s, e in named)
     placed = None
     if ok and len(temp_segs) == 1:
         placed = _place_output(temp_segs[0], final_output, ui.log, gate)
@@ -829,6 +937,15 @@ def run_manual(cfg, keep, ui, stop_event, protect=None):
     elif not stop_event.is_set():
         ui.log("   [FAIL] could not produce output\n")
 
+    return _manual_finish(cfg, ui, stop_event, video, placed, expected, src_size,
+                          video_wall, covers, plex, src_total, subs_lang, protect_keys,
+                          temp_segs)
+
+
+def _manual_finish(cfg, ui, stop_event, video, placed, expected, src_size, video_wall,
+                   covers, plex, src_total, subs_lang, protect_keys, temp_segs):
+    """run_manual's last steps for a placed output (or None): checks and log
+    lines, cover art, move the source to done/, clean up. -> ManualResult"""
     produced = bool(placed) and os.path.exists(placed)
     if produced:
         final_output = placed

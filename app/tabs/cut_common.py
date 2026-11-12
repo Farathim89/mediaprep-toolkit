@@ -1,4 +1,5 @@
-"""Helpers shared by the Cut / Edit sub-tabs (Auto-detect, Manual, Multi cut)."""
+"""Helpers shared by the Cut / Edit sub-tabs (Settings, Auto-detect, Manual,
+Multi cut)."""
 import os
 from tkinter import ttk
 
@@ -129,9 +130,20 @@ def manual_output(cfg, video, exact=False):
     """Where run_manual writes the cut of `video`: <output>\\<name><ext>, the
     source's extension - except Plex-ready, which always writes .mkv.
     exact=True also asks the engine whether the container can hold the
-    chosen codecs (else it writes .mkv) - that probes the file (slow)."""
+    chosen codecs (else it writes .mkv) - that probes the file (slow).
+    cfg["smart_cut"]: a smart cut keeps the source's container (exact=True:
+    only if the file can be smart-cut - else the re-encode's rules apply)."""
     name, ext = os.path.splitext(os.path.basename(video))
-    if cfg.get("encoder") in PLEX_PRESETS:
+    smart = bool(cfg.get("smart_cut"))
+    if smart and exact:
+        try:
+            from ..engine.smartcut import smart_cut_problem
+            smart = not smart_cut_problem(video)
+        except Exception:
+            smart = False
+    if smart:
+        pass
+    elif cfg.get("encoder") in PLEX_PRESETS:
         ext = ".mkv"
     elif exact:
         try:

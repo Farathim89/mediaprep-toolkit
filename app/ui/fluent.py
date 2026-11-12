@@ -578,14 +578,18 @@ def _create(style, g, s, tag="", new=True):
        ("disabled", "fld_d"), ("focus", "fld_f"), ("hover", "fld_h"),
        border=E, padding=(u(3), u(2)), sticky="nsew", width=2 * E + 2,
        height=2 * E + 2)
-    ec("Fl.Spinbox.up", "image", "spin_u",
+    # the arrows' names must end in "uparrow" / "downarrow": Tk's spinbox
+    # class bindings (ttk::spinbox::Press) find what was clicked by the
+    # element name (`$w identify` matched against *uparrow / *downarrow) -
+    # any other name and a click on the arrow does nothing
+    ec("Fl.Spinbox.uparrow", "image", "spin_u",
        ("pressed", "spin_uh"), ("active", "spin_uh"), sticky="")
-    ec("Fl.Spinbox.down", "image", "spin_d",
+    ec("Fl.Spinbox.downarrow", "image", "spin_d",
        ("pressed", "spin_dh"), ("active", "spin_dh"), sticky="")
     lay("TSpinbox", [("Fl.Spinbox.field", {"sticky": "nsew", "children": [
         ("null", {"side": "right", "sticky": "", "children": [
-            ("Fl.Spinbox.up", {"side": "top", "sticky": "e"}),
-            ("Fl.Spinbox.down", {"side": "bottom", "sticky": "e"})]}),
+            ("Fl.Spinbox.uparrow", {"side": "top", "sticky": "e"}),
+            ("Fl.Spinbox.downarrow", {"side": "bottom", "sticky": "e"})]}),
         ("Spinbox.padding", {"sticky": "nsew", "children": [
             ("Spinbox.textarea", {"sticky": "nsew"})]})]})])
 

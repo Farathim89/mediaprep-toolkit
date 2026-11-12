@@ -31,6 +31,36 @@ def _stream_bps(s):
     return None
 
 
+# per-stream statistics tags (mkvmerge: BPS, NUMBER_OF_FRAMES ..., often with
+# a language suffix like "BPS-eng"). ffmpeg copies them into every output,
+# where the source's numbers are wrong (file-info tools show its bitrate /
+# frame count). The matroska muxer writes a fresh plain DURATION itself.
+_STATS_TAGS = ("BPS", "DURATION", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
+               "_STATISTICS_WRITING_APP", "_STATISTICS_WRITING_DATE_UTC",
+               "_STATISTICS_TAGS")
+
+
+def is_stats_tag(key):
+    """True for a statistics tag that must not be copied ('BPS', 'BPS-eng',
+    'DURATION-eng' ...). The plain 'DURATION' is not one: the muxer rewrites it."""
+    k = str(key or "").upper()
+    return k != "DURATION" and k.split("-", 1)[0] in _STATS_TAGS
+
+
+def stats_tag_args(*paths):
+    """['-metadata:s', 'BPS=', ...]: output options that delete every
+    statistics tag a stream of `paths` (the inputs) carries, in every output
+    stream - language, title and the other tags stay. [] if there are none."""
+    keys = set()
+    for p in paths:
+        for s in _probe_json(p, ["-show_entries", "stream_tags"], timeout=60).get("streams") or []:
+            keys.update(k for k in (s.get("tags") or {}) if is_stats_tag(k))
+    args = []
+    for k in sorted(keys):
+        args += ["-metadata:s", f"{k}="]
+    return args
+
+
 def _sampled_audio_bps(input_file, secs=120):
     """{audio stream index: bit/s} measured by summing packet sizes over the
     first `secs` seconds (demux only, quick) - for streams without a bitrate."""

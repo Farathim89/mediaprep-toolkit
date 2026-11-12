@@ -21,6 +21,9 @@ gets a per-user cache folder (see _numba_cache_setup), and
     "MediaPrep Toolkit.exe" --selftest <dir>
 runs a small GUI-less engine check (app/selftest.py) and writes
 <dir>/selftest_report.json.
+    "MediaPrep Toolkit.exe" --set-shortcut-aumid <lnk>...
+writes the app's taskbar ID (app/appid.py) into shortcuts - the installer
+runs it for the Start menu / desktop shortcuts it creates.
 """
 import multiprocessing
 import os
@@ -211,6 +214,15 @@ def _cpu_limit_env():
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    from app import appid
+    if len(sys.argv) >= 2 and sys.argv[1] == appid.CLI_SWITCH:
+        # the installer (elevated, after creating its shortcuts): stamp the
+        # app's taskbar ID into them - no window, nothing else started
+        sys.exit(appid.cli(sys.argv[2:]))
+    # one taskbar identity for every way the app runs (app/appid.py), set
+    # before any window exists: the pinned portable launcher and the program
+    # it starts stack on one taskbar button
+    appid.set_process()
     _frozen_setup()
     _wait_for_old_instance()
     _cpu_limit_env()

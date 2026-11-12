@@ -19,8 +19,8 @@ from ..ui.tkthread import _call_tk
 from ..ui.helpwin import help_button
 from ..ui.timeentry import TimeEntry
 from ..ui.tooltips import add_tooltip, info_icon
-from ..ui.widgets import (ScrollFrame, build_log_tab, enable_file_drop, enable_file_drop_deep,
-                          trim_text_lines)
+from ..ui.widgets import (ScrollFrame, build_log_tab, elide_label, enable_file_drop,
+                          enable_file_drop_deep, trim_text_lines)
 from .common import (_KIND_NAMES, _MEDIA_EXTS, _VIDEO_TYPES, _existing_template,
                      _same_file, _snap_in_thread, _template_stem)
 from .cut_common import _ask_choice, _src_label
@@ -299,8 +299,8 @@ class TemplateTab(TemplateDetectMixin, TemplatesManagerMixin, TemplateAutoMixin,
             # the Auto-detect row (built in _build_detect_tab) on Auto-detect
             self._cut_foot = foot = ttk.Frame(bottom)
             foot.pack(fill="x")
-            ttk.Label(foot, textvariable=self.status_var, style="Hint.TLabel").pack(
-                anchor="w", padx=10, pady=(4, 0))
+            elide_label(foot, textvariable=self.status_var, style="Hint.TLabel").pack(
+                fill="x", padx=10, pady=(4, 0))
             prow = ttk.Frame(foot)
             prow.pack(fill="x", padx=10, pady=(2, 6))
         else:

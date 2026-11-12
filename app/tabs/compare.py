@@ -356,12 +356,21 @@ def _has_vmaf():
 
 
 def _quality_window(new, ref, new_pos, ref_pos, length, ref_wh, use_vmaf,
-                    stop_event=None):
+                    stop_event=None, fps=None):
     """Measure one aligned window: SSIM + PSNR (one ffmpeg pass) and VMAF
     (second pass, slow). `new` is the re-encode (distorted), `ref` the
     original. Returns {"ssim","psnr","vmaf"|None}; raises RuntimeError, or
-    _Stopped if stop_event is set (ffmpeg is killed right away)."""
+    _Stopped if stop_event is set (ffmpeg is killed right away).
+    Frames are paired by INDEX (1st with 1st, ...), not by timestamp: the
+    metric filters pair by timestamp, and a source with uneven / ms-rounded
+    timestamps (telecined DVD rips: 41/42 ms steps) then paired frames with
+    their neighbours whenever the window started between two frames - false
+    dips (29 dB / VMAF 88 where every frame really scored 41+ dB). Both
+    inputs get the same timestamps N * (1/fps) instead; the comparison
+    ends with the shorter input (no frame compared against a held one)."""
     scale = f",scale={ref_wh[0]}:{ref_wh[1]}:flags=bicubic" if ref_wh else ""
+    step = round(1e6 / fps) if fps and fps > 0 else 41708        # us per frame
+    by_index = f"settb=AVTB,setpts=N*{step}"
 
     def inputs():
         cmd = []
@@ -372,9 +381,9 @@ def _quality_window(new, ref, new_pos, ref_pos, length, ref_wh, use_vmaf,
             cmd += ["-i", path]
         return cmd
 
-    flt = (f"[0:v]setpts=PTS-STARTPTS,format=yuv420p{scale},split=2[d1][d2];"
-           f"[1:v]setpts=PTS-STARTPTS,format=yuv420p,split=2[r1][r2];"
-           f"[d1][r1]ssim;[d2][r2]psnr")
+    flt = (f"[0:v]{by_index},format=yuv420p{scale},split=2[d1][d2];"
+           f"[1:v]{by_index},format=yuv420p,split=2[r1][r2];"
+           f"[d1][r1]ssim=shortest=1;[d2][r2]psnr=shortest=1")
     cmd = (["ffmpeg", "-hide_banner", "-nostdin"] + inputs()
            + ["-filter_complex", flt, "-f", "null", "-"])
     rc, err = _run_capture_stoppable(cmd, stop_event)
@@ -390,9 +399,9 @@ def _quality_window(new, ref, new_pos, ref_pos, length, ref_wh, use_vmaf,
            "psnr": 99.0 if m_psnr.group(1) == "inf" else float(m_psnr.group(1)),
            "vmaf": None}
     if use_vmaf:
-        flt2 = (f"[0:v]setpts=PTS-STARTPTS,format=yuv420p{scale}[d];"
-                f"[1:v]setpts=PTS-STARTPTS,format=yuv420p[r];"
-                f"[d][r]libvmaf")
+        flt2 = (f"[0:v]{by_index},format=yuv420p{scale}[d];"
+                f"[1:v]{by_index},format=yuv420p[r];"
+                f"[d][r]libvmaf=shortest=1")
         cmd2 = (["ffmpeg", "-hide_banner", "-nostdin"] + inputs()
                 + ["-filter_complex", flt2, "-f", "null", "-"])
         _rc2, err2 = _run_capture_stoppable(cmd2, stop_event)
@@ -785,7 +794,7 @@ class _QualityPane(ttk.Frame):
                             cand = max(0.0, arp + k * fv)
                             try:
                                 s = _quality_window(new, ref, np_, cand, 3, ref_wh, False,
-                                                    self.stop_event)["ssim"]
+                                                    self.stop_event, fps=fps_r or fps_n)["ssim"]
                             except RuntimeError:
                                 continue
                             if s > best_s:
@@ -813,7 +822,8 @@ class _QualityPane(ttk.Frame):
             if self.stop_event.is_set():
                 _call_tk(lambda: self._append("\n[STOPPED]"))
                 return "[STOPPED]"
-            res = _quality_window(new, ref, np_, rp, ln, ref_wh, use_vmaf, self.stop_event)
+            res = _quality_window(new, ref, np_, rp, ln, ref_wh, use_vmaf, self.stop_event,
+                                  fps=fps_r or fps_n)
             results.append(res)
             at = fmt_time(rp).rsplit(":", 1)[0]
             line = (f"{'@ ' + at:<16}{res['ssim']:>8.4f}{res['psnr']:>8.1f}dB"

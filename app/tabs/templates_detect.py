@@ -12,7 +12,7 @@ from ..ui.frametime import excl_to_shown, file_fps
 from ..ui.tkthread import _call_tk
 from ..ui.helpwin import help_button
 from ..ui.tooltips import info_icon, add_tooltip
-from ..ui.widgets import KeyedCombobox, bind_status_colors, enable_file_drop
+from ..ui.widgets import KeyedCombobox, bind_status_colors, elide_label, enable_file_drop
 from .audition import _AuditionWindow
 from .common import _KIND_NAMES, _list_media, _template_stem, edge_is_approx, mark_edges
 from .cut_common import margin_widgets, mode_combobox, norm_margin, norm_tpl_margin
@@ -209,8 +209,8 @@ class TemplateDetectMixin:
 
         self.detect_status = tk.StringVar(value="")
         if foot is not None:
-            ttk.Label(self._detect_foot, textvariable=self.detect_status,
-                      style="Hint.TLabel").pack(anchor="w", padx=10, pady=(4, 0))
+            elide_label(self._detect_foot, textvariable=self.detect_status,
+                        style="Hint.TLabel").pack(fill="x", padx=10, pady=(4, 0))
             pf.pack(fill="x", padx=10, pady=(2, 6))
         else:
             ttk.Label(detect, textvariable=self.detect_status, style="Hint.TLabel").grid(

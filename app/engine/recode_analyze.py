@@ -77,6 +77,7 @@ def probe_job(path):
         elif ct == "attachment":
             atts += 1
     trc = (v.get("color_transfer") or "").lower()
+    vt = tags(v)
     vdur = probe_video_duration(path)
     return {
         "path": path, "duration": dur, "vduration": vdur or dur, "size": size, "chapters": len(data.get("chapters") or []),
@@ -87,7 +88,10 @@ def probe_job(path):
                   "transfer": trc, "primaries": (v.get("color_primaries") or "").lower(),
                   "matrix": (v.get("color_space") or "").lower(),
                   "field_order": (v.get("field_order") or "").lower(),
-                  "bps": bps},
+                  "bps": bps,
+                  # tags a filtered (re-encoded) stream loses: set again
+                  "lang": (vt.get("language") or "").strip(),
+                  "title": (vt.get("title") or "").strip()},
         "audio": audio, "subs": subs,
     }
 

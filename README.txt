@@ -46,6 +46,11 @@ B) Portable: MediaPrep-Toolkit-Portable.exe
   - In a very deep folder (beyond Windows' path-length limit) the program is
     unpacked to %LOCALAPPDATA%\MediaPrep\rt instead; your data still stays in
     mediaprep-data\.
+  - Pin to the taskbar: start the app, then right-click ITS taskbar button ->
+    "Pin to taskbar". That pin starts MediaPrep-Toolkit-Portable.exe and the
+    running app stacks onto it. A pin made from the exe file itself (dragged
+    to the taskbar, or "Pin to taskbar" on the file) gets a second button
+    next to it - unpin that one and pin the running app instead.
 
 C) Zip: MediaPrep Toolkit v<version>.zip
    (GitHub lists it as MediaPrep.Toolkit.v<version>.zip)
@@ -102,7 +107,8 @@ Clean a whole season (with templates)
   1. Templates -> Auto-detect: pick the season folder (2+ episodes) ->
      "Detect intro / credits" -> "Auto-cut all templates".
      (Or cut the templates by hand from one episode on Cut template.)
-  2. Put the episodes in Media\videos.
+  2. Put the episodes in Media\videos (the Videos folder on Cut / Edit ->
+     Settings, where the template / output folders and encoding are set too).
   3. Cut / Edit -> Auto-detect: with "Review first: Match templates" selected,
      press "Review first (detect only)". Nothing is cut - every episode is
      matched and loaded into Multi cut.
@@ -127,9 +133,10 @@ Clean a single episode
   4. "Cut previewed video (manual)".
 
 Plex "Skip Intro" without re-encoding
-  Cut / Edit -> Auto-detect, Run mode "Add chapter markers". The files are not
-  cut and not re-encoded - Intro / Credits chapters are added so Plex or
-  Jellyfin can offer skip buttons.
+  Cut / Edit -> Settings: Run mode "Add chapter markers", then Auto-detect ->
+  "Start batch (auto-detect)". The files are not cut and not re-encoded -
+  Intro / Credits chapters are added so Plex or Jellyfin can offer skip
+  buttons.
 
 Shrink or re-encode a season
   Convert: add the files or the folder, pick a preset (e.g. Plex-ready HEVC),
@@ -222,11 +229,42 @@ TEMPLATES
     cause false cuts.
 
 CUT / EDIT
-  Auto-detect (batch) - processes every video in the Videos folder: finds each
-    template and removes (or marks) those parts. Folders, Encoding, Detection
-    and subtitle settings here are SHARED with Manual cut and Multi cut.
-    - Run mode:
-        Cut               removes the found segments and joins the rest.
+  Sub-tabs: Settings, Auto-detect, Manual cut, Multi cut, Log. The app opens
+  the one you used last (Auto-detect the first time).
+
+  Settings - the folders, encoding, detection & mode and subtitle / output
+    settings, SHARED by every Cut / Edit tool: Auto-detect's Start batch and
+    Review first, Manual cut and Multi cut. The other sub-tabs show the
+    settings in use, with a "Change..." button that opens Settings.
+    - Folders: Videos, the four template folders and Output.
+    - Cut method (top of the Encoding card) - how EVERY cut is made: Start
+      batch's Cut run mode, Manual cut and Multi cut (also after Review first).
+        Smart cut (original quality)
+                          copies the video and audio untouched and re-encodes
+                          only the few seconds from each cut point to the next
+                          keyframe (a very short kept piece whole): lossless
+                          except those seconds at each join, about as big as
+                          the source for the part kept, and much faster than a
+                          full re-encode. Works on H.264 / HEVC video in MKV,
+                          MP4 or MOV (the output keeps that container). The
+                          joins use the CPU encoder of the same codec (x264 /
+                          x265, near-lossless) at the chosen Preset and are
+                          checked against the source. Audio is copied (rare
+                          formats such as TrueHD are re-encoded), subtitles
+                          and fonts are kept, chapters are clipped to what is
+                          kept. A file it can't handle (another codec or
+                          container, interlaced video, an unusual pixel
+                          format) or a join that fails the check falls back to
+                          a full re-encode - the log shows a [WARN] line. The
+                          Codec (incl. Plex-ready), CRF, bit depth and
+                          keyframe settings are used only for those files
+                          (their labels are greyed).
+        Re-encode         (default) the whole video with the codec, CRF, bit
+                          depth and preset settings - any source, any output
+                          codec, e.g. to make files smaller.
+    - Run mode (used by Start batch only - Manual / Multi cut always cut):
+        Cut               removes the found segments and joins the rest (with
+                          the Cut method above - shown beside it).
         Inject keyframes  keeps the whole video, only adds keyframes at the
                           boundaries.
         Add chapter markers  no cut, no re-encode - adds chapters for Plex /
@@ -241,10 +279,15 @@ CUT / EDIT
       a detected intro / credits so no single intro frame flashes at the join.
       "With templates" sets where a template match ends: Follow the template's
       own edges (default), Exact content edges, or Exact + safety margin.
-    - Options: move finished sources to videos\done, cut intro from file start
-      / credits to file end, skip an episode if an enabled segment isn't found,
-      trim to where the audio still matches, or anchor the cut to the
+    - Trim to where the audio still matches, or anchor the cut to the
       template's first / last N seconds.
+    - Subtitles & output options: keep only chosen subtitle languages, move
+      finished sources to videos\done, cut intro from file start / credits to
+      file end, skip an episode if an enabled segment isn't found.
+
+  Auto-detect (batch) - processes every video in the Videos folder: finds each
+    template and removes (or marks) those parts, with the folders and
+    settings of the Settings sub-tab ("Settings in use" sums them up).
     - "Review first (detect only)": a dry run - nothing is cut; every video is
       checked and loaded into Multi cut with its detected times (weak or
       missing matches get a ⚠ and a note). "Review first:" chooses how:
@@ -260,8 +303,8 @@ CUT / EDIT
     an empty Credits / After-credits To means file end. "Auto-detect" (next to
     Load) matches this episode against every template variant and fills the
     best match per section; a row's ▾ Candidates list picks another variant.
-    "Cut previewed video (manual)" uses the Encoding settings from Auto-detect
-    (run mode and confidence are ignored).
+    "Cut previewed video (manual)" uses the Encoding settings from Cut / Edit
+    -> Settings (run mode and confidence are ignored).
 
   Multi cut - manual cutting for many files, each with its own ranges. Add
     files (button or drag files/folders onto the list), or let "Review first"
@@ -272,7 +315,7 @@ CUT / EDIT
     times. Cells show from-to, 0:00 / end for implied ends, or ? when
     incomplete (that section is skipped).
     - Auto-detect ▾ -> Detect selected / Detect all: matches the templates in
-      those files (with the Detection settings of Auto-detect).
+      those files (with the Detection settings of Cut / Edit -> Settings).
     - "Plex-style scan (no templates)": finds intro and credits like Plex
       does. Intro = the opening that recurs across the episodes (several
       openings are fine); credits = an ending that recurs near the end, plus
@@ -287,7 +330,9 @@ CUT / EDIT
       same name are refused. "Add to queue" queues the list as it is now. The
       list is restored next session.
 
-  Encoding (codec, bit depth, CRF/CQ, preset - see Info -> Recommended):
+  Encoding (Settings sub-tab; codec, bit depth, CRF/CQ, preset - see Info ->
+    Recommended; with Cut method Smart cut they apply only to files that
+    can't be smart-cut, the preset also to the re-encoded joins):
     - Auto - CPU (match source): HEVC -> libx265, AV1 -> SVT-AV1, else libx264.
     - Auto - GPU / NVENC (match source): the matching NVIDIA hardware encoder.
     - Plex-ready HEVC / Plex-ready H.264: near-lossless H.264 or HEVC in an
@@ -301,14 +346,15 @@ CUT / EDIT
       or driver), the CPU encoder of the same family is used instead and the
       log shows a [WARN] line - the batch doesn't fail.
 
-  Subtitles: "Keep only chosen subtitle languages" filters subtitle tracks;
-    video and audio tracks always stay.
+  Subtitles: "Keep only chosen subtitle languages" (Settings, also on Manual
+    cut and Multi cut) filters subtitle tracks; video and audio tracks always
+    stay.
 
   Show presets: the row above the sub-tabs. "Save as..." stores the folders,
     encoding, detection (incl. Match templates by and the safety margin) and
     mode options (plus the Templates auto-detect settings) under a name in
     Data\presets; "Load" restores them; "Delete" moves the preset to the
-    trash. Presets apply to all three sub-tabs.
+    trash. Presets apply to every sub-tab.
 
   Queue: "Add to queue" captures the CURRENT folders and settings - change the
     folders and add again to line up several seasons. Stop kills the current
@@ -563,10 +609,10 @@ Intro / credits not found, or found in the wrong place:
   - Templates -> Auto-detect: lower the Sensitivity (Medium -> Low -> Very
     loose), lower the minimum length or enlarge the search window. Check the
     "Detect on audio" language, or try Detect by "Visual" for a dubbed show.
-  - Cut / Edit: lower Min confidence if segments are missed, raise it if
-    wrong parts get cut. Remove bad or duplicate templates in the Templates
-    manager. Use "Review first (detect only)" and fix ⚠ rows in Multi cut
-    before cutting.
+  - Cut / Edit -> Settings: lower Min confidence if segments are missed,
+    raise it if wrong parts get cut. Remove bad or duplicate templates in the
+    Templates manager. Use "Review first (detect only)" and fix ⚠ rows in
+    Multi cut before cutting.
   - A frame of the intro flashes at the join: raise the Safety margin.
   - Remember a template's LENGTH is the cut length - cut whole segments.
 
@@ -617,8 +663,8 @@ PROJECT LAYOUT (for editing the code)
       tabs\         one module per page / sub-tab:
           templates.py (+ templates_detect.py, templates_autodetect.py,
                         templates_manager.py, audition.py)  Templates
-          cut_edit.py  (+ cut_auto.py, cut_manual.py, cut_multi.py,
-                        cut_scan.py, cut_common.py)         Cut / Edit
+          cut_edit.py  (+ cut_settings.py, cut_auto.py, cut_manual.py,
+                        cut_multi.py, cut_scan.py, cut_common.py)  Cut / Edit
           convert.py   (+ convert_settings.py, convert_tracks.py,
                         convert_presets.py)                 Convert
           theme_audio.py, audio_gain.py, audio_gain_batch.py

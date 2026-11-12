@@ -138,6 +138,25 @@ def _run_capture_stoppable(cmd, stop_event=None):
 
 
 # ======================= ffmpeg runner (v18 progress engine) =======================
+def speed_text(raw):
+    """ffmpeg's -progress `speed=` value ("1.83x", "  102x", "N/A", "0x") ->
+    the text shown ("1.8x", "102x"), or "" while it is unknown - ffmpeg
+    reports N/A (no speed yet, or none for that kind of step) and that must
+    not show up in the progress text."""
+    v = str(raw or "").strip().lower()
+    if v.endswith("x"):
+        v = v[:-1].strip()
+    try:
+        f = float(v)
+    except ValueError:
+        return ""
+    if not 0.0 < f < 1e6:                 # 0, negative, nan, inf: unknown
+        return ""
+    if round(f, 1) >= 10:
+        return f"{f:.0f}x"
+    return f"{f:.1f}x" if f >= 0.095 else f"{f:.2f}x"      # (slow AV1: 0.05x)
+
+
 def run_ffmpeg_with_progress(cmd, duration_sec, fps=None, expected_offset=0.0,
                              on_progress=None, on_log=None, stop_event=None,
                              stderr_out=None):
@@ -239,7 +258,7 @@ def run_ffmpeg_with_progress(cmd, duration_sec, fps=None, expected_offset=0.0,
                     if val.lstrip("-").isdigit():
                         state["t"] = int(val) / 1_000_000.0
                 elif line.startswith("speed="):
-                    state["speed"] = line.split("=", 1)[1].strip()
+                    state["speed"] = speed_text(line.split("=", 1)[1])
                 elif line == "progress=end":
                     state["ended"] = True
             emit()

@@ -11,7 +11,7 @@ from ..config import (AUDIO_RECODE_MAP, AUTO_CODEC_MAP, AUTO_GPU_CODEC_MAP,
 from .formatting import format_ffmpeg_timestamp, format_size
 from .probe import (_probe_json, count_frames_between, probe_first_frame_at,
                     probe_source_video_bitrate, probe_start_time, probe_streams,
-                    probe_video_info)
+                    probe_video_info, stats_tag_args)
 from .process import _run_exempt, run_ffmpeg_with_progress, temp_tag
 
 
@@ -349,7 +349,8 @@ def build_audio_pass(input_file, output_file, ranges, tracks, **cb):
     total = sum(e - s for s, e in ranges)
     cmd = (["ffmpeg", "-y", "-copyts", "-i", input_file,
             "-filter_complex", ";".join(graph)] + maps + args
-           + ["-map_metadata", "-1", "-map_chapters", "-1", output_file])
+           + ["-map_metadata", "-1", "-map_chapters", "-1"]
+           + stats_tag_args(input_file) + [output_file])
     return run_ffmpeg_with_progress(cmd, total, **cb)
 
 
@@ -562,7 +563,8 @@ def build_ffmpeg_cut(input_file, output_file, start_sec, end_sec, audio_streams,
     else:
         cmd += ((build_audio_recode_args(audio_streams) if audio else ["-an"])
                 + ["-c:s", "copy", "-c:d", "copy"])
-    cmd += ["-map_metadata", "0", "-avoid_negative_ts", "make_non_negative", output_file]
+    cmd += (["-map_metadata", "0"] + stats_tag_args(input_file)
+            + ["-avoid_negative_ts", "make_non_negative", output_file])
     return run_ffmpeg_with_progress(cmd, seg_duration, fps=fps,
                                     expected_offset=start_sec, **cb)
 
@@ -590,5 +592,5 @@ def build_ffmpeg_inject(input_file, output_file, kf_times, total_duration,
         cmd += list(plex["audio_args"]) + _plex_sub_args(plex, subs_lang)
     else:
         cmd += ["-c:a", "copy", "-c:s", "copy", "-c:d", "copy"]
-    cmd += ["-map_metadata", "0", output_file]
+    cmd += ["-map_metadata", "0"] + stats_tag_args(input_file) + [output_file]
     return run_ffmpeg_with_progress(cmd, total_duration, fps=fps, **cb)

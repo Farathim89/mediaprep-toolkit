@@ -16,8 +16,8 @@ from ..i18n import N_, tr
 from ..ui.player import VideoPlayer
 from ..ui.timeentry import TimeEntry
 from ..ui.tooltips import info_icon, add_tooltip
-from ..ui.widgets import (KeyedCombobox, ScrollFrame, build_log_tab, enable_file_drop,
-                          enable_file_drop_deep, trim_text_lines)
+from ..ui.widgets import (KeyedCombobox, ScrollFrame, build_log_tab, elide_label,
+                          enable_file_drop, enable_file_drop_deep, trim_text_lines)
 from ..ui.tkthread import _call_tk
 from .audio_common import (LUFS_RANGE, _TrackPicker, _check_range, _first_number, _nb_help,
                            _same_file, ask_existing, commit_part, free_path, media_types,
@@ -207,8 +207,9 @@ class ThemeAudioTab(ttk.Frame):
         # is given (always visible), else under the content
         self.status_var = tk.StringVar(value="")
         if bottom is not None:
-            ttk.Label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
-                anchor="w", padx=10, pady=(4, 0))
+            # (a long file name is cut at the end with "…", never at the start)
+            elide_label(bottom, textvariable=self.status_var, style="Hint.TLabel").pack(
+                fill="x", padx=10, pady=(4, 0))
             prog = ttk.Frame(bottom)
             prog.pack(fill="x", padx=10, pady=(2, 6))
         else:

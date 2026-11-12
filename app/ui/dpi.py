@@ -475,6 +475,9 @@ class _Manager:
         dpi = int(wp & 0xFFFF)
         if not dpi:
             return False
+        # the title bar / taskbar icons at the new monitor's icon sizes
+        from . import winicon
+        winicon.dpi_changed(hwnd, dpi)
         if main:
             basis = self.main_dpi or self.dpi
         else:

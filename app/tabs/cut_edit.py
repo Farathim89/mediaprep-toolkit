@@ -1,8 +1,9 @@
-"""Cut / Edit tab: Auto-detect | Manual cut | Multi cut | Log.
+"""Cut / Edit tab: Settings | Auto-detect | Manual cut | Multi cut | Log.
 
-RemoverTab is the shell: the per-show preset row, shared encoding /
-subtitle settings, Snap and ▾ candidate buttons, the progress bar + Stop
-and the job plumbing. Each sub-tab is a mixin: cut_auto.py, cut_manual.py,
+RemoverTab is the shell: the per-show preset row, the subtitle language
+dialog, Snap and ▾ candidate buttons, the progress bar + Stop and the job
+plumbing. Each sub-tab is a mixin: cut_settings.py (the folders, encoding,
+detection & mode settings all tools share), cut_auto.py, cut_manual.py,
 cut_multi.py."""
 import os
 import threading
@@ -20,20 +21,25 @@ from ..ui.dialogs import ask_string, place_dialog
 from ..ui.player import VideoPlayer
 from ..ui.tkthread import _call_tk
 from ..ui.tooltips import add_tooltip
-from ..ui.widgets import ScrollFrame, build_log_tab, trim_text_lines
+from ..ui.widgets import ScrollFrame, build_log_tab, elide_label, trim_text_lines
 from .common import _KIND_NAMES, _same_dir, _same_file, _snap_in_thread, mark_edges
 from .cut_auto import AutoCutMixin
-from .cut_common import _cand_label, _is_plex, norm_margin, norm_tpl_margin, tr_key
+from .cut_common import _cand_label, norm_margin, norm_tpl_margin, tr_key
 from .cut_manual import ManualCutMixin
 from .cut_multi import MultiCutMixin
 from .cut_scan import ScanMixin
+from .cut_settings import CutSettingsMixin, norm_cut_method
 from .templates import TemplateTab
 from .. import applog, jobs as jobreg, presets
 from ..ui import icons
 
 
 # ======================= Tab 2 - Cut / Edit =======================
-class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Frame):
+class RemoverTab(CutSettingsMixin, AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin,
+                 ttk.Frame):
+    # the sub-tabs by the name snapshot() saves them under ("cut_tab")
+    SUB_TABS = ("settings", "auto", "manual", "multi", "log")
+
     def __init__(self, master, saved=None, bottom=None):
         super().__init__(master, padding=8)
         saved = saved or {}
@@ -46,7 +52,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         # that hangs after Stop is abandoned (_stop_watchdog) and its late
         # results are ignored (_finish) instead of locking the tab
         self._run_seq = 0
-        self._worker = None               # the running worker thread
+        # (not "_worker": that name is Auto-detect's batch worker method)
+        self._worker_thread = None        # the running worker thread
         self._watchdog = None             # after() id of the armed abandon timer
         self._manual_cands = {}           # Manual cut: last detect_segments result
         self._manual_cands_path = ""      # ... and the video it belongs to
@@ -65,13 +72,21 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         nb = ttk.Notebook(self)
         nb.grid(row=1, column=0, sticky="nsew")
         self._rnb = nb
+        settings_outer = ttk.Frame(nb)
         auto_outer = ttk.Frame(nb)
         manual_outer = ttk.Frame(nb)
         multi_outer = ttk.Frame(nb)
+        nb.add(settings_outer, text=f"  {tr('Settings')}  ")
         nb.add(auto_outer, text=f"  {tr('Auto-detect')}  ")
         nb.add(manual_outer, text=f"  {tr('Manual cut')}  ")
         nb.add(multi_outer, text=f"  {tr('Multi cut')}  ")
+        self._settings_page = settings_outer
+        self._auto_page = auto_outer
+        self._manual_page = manual_outer
         self._multi_page = multi_outer
+        set_sc = ScrollFrame(settings_outer)
+        set_sc.pack(fill="both", expand=True)
+        settings = set_sc.interior
         auto_sc = ScrollFrame(auto_outer)
         auto_sc.pack(fill="both", expand=True)
         auto = auto_sc.interior
@@ -82,7 +97,11 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         multi_sc.pack(fill="both", expand=True)
         multi = multi_sc.interior
 
-        # ===================== Auto-detect: grouped settings =====================
+        # ===================== Settings: folders, encoding, detection ============
+        # (built first: the other sub-tabs read and summarise its variables)
+        self._build_settings_tab(settings, saved)
+
+        # ===================== Auto-detect: batch / Review first =================
         self._build_auto_tab(auto, saved)
 
         # ===================== Manual cut: player + points =====================
@@ -96,8 +115,9 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         self.status_var = tk.StringVar(value=tr("Idle"))
         host = bottom if bottom is not None else self
         if bottom is not None:
-            ttk.Label(host, textvariable=self.status_var, style="Hint.TLabel").pack(
-                anchor="w", padx=10, pady=(4, 0))
+            # (a long file name is cut at the end with "…", never at the start)
+            elide_label(host, textvariable=self.status_var, style="Hint.TLabel").pack(
+                fill="x", padx=10, pady=(4, 0))
             prog = ttk.Frame(host)
             prog.pack(fill="x", padx=10, pady=(2, 6))
         else:
@@ -109,7 +129,8 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         self.bar = ttk.Progressbar(prog, mode="determinate", maximum=1000)
         self.bar.grid(row=0, column=0, sticky="we")
         self.pct_var = tk.StringVar(value="")
-        ttk.Label(prog, textvariable=self.pct_var, width=44).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        elide_label(prog, textvariable=self.pct_var, width=44).grid(row=0, column=1, sticky="w",
+                                                                    padx=(6, 0))
         # single Stop in the right corner, beside the progress bar - it's always
         # visible and drives whichever tool (Auto-detect / Manual / Multi) is running
         self.stop_btn = icons.decorate(ttk.Button(prog, text=tr("Stop"), command=self.stop, state="disabled",
@@ -118,19 +139,28 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         add_tooltip(self.stop_btn, tr("Stop now: kills the running ffmpeg step immediately and "
                                       "discards its partial output (finished files are kept)"))
         self.logbox = build_log_tab(nb)
+        self._log_page = nb.nametowidget(nb.tabs()[-1])
+        # the sub-tab of last session (saved by name); Auto-detect by default
+        last = saved.get("cut_tab")
+        try:
+            nb.select(self._sub_tab_page(last if last in self.SUB_TABS else "auto"))
+        except tk.TclError:
+            pass
 
-    def _upd_enc_summary(self):
-        codec = tr_key(self.codec_var.get()).split(" (")[0]
-        if _is_plex(self.codec_var.get()):
-            codec += tr(" (MKV, Plex-friendly audio, bitrate capped below the source - "
-                        "files never grow)")
-        out = self.dirs["Output folder:"].get().strip() or tr("(not set)")
-        self.enc_summary.set(tr(
-            "Encoding in use: {codec}, CRF {crf} (H.265/AV1 {crf265}), preset {preset}, "
-            "bit depth {depth} -> {out}. Change these on Cut / Edit → Auto-detect. "
-            "Manual / Multi always CUT - the run mode there applies to Auto-detect only.",
-            codec=codec, crf=self.crf_var.get(), crf265=self.crf265_var.get(),
-            preset=self.preset_var.get(), depth=tr_key(self.depth_var.get()), out=out))
+    def _sub_tab_page(self, name):
+        """The notebook page of sub-tab `name` (one of SUB_TABS)."""
+        return getattr(self, f"_{name}_page")
+
+    def _sub_tab_name(self):
+        """The name (SUB_TABS) of the selected sub-tab."""
+        try:
+            cur = self._rnb.select()
+        except tk.TclError:
+            return "auto"
+        for name in self.SUB_TABS:
+            if str(self._sub_tab_page(name)) == cur:
+                return name
+        return "auto"
 
     @staticmethod
     def _out_is_source(out_dir, sources):
@@ -149,7 +179,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             tr("Output folder = source folder"),
             tr("The Output folder is the same folder as the source video(s):\n\n"
                "{folder}\n\nThe cut would overwrite the original. "
-               "Pick a different Output folder on Cut / Edit → Auto-detect.",
+               "Pick a different Output folder on Cut / Edit → Settings.",
                folder=os.path.dirname(src) or "."))
         return True
 
@@ -252,7 +282,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
     # what a preset stores: these RemoverTab.snapshot() keys ...
     PRESET_KEYS = ("video_dir", "intro_dir", "credits_dir", "preintro_dir",
                    "aftercredits_dir", "output_dir", "codec", "crf", "crf_h265", "preset",
-                   "bit_depth", "kf_interval", "confidence", "mode", "move_done",
+                   "bit_depth", "kf_interval", "cut_method", "confidence", "mode", "move_done",
                    "skip_incomplete", "trim_to_match", "anchor_cut", "anchor_secs",
                    "intro_from_start", "credits_to_end", "match_lang", "subs_filter",
                    "subs_langs", "use_preintro", "use_intro", "use_credits",
@@ -358,8 +388,10 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             self.preset_var.set(d["preset"])
         if d.get("bit_depth") in BIT_DEPTHS:
             self.depth_var.set(d["bit_depth"])
-        if d.get("mode") in ("cut", "inject", "chapters"):
-            self.mode_var.set(d["mode"])
+        if d.get("mode") in ("cut", "inject", "chapters", "smartcut"):
+            self.mode_var.set("cut" if d["mode"] == "smartcut" else d["mode"])
+        if d.get("cut_method") in ("smart", "reencode") or d.get("mode") == "smartcut":
+            self.cut_method_var.set(norm_cut_method(d))
         for key, var in (("move_done", self.move_done_var),
                          ("skip_incomplete", self.skip_incomplete_var),
                          ("trim_to_match", self.trim_match_var),
@@ -650,7 +682,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             self.after(1000, lambda: self._stop_poll(seq))
         else:
             VideoPlayer.unlock_all()
-            self._worker = None
+            self._worker_thread = None
             self._cancel_watchdog()
         self._busy = bool(on)
         st = "disabled" if on else "normal"
@@ -672,7 +704,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
     def _spawn(self, target, *args):
         """Start a job's worker thread (right after _running(True))."""
         t = threading.Thread(target=target, args=args, daemon=True)
-        self._worker = t
+        self._worker_thread = t
         t.start()
         return t
 
@@ -720,7 +752,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
         self._watchdog = None
         if seq != self._run_seq or not self._busy:
             return
-        w = self._worker
+        w = self._worker_thread
         if w is not None and w.is_alive():
             self.log("[STOP] the stopped job is still busy after "
                      f"{self.STOP_GRACE_MS // 1000} s (a stuck ffmpeg / ffprobe call?) - "
@@ -761,6 +793,7 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             "codec": self.codec_var.get(),
             "bit_depth": self.depth_var.get(),
             "kf_interval": self.kf_var.get(),
+            "cut_method": self.cut_method_var.get(),
             "confidence": self.conf_var.get(),
             "mode": self.mode_var.get(),
             "input_folders_v1": True,
@@ -783,5 +816,6 @@ class RemoverTab(AutoCutMixin, ManualCutMixin, MultiCutMixin, ScanMixin, ttk.Fra
             "multi_files": self._multi_snapshot(),
             "manual_video": self.sel_var.get().strip(),
             "last_preset": self.preset_name_var.get().strip(),
+            "cut_tab": self._sub_tab_name(),
             **{f"use_{k}": v.get() for k, v in self.use_seg.items()},
         }

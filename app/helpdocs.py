@@ -25,8 +25,8 @@ HELP = {
            "bottom:"),
         N_("Templates - cut intro / credits template clips from one episode "
            "(sub-tabs Cut template, Auto-detect, Templates).\nCut / Edit - remove "
-           "the templates from every episode (sub-tabs Auto-detect, Manual cut, "
-           "Multi cut).\nAudio - Theme Audio (theme.mp3 for Plex) and Audio Gain "
+           "the templates from every episode (sub-tabs Settings, Auto-detect, Manual "
+           "cut, Multi cut).\nAudio - Theme Audio (theme.mp3 for Plex) and Audio Gain "
            "(volume / loudness).\nInspect - Dual Player, Compare (tracks + "
            "quality) and Check (broken files).\nLog - every tab's messages in one "
            "place.\nInfo - Info / Settings and Recommended encoding notes."),
@@ -114,10 +114,13 @@ HELP = {
         "- Refresh: re-read the folders.\n\n"
         "Every template in a folder is used by Cut / Edit, so trash wrong or "
         "duplicate ones - a bad template can cause false cuts."))),
-    "cut_auto": (N_("Cut / Edit – Auto-detect"), (
-        N_("Batch-processes every video in the Videos folder: finds each template "
-        "by its audio and removes (or marks) those parts.\n\n"
-        "Folders: Videos, the four template folders and Output (must differ "
+    "cut_settings": (N_("Cut / Edit – Settings"), (
+        N_("The settings every Cut / Edit tool shares: Start batch and Review first "
+           "(Auto-detect sub-tab), Manual cut and Multi cut all use the folders, the "
+           "encoding and the detection settings set here. The other sub-tabs show the "
+           "settings in use, and their 'Change...' button opens this sub-tab. The run "
+           "mode applies to Start batch only - Manual cut and Multi cut always cut."),
+        N_("Folders: Videos, the four template folders and Output (must differ "
         "from the source folder). Output keeps the same file name.\n\n"
         "Run mode:\n"
         "- Cut: removes the found segments and stitches the rest together.\n"
@@ -140,32 +143,38 @@ HELP = {
         "AAC, AC3, E-AC3 and MP3 are kept, DTS / TrueHD / FLAC / Opus become "
         "E-AC3. They never use AV1, because many Plex clients can't direct-play "
         "it.\n\n"
-        "'Review first (detect only)' is a dry run: nothing is cut - every "
-        "video is matched and loaded into Multi cut with its detected times "
-        "(weak or missing matches get a ⚠ and a note). Check / fix the rows "
-        "there (player, Set, Snap, or another match from a row's ▾ candidates "
-        "list), then 'Cut all files'.\n\n"
         "Per-show presets: 'Save as...' stores the folders, encoding, "
         "detection and mode options (and the Templates auto-detect settings) "
         "under a name in the presets folder; 'Load' restores them; 'Delete' "
-        "moves the preset to Data\\temp\\trash (recoverable).\n\n"
-        "'Add to queue' queues the batch with the CURRENT folders and settings "
-        "- change the folders and add again to line up several seasons; it "
-        "starts when nothing else runs (Queue... in the status bar).\n\n"
-        "Stop kills the current ffmpeg step and discards its partial file; "
-        "finished files are kept."),
+        "moves the preset to Data\\temp\\trash (recoverable)."),
         N_("'Match templates by' (Detection): Audio = the template's sound (the "
            "classic matcher), Visual = its pictures (frame fingerprints slid over the "
            "start / end of each episode - also finds an opening with different audio, "
            "e.g. a dub, and works for templates without audio), Audio + Visual "
            "(default) = both: a match both agree on is marked 'audio + visual'; if they "
            "disagree, a confident audio match is kept and the row gets a ⚠. Used by "
-           "Start batch, Review first, Manual cut and Multi cut, and saved in presets.\n\n"
-           "Review first: 'Match templates' uses the template folders; 'Plex-style "
-           "scan (no templates)' needs no templates at all - it scans the Videos folder "
-           "like Plex (intro = what recurs across the episodes, credits = a recurring "
-           "ending or credits-like pictures near the end; see Multi cut help) and loads "
-           "the results into Multi cut for checking."))),
+           "Start batch, Review first, Manual cut and Multi cut, and saved in presets."))),
+    "cut_auto": (N_("Cut / Edit – Auto-detect"), (
+        N_("Batch-processes every video in the Videos folder: finds each template "
+        "by its audio and removes (or marks) those parts.\n\n"
+        "Its folders, encoding, run mode and detection settings are set on Cut / "
+        "Edit → Settings. 'Settings in use' here shows the ones Start batch and "
+        "Review first will use; 'Change...' opens the Settings sub-tab."),
+        N_("'Review first (detect only)' is a dry run: nothing is cut - every "
+        "video is matched and loaded into Multi cut with its detected times "
+        "(weak or missing matches get a ⚠ and a note). Check / fix the rows "
+        "there (player, Set, Snap, or another match from a row's ▾ candidates "
+        "list), then 'Cut all files'.\n\n"
+        "Review first: 'Match templates' uses the template folders; 'Plex-style "
+        "scan (no templates)' needs no templates at all - it scans the Videos folder "
+        "like Plex (intro = what recurs across the episodes, credits = a recurring "
+        "ending or credits-like pictures near the end; see Multi cut help) and loads "
+        "the results into Multi cut for checking.\n\n"
+        "'Add to queue' queues the batch with the CURRENT folders and settings "
+        "- change the folders and add again to line up several seasons; it "
+        "starts when nothing else runs (Queue... in the status bar).\n\n"
+        "Stop kills the current ffmpeg step and discards its partial file; "
+        "finished files are kept."))),
     "cut_manual": (N_("Cut / Edit – Manual cut"), (
         N_("Cut ranges you mark yourself out of ONE file - no templates needed.\n\n"
         "Load the video, then for each section use Set (take the current "
@@ -180,7 +189,7 @@ HELP = {
         "section (no confident match = left empty). A row's ▾ Candidates list "
         "picks another variant; then nudge with Set / Snap / the frame keys.\n\n"
         "'Cut previewed video (manual)' removes the marked ranges and keeps the "
-        "rest, using the Encoding settings on Cut / Edit → Auto-detect (run "
+        "rest, using the Encoding settings on Cut / Edit → Settings (run "
         "mode and confidence are ignored). Output goes to the Output folder "
         "with the same name; the subtitle filter works here too.\n\n"
         "The Show preset row above the sub-tabs (Save as... / Load / Delete) "
@@ -207,10 +216,10 @@ HELP = {
         "(they would overwrite each other). 'Add to queue' queues cutting the "
         "list as it is now (times and encoding captured) - it starts when "
         "nothing else runs (Queue... in the status bar). Encoding comes from "
-        "Cut / Edit → Auto-detect, so a Show preset (Load) applies here too. "
+        "Cut / Edit → Settings, so a Show preset (Load) applies here too. "
         "The list is restored next session."),
         N_("Auto-detect ▾ → Detect selected / Detect all: matches the templates "
-           "(folders and Detection settings of Cut / Edit → Auto-detect, incl. 'Match "
+           "(folders and Detection settings of Cut / Edit → Settings, incl. 'Match "
            "templates by') in those files and fills their times - the best confident "
            "match per section; ⚠ in Notes = not found or only weak. The ▾ next to each "
            "section lists every candidate.\n\n"
@@ -425,6 +434,26 @@ SAFETY_MARGIN = N_(
     "uses the same safety margin.")
 
 
+SMART_CUT = N_(
+    "Cut method (top of the Encoding card on Cut / Edit → Settings) - how every cut is "
+    "made: Manual cut, Multi cut (also after Review first) and Start batch's Cut run "
+    "mode. Smart cut (original quality) copies the video and audio untouched and "
+    "re-encodes only the few seconds from each cut point to the next keyframe (a very "
+    "short kept piece whole): the result is lossless except for those seconds at each "
+    "join, about as big as the "
+    "source for the part it keeps, and much faster than a full re-encode. It works on "
+    "H.264 and HEVC video in MKV, MP4 and MOV files (the output keeps the source's "
+    "container); the joins are re-encoded by the CPU encoder of the same codec (x264 / "
+    "x265, near-lossless) at the chosen Preset and checked against the source. Audio "
+    "is copied (rare formats such as TrueHD are re-encoded), subtitles and fonts are "
+    "kept, chapters are clipped to what is kept. A file it can't handle (another codec "
+    "or container, interlaced video, an unusual pixel format) - or a join that fails "
+    "the check - is re-encoded the normal way, and the Log shows a [WARN] line: Codec "
+    "(incl. Plex-ready), CRF, bit depth and keyframes are used only for such files. "
+    "Re-encode (the default) re-encodes the whole video with those settings - any "
+    "source, any output codec, e.g. to make files smaller.")
+
+
 def _add_block(key, block):
     title, body = HELP[key]
     HELP[key] = (title, (tuple(body) if isinstance(body, tuple) else (body,)) + (block,))
@@ -435,8 +464,10 @@ _add_block("overview", N_(
     "crop, filters, audio and subtitle tracks, with presets and a preview."))
 for _k in ("template_cut", "cut_manual", "cut_multi", "theme"):
     _add_block(_k, TO_INCLUSIVE)
-for _k in ("template_detect", "cut_auto", "cut_multi"):
+for _k in ("template_detect", "cut_settings", "cut_multi"):
     _add_block(_k, SAFETY_MARGIN)
+for _k in ("cut_settings", "cut_auto", "cut_manual", "cut_multi"):
+    _add_block(_k, SMART_CUT)
 _add_block("queue", N_(
     "Settings -> Performance: 'Limit CPU use (recommended)' (on by default) runs every "
     "ffmpeg / ffprobe / mpv the app starts at below-normal priority and caps the "
@@ -477,7 +508,7 @@ HELP["updates"] = (N_("Updates"), (
        "(videos, outputs, templates, settings) are kept.")))
 
 HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager",
-              "cut_auto", "cut_manual", "cut_multi", "convert", "theme",
+              "cut_settings", "cut_auto", "cut_manual", "cut_multi", "convert", "theme",
               "gain_single", "gain_batch", "dual", "compare_tracks",
               "compare_quality", "check", "log", "cleanup", "queue", "folders",
               "updates")

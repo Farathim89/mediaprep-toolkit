@@ -6,6 +6,7 @@ import threading
 
 from ..config import limit_cmd, NVENC_PRESET_MAP, popen_flags, SVT_PRESET_MAP
 from .encode import NVENC_CPU_FALLBACK, nvenc_available
+from .probe import stats_tag_args
 from .recode import (NVENC, _CPU_FALLBACK, _FPS_EXACT, _HDR_TRC, _HQDN3D, _MP4_AUDIO_BAD,
                      _NLMEANS, _TEN_BIT, _TEN_BIT_AUTO, _crop_of, _out_dims, default_bitrate)
 
@@ -261,6 +262,13 @@ def build_recode_cmd(job, output, log=None, sample=None):
         cmd += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
     if not copy_v and mp4 and enc in ("libx265", "hevc_nvenc"):
         cmd += ["-tag:v", "hvc1"]
+    if not copy_v:
+        # a stream out of a filtergraph has no tags: the source video's
+        # language / title again (a copied stream keeps its own)
+        for key in ("lang", "title"):
+            if v.get(key):
+                cmd += ["-metadata:s:v:0",
+                        f"{'language' if key == 'lang' else key}={v[key]}"]
     out_fps = _out_fps(job)
     if s["fps"] != "source" and s["fps_mode"] == "vfr" and not copy_v:
         cmd += ["-fpsmax", _FPS_EXACT.get(s["fps"], s["fps"]), "-fps_mode", "vfr"]
@@ -351,6 +359,8 @@ def build_recode_cmd(job, output, log=None, sample=None):
         cmd += ["-avoid_negative_ts", "make_zero"]
     cmd += ["-map_chapters", "0" if s["chapters"] and not sample else "-1",
             "-map_metadata", "0" if s["metadata"] else "-1"]
+    # the source's per-stream statistics (BPS, NUMBER_OF_FRAMES ...) are wrong here
+    cmd += stats_tag_args(job["input"])
     if mp4:
         cmd += ["-movflags", "+faststart"]
     cmd += ["-max_muxing_queue_size", "4096", output]
