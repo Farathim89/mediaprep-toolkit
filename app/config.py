@@ -9,7 +9,7 @@ import time
 from .i18n import N_
 
 # ======================= version =======================
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 APP_NAME = "MediaPrep Toolkit"
 # GitHub repo whose latest release the update check looks at
 UPDATE_REPO = "Farathim89/mediaprep-toolkit"

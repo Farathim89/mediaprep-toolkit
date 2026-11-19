@@ -17,3 +17,5 @@ dist/
 __pycache__/
 *.pyc
 .claude/
+# generated translator aid (tools/i18n_extract.py)
+app/locales/_template_sources.json

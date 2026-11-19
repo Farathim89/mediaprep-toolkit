@@ -16,4 +16,6 @@ package imports tkinter.
     refine      frame-exact edges (refine_base / _visual / _audio / _edge /
                 _template)
     recode      the Convert engine (recode_analyze / _cmd / _run)
+    join        the Join engine (join_encode = re-encode, join_subs =
+                merged text subtitles)
 """

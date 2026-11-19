@@ -9,14 +9,17 @@ was lost or broken along the way. Built on FFmpeg.
 > is a near-complete rewrite: frame-exact detection (with or without
 > templates, by sound and picture), a review-before-encoding workflow, a
 > HandBrake-style converter, Plex-ready presets, audio tools, an mpv-based
-> player, a job queue, a modern Fluent UI with 13 themes and 19 languages.
+> player, a job queue, a modern Fluent UI with 25 themes and 19 languages.
 
 **Download** from [Releases](../../releases):
-- `MediaPrep-Toolkit-Portable-2.0.1.exe` - single file, run it anywhere; your
-  data goes into a `mediaprep-data` folder next to it. The first start unpacks
-  the app once (a few seconds), later starts take under a second.
-- `MediaPrep Toolkit v2.0.1.zip` - unzip anywhere and run
-  `MediaPrep Toolkit.exe` (fastest start).
+- `MediaPrep-Toolkit-Setup-<version>.exe` - installer (all users, Program
+  Files, Start menu shortcut, uninstaller). Your `Media` and `Data` folders
+  live next to the app and are kept on uninstall.
+- `MediaPrep-Toolkit-Portable.exe` - single file, run it anywhere; your data
+  goes into a `mediaprep-data` folder next to it. Fixed name, so in-app
+  updates replace it in place and pins keep working.
+- `MediaPrep Toolkit v<version>.zip` - unzip anywhere and run
+  `MediaPrep Toolkit.exe`.
 
 FFmpeg and mpv are included - nothing else to install.
 
@@ -74,6 +77,16 @@ FFmpeg and mpv are included - nothing else to install.
   (keep, default, forced, burn-in), MKV or MP4.
 - Preview: encode a 10 s sample, compare it A/B, see the estimated size and
   time first.
+
+### Join
+- Joins several videos into one file: add files or a folder (natural name
+  order), drag & drop, move up/down, sort by name.
+- Matching files are joined **losslessly** (stream copy, nothing
+  re-encoded); when they differ, the reasons are shown and every file is
+  re-encoded with a Convert preset to the first file's size and frame rate
+  (letterboxed, missing audio tracks filled with silence).
+- Each file keeps its own **chapters**, moved to where it starts; subtitles
+  (text and PGS / VobSub) and fonts are kept; MKV or MP4.
 
 ### Audio
 - **Theme Audio** - export the intro as `theme.mp3` for Plex, with fades,

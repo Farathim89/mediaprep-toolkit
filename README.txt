@@ -1,4 +1,4 @@
-MEDIAPREP TOOLKIT v2.1.0
+MEDIAPREP TOOLKIT v2.2.0
 ========================
 (intro/credits cutting, chapter markers, convert, theme audio, loudness,
 compare & check)
@@ -9,9 +9,10 @@ Jellyfin. It finds the intro, credits, pre-intro (recap/logo) and after-credits
 cuts them out, marks them with keyframes, or adds chapter markers so your
 player can offer "Skip Intro". It works with template clips you cut once or,
 with no templates at all, with a Plex-style scan of the season. Around that it
-can re-encode videos HandBrake-style (Convert), export a theme.mp3, even out
-the loudness of a season, compare a processed file with its original (tracks
-and picture quality) and check folders for broken files. Nothing you work with
+can re-encode videos HandBrake-style (Convert), join several videos into one
+file (Join), export a theme.mp3, even out the loudness of a season, compare a
+processed file with its original (tracks and picture quality) and check
+folders for broken files. Nothing you work with
 is ever deleted: everything "removed" goes to a recoverable trash folder.
 
 
@@ -157,9 +158,10 @@ Even out the loudness of a season
 THE PAGES
 ---------
 The sidebar on the left lists the pages in workflow order: Templates,
-Cut / Edit, Convert, Audio, Inspect, Log, Info. Ctrl+1 ... Ctrl+7 jump to them,
-and ☰ folds the sidebar to icons. At its bottom: Theme, Clean up folders...,
-Settings... and Help. The app remembers the page and sub-tab you were on.
+Cut / Edit, Convert, Join, Audio, Inspect, Log, Info. Ctrl+1 ... Ctrl+8 jump to
+them, and ☰ folds the sidebar to icons. At its bottom: Theme, Clean up
+folders..., Settings... and Help. The app remembers the page and sub-tab you
+were on.
 
 Every page has a "?" button (top-right) with its help; "Help" in the sidebar
 lists all of them (and has "Check for updates"). Hover the ⓘ icons and most
@@ -389,6 +391,33 @@ CONVERT
     the estimated size and encoding time and opens source and sample side by
     side in Inspect -> Dual Player.
 
+JOIN
+  Joins several videos into one file, in the order of the list (#1 first).
+  - Add files or a folder (its videos in name order: E2 before E10) or drop
+    them on the list. Move up / Move down (Ctrl+Up / Ctrl+Down) and "Sort by
+    name" change the order.
+  - The line under the list says how they are joined. "Lossless join
+    possible": the files match (video codec, profile, size, pixel aspect,
+    pixel format, frame rate, interlacing; the same audio tracks with the same
+    codec / channels / sample rate; the same subtitle tracks) - they are
+    joined by stream copy, nothing is re-encoded. "The files differ": the
+    reasons are listed and EVERY file is re-encoded with the Re-encode settings
+    (a Convert preset, optional codec / CRF / CQ) to the first file's picture
+    size (letter- / pillarboxed, aspect kept) and frame rate; audio track N of
+    each file becomes track N (silence where a file has no such track), text
+    subtitles are kept when every file has the track, picture subtitles
+    (PGS / VobSub / DVB) are copied as they are (a file without the track
+    leaves a gap).
+  - Each file keeps its own chapters, moved to where it starts in the joined
+    file; languages / titles / flags come from the first file; the fonts of all
+    files are kept (MKV, each name once).
+  - Output: folder (default Media\output), file name (default: the first
+    file's name + " (joined)"), MKV or MP4 (MP4: ASS -> mov_text, fonts and
+    picture subtitles dropped). Existing output: Overwrite, Keep both or Skip.
+    Written as .part, renamed only after a check (video present, length = the
+    files together); Stop never leaves a broken file. "Add to queue" runs it
+    after the other jobs.
+
 AUDIO
   Theme Audio - exports a stretch of a file's FIRST audio track as MP3,
     M4A/AAC, FLAC or WAV, with optional fade in/out. Set "Intro from" / "Intro
@@ -475,7 +504,7 @@ click a video first).
     M                 mute
     Up / Down         previous / next file (Multi cut)
     F2 / Delete       rename / move to trash (Templates manager)
-    Ctrl+1 ... Ctrl+7 go to a page (Templates ... Info)
+    Ctrl+1 ... Ctrl+8 go to a page (Templates ... Info)
 
 Click or drag the timeline to seek. "Go to:" accepts 21:30, 0:01:05.5 or
 00:01:05:500. Time boxes are HH : MM : SS : mmm - an empty box counts as 0.
@@ -524,13 +553,13 @@ Settings... (bottom of the sidebar), remembered in Data\settings.json:
 
 QUEUE & STATUS BAR
 ------------------
-The status bar at the bottom shows what is running ("Idle" or "▶ Running:
-...") and how many jobs are queued. Queued jobs run one after another, only
-when nothing else is running. "Add to queue" exists on Cut / Edit (Auto-detect
-batch, Multi cut), Convert, Audio Gain (Normalize folder), Compare (Quality)
-and Check; each entry keeps the files and settings from the moment it was
-added. "Queue..." opens the queue: reorder or remove waiting jobs, clear it,
-pause/resume, or "Stop all" (stops running jobs and pauses the queue). Each
+The status bar at the bottom shows what is running ("Idle" or "▶ Running: ...")
+and how many jobs are queued. Queued jobs run one after another, only when
+nothing else is running. "Add to queue" exists on Cut / Edit (Auto-detect
+batch, Multi cut), Convert, Join, Audio Gain (Normalize folder), Compare
+(Quality) and Check; each entry keeps the files and settings from the moment it
+was added. "Queue..." opens the queue: reorder or remove waiting jobs, clear
+it, pause/resume, or "Stop all" (stops running jobs and pauses the queue). Each
 processing page also has a Stop button by its progress bar.
 
 
@@ -650,6 +679,7 @@ PROJECT LAYOUT (for editing the code)
           refine.py snap.py  frame-accurate boundaries, Snap
           cut.py        the cut engines (batch + manual), keep/drop maths
           recode.py     the Convert engine
+          join.py       the Join engine (+ join_encode.py, join_subs.py)
           chapters.py subs.py loudness.py formatting.py  chapter markers,
                         subtitle trim/flags, loudness/gain/theme export, times
       ui\           shared GUI pieces: widgets.py (TimeEntry, ScrollFrame,
@@ -667,6 +697,7 @@ PROJECT LAYOUT (for editing the code)
                         cut_multi.py, cut_scan.py, cut_common.py)  Cut / Edit
           convert.py   (+ convert_settings.py, convert_tracks.py,
                         convert_presets.py)                 Convert
+          join.py      (+ join_run.py)                      Join
           theme_audio.py, audio_gain.py, audio_gain_batch.py
                         (+ audio_common.py)   the Audio page
           compare.py, check.py, log.py        Compare, Check and Log

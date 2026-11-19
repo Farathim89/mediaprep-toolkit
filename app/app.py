@@ -19,6 +19,7 @@ from .tabs.check import CheckTab
 from .tabs.compare import CompareTab
 from .tabs.convert import ConvertTab
 from .tabs.cut_edit import RemoverTab
+from .tabs.join import JoinTab
 from .tabs.log import LogTab
 from .tabs.templates import TemplateTab
 from .tabs.theme_audio import ThemeAudioTab
@@ -57,6 +58,8 @@ _PAGES = (
      N_("Find and remove intros and credits in whole seasons, or cut files by hand.")),
     ("convert", "convert", N_("Convert"),
      N_("Re-encode videos: codec, quality, size, crop, filters, audio and subtitle tracks.")),
+    ("join", "join", N_("Join"),
+     N_("Join several videos into one file - without re-encoding when they match.")),
     ("audio", "audio", N_("Audio"),
      N_("Export theme songs and even out the loudness of your episodes.")),
     ("inspect", "inspect", N_("Inspect"),
@@ -251,6 +254,8 @@ def main():
     _last_page("cut")
     convert_tab = scrolled(lambda m, b: ConvertTab(m, saved=saved, bottom=b), N_("Convert"))
     _last_page("convert")
+    join_tab = scrolled(lambda m, b: JoinTab(m, saved=saved, bottom=b), N_("Join"))
+    _last_page("join")
     audio_nb = group("audio", N_("Audio"))
     theme_tab = scrolled(lambda m, b: ThemeAudioTab(m, saved=saved, bottom=b),
                          N_("Theme Audio"), audio_nb)
@@ -265,7 +270,7 @@ def main():
     scrolled(lambda m, b: LogTab(m, LOGS_DIR), N_("Log"))
     _last_page("log")
     _tab_titles = {template_tab: tr("Templates"), remover_tab: tr("Cut / Edit"),
-                   convert_tab: tr("Convert"),
+                   convert_tab: tr("Convert"), join_tab: tr("Join"),
                    theme_tab: tr("Theme Audio"), gain_tab: tr("Audio Gain"),
                    dual_tab: tr("Dual Player"), compare_tab: tr("Compare"),
                    check_tab: tr("Check")}
@@ -395,7 +400,7 @@ def main():
         return (max(vw - 2 * px(12) - px(12), px(600)), max(vh - 2 * px(4), px(380)))
     page_view.design_fn = _design
 
-    # Ctrl+1..7 jump to the pages
+    # Ctrl+1..8 jump to the pages
     for n, (key, *_rest) in enumerate(_PAGES, 1):
         root.bind(f"<Control-Key-{n}>", lambda e, k=key: (show_page(k), "break")[1])
 
@@ -466,8 +471,8 @@ def main():
     convert_tab.open_dual = _open_dual
     remover_tab.template_tab = template_tab   # presets read its detect settings
 
-    _top_tabs = [template_tab, remover_tab, convert_tab, theme_tab, gain_tab, dual_tab,
-                 compare_tab, check_tab]
+    _top_tabs = [template_tab, remover_tab, convert_tab, join_tab, theme_tab, gain_tab,
+                 dual_tab, compare_tab, check_tab]
     # jobs can also live on sub-tab objects (Compare's Quality pane is
     # compare_tab.quality) - include every widget attribute of a tab that has
     # its own Stop button / stop event, one level deep
@@ -536,6 +541,7 @@ def main():
         d.update(gain_tab.snapshot())       # Audio Gain batch + single settings
         d.update(check_tab.snapshot())      # Check depth
         d.update(convert_tab.snapshot())    # Convert settings / preset / sub-tab
+        d.update(join_tab.snapshot())       # Join output folder / container / preset
         d.update(_tabs_snapshot())          # selected main tab + sub-tabs
         d["theme"] = themes.current_name()
         d["last_video"] = (template_tab.file_var.get().strip()
@@ -566,6 +572,7 @@ def main():
     remover_tab.save_hook = persist   # persist whenever Start is pressed
     template_tab.save_hook = persist  # persist whenever Detect is pressed
     convert_tab.save_hook = persist   # ... and whenever Convert -> Start is pressed
+    join_tab.save_hook = persist      # ... and Join -> Join
 
     def on_close():
         try:
@@ -608,7 +615,7 @@ def main():
                         check_for_updates=check_for_updates, stop_all=_stop_all_jobs, is_busy=_any_busy,
                         page_view=page_view, footer=footer,
                         tabs=dict(templates=template_tab, cut=remover_tab, convert=convert_tab,
-                                  theme=theme_tab,
+                                  join=join_tab, theme=theme_tab,
                                   gain=gain_tab, dual=dual_tab, compare=compare_tab,
                                   check=check_tab))
     root.protocol("WM_DELETE_WINDOW", on_close)

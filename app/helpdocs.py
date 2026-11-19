@@ -32,7 +32,7 @@ HELP = {
            "place.\nInfo - Info / Settings and Recommended encoding notes."),
         N_("The app remembers the page and sub-tab you were on. Every page has a "
            "'?' button (top-right) with its help; 'Help' at the bottom of the "
-           "sidebar lists all of them. Ctrl+1 ... Ctrl+7 jump to the pages, and ☰ "
+           "sidebar lists all of them. Ctrl+1 ... Ctrl+8 jump to the pages, and ☰ "
            "folds the sidebar to icons."),
         N_("Finding intros / credits: with templates (clips you cut once - "
            "Templates → Cut template / Auto-detect) Cut / Edit matches them by "
@@ -286,6 +286,37 @@ HELP = {
            "size and encoding time (and the SSIM of the sample when the picture isn't "
            "cropped or retimed) and opens source and sample side by side in Inspect → "
            "Dual Player."))),
+    "join": (N_("Join"), (
+        N_("Join several videos into one file, in the order of the list (#1 first).\n\n"
+           "Add files or a folder (its videos in name order, E2 before E10) or drop them "
+           "onto the list. Move up / Move down (Ctrl+Up / Ctrl+Down) and Sort by name "
+           "change the order, Remove (Delete key) and Clear empty it. The list shows each "
+           "file's length, video (codec, size, frame rate), audio and subtitle tracks.\n\n"
+           "The line under the list says how they will be joined:\n"
+           "- ✔ Lossless join possible: the files match (video codec, profile, size, pixel "
+           "aspect, pixel format, frame rate, interlacing; the same audio tracks with the "
+           "same codec, channels and sample rate; the same subtitle tracks). They are "
+           "joined by stream copy - nothing is re-encoded, the quality stays, and it takes "
+           "about as long as copying the files.\n"
+           "- ⚠ The files differ: the reasons are listed and EVERY file is re-encoded with "
+           "the Re-encode settings - to the first file's picture size (the others scaled "
+           "with the aspect ratio kept and black bars added) and frame rate, with Convert's "
+           "preset (codec, quality, audio) and an optional codec / CRF / CQ override. Audio "
+           "track 1 of every file becomes track 1 of the output, and so on; a file without "
+           "a track gets silence there, so the tracks stay in sync. Text subtitles are kept "
+           "when every file has the track; picture subtitles and tracks a file lacks are "
+           "dropped (with a log line)."),
+        N_("Chapters: every file keeps its own chapters, moved to where the file starts in "
+           "the joined one. Stream languages, titles and default / forced flags come from "
+           "the first file; the fonts of all files are kept (MKV, each name once).\n\n"
+           "Output: folder (default Media\\output), file name (default: the first file's "
+           "name + ' (joined)') and MKV or MP4 (MP4 can't hold ASS subtitles or fonts: text "
+           "subtitles become mov_text, fonts and picture subtitles are dropped, each with a "
+           "log line). If the file exists, Join asks: Overwrite, Keep both or Skip. The "
+           "output is written as .part first and only renamed after a check (it has video "
+           "and is as long as the files together); Stop or a failure never leaves a broken "
+           "file. 'Add to queue' joins after the running jobs, with the list and settings "
+           "of that moment. Progress and Stop are in the bar at the bottom."))),
     "theme": (N_("Audio → Theme Audio"), (
         N_("Exports a stretch of a file's FIRST audio track as an audio file - "
         "e.g. the intro as theme.mp3 for Plex.\n\n"
@@ -462,6 +493,9 @@ def _add_block(key, block):
 _add_block("overview", N_(
     "Convert (between Cut / Edit and Audio) re-encodes videos: codec, quality, size, "
     "crop, filters, audio and subtitle tracks, with presets and a preview."))
+_add_block("overview", N_(
+    "Join (after Convert) joins several videos into one file - by stream copy (no "
+    "re-encode) when they match, else every file is re-encoded to one format."))
 for _k in ("template_cut", "cut_manual", "cut_multi", "theme"):
     _add_block(_k, TO_INCLUSIVE)
 for _k in ("template_detect", "cut_settings", "cut_multi"):
@@ -508,7 +542,7 @@ HELP["updates"] = (N_("Updates"), (
        "(videos, outputs, templates, settings) are kept.")))
 
 HELP_ORDER = ("overview", "template_cut", "template_detect", "templates_manager",
-              "cut_settings", "cut_auto", "cut_manual", "cut_multi", "convert", "theme",
+              "cut_settings", "cut_auto", "cut_manual", "cut_multi", "convert", "join", "theme",
               "gain_single", "gain_batch", "dual", "compare_tracks",
               "compare_quality", "check", "log", "cleanup", "queue", "folders",
               "updates")

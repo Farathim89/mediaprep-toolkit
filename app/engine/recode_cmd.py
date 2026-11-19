@@ -73,6 +73,81 @@ def resolve_encoder(enc, log=None):
     return enc
 
 
+def resolve_video_encoder(vcodec, log=None):
+    """(encoder that really runs, plex) for a settings vcodec: the Plex-ready
+    choices are NVENC with extra options, NVENC falls back to the CPU."""
+    plex = vcodec in ("plex_hevc", "plex_h264")
+    if plex:
+        vcodec = "hevc_nvenc" if vcodec == "plex_hevc" else "h264_nvenc"
+    return resolve_encoder(vcodec, log), plex
+
+
+def output_depth(s, enc, src_depth, notes):
+    """The bit depth to encode at: settings 'depth' (auto = 10-bit for a
+    10-bit source where the encoder does it well), 8 if `enc` can't."""
+    want = s["depth"]
+    if want == "auto":
+        depth = 10 if src_depth >= 10 and enc in _TEN_BIT_AUTO else 8
+    else:
+        depth = 10 if want == "10" else 8
+    if depth == 10 and enc not in _TEN_BIT:
+        notes.append(f"{enc} is 8-bit only - 10-bit not possible, using 8-bit")
+        depth = 8
+    return depth
+
+
+def encoder_pix_fmt(enc, depth):
+    """The pixel format the filter chain hands the encoder."""
+    if enc in NVENC:
+        return "p010le" if depth >= 10 else "yuv420p"
+    return "yuv420p10le" if depth >= 10 else "yuv420p"
+
+
+def video_encoder_args(s, enc, plex, src_bps=None, notes=None):
+    """-c:v <enc> + quality / preset / rate control of the settings `s` for a
+    re-encode (enc = resolve_video_encoder's, not 'copy'), and the 'never
+    bigger' cap (95 % of src_bps, the source video bitrate)."""
+    notes = notes if notes is not None else []
+    q = int(s["crf"])
+    cmd = []
+    if enc in NVENC:
+        cmd += ["-c:v", enc, "-preset", NVENC_PRESET_MAP.get(s["preset"], "p5"),
+                "-tune", "hq", "-rc", "vbr"]
+        if plex:
+            cmd += ["-multipass", "fullres"]
+        if s["rate"] == "bitrate":
+            cmd += ["-b:v", f"{int(s['bitrate'])}k"]
+        else:
+            cmd += ["-cq", str(q), "-b:v", "0"]
+        if enc == "h264_nvenc":
+            cmd += ["-profile:v", "high"]
+    elif enc == "libsvtav1":
+        cmd += ["-c:v", enc, "-preset", SVT_PRESET_MAP.get(s["preset"], "8")]
+        cmd += (["-b:v", f"{int(s['bitrate'])}k"] if s["rate"] == "bitrate"
+                else ["-crf", str(q)])
+    else:
+        cmd += ["-c:v", enc, "-preset", s["preset"]]
+        cmd += (["-b:v", f"{int(s['bitrate'])}k"] if s["rate"] == "bitrate"
+                else ["-crf", str(q)])
+        if enc == "libx265":
+            cmd += ["-x265-params", "log-level=error"]
+    cap = int(src_bps * 0.95) if s["cap"] and src_bps else None
+    if cap:
+        if s["rate"] == "bitrate" and int(s["bitrate"]) * 1000 > cap:
+            cmd[cmd.index("-b:v") + 1] = str(cap)
+        cmd += ["-maxrate:v", str(cap), "-bufsize:v", str(2 * cap)]
+        notes.append(f"never bigger: video capped at {cap / 1e6:.1f} Mb/s "
+                     f"(source {src_bps / 1e6:.1f})")
+    elif s["cap"]:
+        notes.append("[WARN] never bigger: source video bitrate unknown - no cap")
+    return cmd
+
+
+def hvc1_tag(enc, mp4):
+    """MP4 + HEVC: tag hvc1 (Apple / Plex direct play want it)."""
+    return ["-tag:v", "hvc1"] if mp4 and enc in ("libx265", "hevc_nvenc") else []
+
+
 def _out_fps(job):
     s = job["settings"]
     if s["fps"] != "source":
@@ -120,11 +195,7 @@ def build_recode_cmd(job, output, log=None, sample=None):
     mp4 = output.lower().endswith(".mp4")
     notes = []
     plan = {"tonemap": False, "notes": notes}
-    enc = s["vcodec"]
-    plex = enc in ("plex_hevc", "plex_h264")
-    if plex:
-        enc = "hevc_nvenc" if enc == "plex_hevc" else "h264_nvenc"
-    enc = resolve_encoder(enc, log)
+    enc, plex = resolve_video_encoder(s["vcodec"], log)
     plan["encoder"] = enc
     copy_v = enc == "copy"
 
@@ -141,14 +212,7 @@ def build_recode_cmd(job, output, log=None, sample=None):
     # ---------------- video ----------------
     depth = 8
     if not copy_v:
-        want = s["depth"]
-        if want == "auto":
-            depth = 10 if v["bit_depth"] >= 10 and enc in _TEN_BIT_AUTO else 8
-        else:
-            depth = 10 if want == "10" else 8
-        if depth == 10 and enc not in _TEN_BIT:
-            notes.append(f"{enc} is 8-bit only - 10-bit not possible, using 8-bit")
-            depth = 8
+        depth = output_depth(s, enc, v["bit_depth"], notes)
     plan["depth"] = depth
     pre, post = [], []          # filters before / after a PGS overlay
     burn = [t for t in job["subs"] if t.get("burn")]
@@ -202,9 +266,7 @@ def build_recode_cmd(job, output, log=None, sample=None):
         fps = s["fps"]
         if fps != "source" and s["fps_mode"] == "cfr":
             post.append(f"fps={_FPS_EXACT.get(fps, fps)}")
-        pix = ("p010le" if depth >= 10 else "yuv420p") if enc in NVENC else (
-            "yuv420p10le" if depth >= 10 else "yuv420p")
-        post.append(f"format={pix}")
+        post.append(f"format={encoder_pix_fmt(enc, depth)}")
         plan["w"], plan["h"] = ow, oh
         vin = f"[0:{v['idx']}]"
         if bsrc and not bsrc["text"]:
@@ -223,45 +285,14 @@ def build_recode_cmd(job, output, log=None, sample=None):
             notes.append("[WARN] video is copied - crop / resize / filters / burn-in are ignored")
 
     # encoder args
-    q = int(s["crf"])
-    cap = None
-    if not copy_v and s["cap"] and v.get("bps"):
-        cap = int(v["bps"] * 0.95)
     if copy_v:
         cmd += ["-c:v", "copy"]
-    elif enc in NVENC:
-        cmd += ["-c:v", enc, "-preset", NVENC_PRESET_MAP.get(s["preset"], "p5"),
-                "-tune", "hq", "-rc", "vbr"]
-        if plex:
-            cmd += ["-multipass", "fullres"]
-        if s["rate"] == "bitrate":
-            cmd += ["-b:v", f"{int(s['bitrate'])}k"]
-        else:
-            cmd += ["-cq", str(q), "-b:v", "0"]
-        if enc == "h264_nvenc":
-            cmd += ["-profile:v", "high"]
-    elif enc == "libsvtav1":
-        cmd += ["-c:v", enc, "-preset", SVT_PRESET_MAP.get(s["preset"], "8")]
-        cmd += (["-b:v", f"{int(s['bitrate'])}k"] if s["rate"] == "bitrate"
-                else ["-crf", str(q)])
     else:
-        cmd += ["-c:v", enc, "-preset", s["preset"]]
-        cmd += (["-b:v", f"{int(s['bitrate'])}k"] if s["rate"] == "bitrate"
-                else ["-crf", str(q)])
-        if enc == "libx265":
-            cmd += ["-x265-params", "log-level=error"]
-    if cap and not copy_v:
-        if s["rate"] == "bitrate" and int(s["bitrate"]) * 1000 > cap:
-            cmd[cmd.index("-b:v") + 1] = str(cap)
-        cmd += ["-maxrate:v", str(cap), "-bufsize:v", str(2 * cap)]
-        notes.append(f"never bigger: video capped at {cap / 1e6:.1f} Mb/s "
-                     f"(source {v['bps'] / 1e6:.1f})")
-    elif s["cap"] and not copy_v:
-        notes.append("[WARN] never bigger: source video bitrate unknown - no cap")
+        cmd += video_encoder_args(s, enc, plex, v.get("bps"), notes)
     if plan["tonemap"]:
         cmd += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
-    if not copy_v and mp4 and enc in ("libx265", "hevc_nvenc"):
-        cmd += ["-tag:v", "hvc1"]
+    if not copy_v:
+        cmd += hvc1_tag(enc, mp4)
     if not copy_v:
         # a stream out of a filtergraph has no tags: the source video's
         # language / title again (a copied stream keeps its own)
